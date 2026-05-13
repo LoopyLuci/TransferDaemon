@@ -12,7 +12,7 @@ use transferd_api::{
     TransferServiceClient, SettingsServiceClient,
     AddContactRequest, CreateIdentityRequest, Empty,
     GetMessagesRequest, RestoreIdentityRequest, SendTextRequest,
-    GetSettingRequest, SetSettingRequest,
+    GetSettingRequest, SetSettingRequest, SendFileRequest,
 };
 use tonic::transport::Channel;
 
@@ -208,6 +208,36 @@ impl DaemonApi for GrpcDaemon {
             .await
             .map(|r| r.into_inner().transfers.into_iter().map(proto_to_transfer).collect())
             .unwrap_or_default()
+    }
+
+    async fn send_file(&self, contact_id: &str, path: String) -> Result<Message, DaemonError> {
+        let p = std::path::Path::new(&path);
+        let file_name = p.file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let file_size = std::fs::metadata(p)
+            .map(|m| m.len())
+            .map_err(|e| DaemonError::InvalidInput(format!("cannot read file: {e}")))?;
+        let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
+        let mime_type = match ext {
+            "png" | "jpg" | "jpeg" | "gif" | "webp" => format!("image/{ext}"),
+            "pdf" => "application/pdf".into(),
+            "mp4" | "mov" => format!("video/{ext}"),
+            "mp3" | "ogg" => format!("audio/{ext}"),
+            "txt" | "md" => "text/plain".into(),
+            _ => "application/octet-stream".into(),
+        };
+        self.transfers()
+            .send_file(SendFileRequest {
+                contact_id: contact_id.to_owned(),
+                file_path: path,
+                file_name,
+                file_size,
+                mime_type,
+            })
+            .await
+            .map(|r| proto_to_message(r.into_inner()))
+            .map_err(|e| DaemonError::NotReachable(e.to_string()))
     }
 
     async fn get_public_key_hex(&self) -> Option<String> {

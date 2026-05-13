@@ -16,6 +16,10 @@ pub struct ChatPage {
     pub input: String,
     messages: Vec<Message>,
     last_contact_id: String,
+    // File attach state
+    file_path: String,
+    show_file_input: bool,
+    file_error: Option<String>,
     // Call state
     call_manager: CallManager,
     call_start_ts: Option<u64>,
@@ -28,6 +32,9 @@ impl Default for ChatPage {
             input: String::new(),
             messages: Vec::new(),
             last_contact_id: String::new(),
+            file_path: String::new(),
+            show_file_input: false,
+            file_error: None,
             call_manager: CallManager::new(),
             call_start_ts: None,
             muted: false,
@@ -132,8 +139,44 @@ impl ChatPage {
 
         // ── Input bar ──
         egui::TopBottomPanel::bottom("chat_input").show_inside(ui, |ui| {
+            // File attach panel (shown when 📎 is toggled).
+            if self.show_file_input {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("File:").color(Color32::from_gray(160)));
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.file_path)
+                            .hint_text("Paste full file path…")
+                            .desired_width(ui.available_width() - 80.0),
+                    );
+                    let can_send = !self.file_path.trim().is_empty();
+                    ui.add_enabled_ui(can_send, |ui| {
+                        if ui.button(RichText::new("Send").color(Color32::from_rgb(0, 122, 255))).clicked() {
+                            self.send_file(state);
+                        }
+                    });
+                });
+                if let Some(e) = &self.file_error.clone() {
+                    ui.label(RichText::new(e).color(Color32::RED).size(12.0));
+                }
+                ui.separator();
+            }
+
+            // Text message row.
             ui.horizontal(|ui| {
                 ui.set_min_height(48.0);
+
+                // 📎 toggle.
+                let attach_color = if self.show_file_input {
+                    Color32::from_rgb(0, 122, 255)
+                } else {
+                    Color32::from_gray(160)
+                };
+                if ui.add_sized([32.0, 32.0],
+                    egui::Button::new(RichText::new("📎").color(attach_color)).frame(false)
+                ).clicked() {
+                    self.show_file_input = !self.show_file_input;
+                    self.file_error = None;
+                }
 
                 let input_field = egui::TextEdit::singleline(&mut self.input)
                     .hint_text("Message…")
@@ -240,6 +283,26 @@ impl ChatPage {
                 });
             });
         ui.add_space(6.0);
+    }
+
+    fn send_file(&mut self, state: &mut AppState) {
+        let Some(cid) = state.open_chat.clone() else { return };
+        let path = self.file_path.trim().to_owned();
+        if path.is_empty() { return; }
+        let rt = tokio::runtime::Handle::current();
+        match rt.block_on(state.daemon.send_file(&cid, path)) {
+            Ok(msg) => {
+                self.messages.push(msg);
+                self.file_path.clear();
+                self.file_error = None;
+                self.show_file_input = false;
+                // Refresh transfers list.
+                state.transfers = rt.block_on(state.daemon.get_transfers());
+            }
+            Err(e) => {
+                self.file_error = Some(e.to_string());
+            }
+        }
     }
 
     fn send_message(&mut self, state: &mut AppState) {

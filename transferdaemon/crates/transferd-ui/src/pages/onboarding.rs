@@ -106,6 +106,8 @@ impl OnboardingPage {
                 match phrase {
                     Ok(p) => {
                         self.recovery_phrase = p;
+                        // Refresh identity so Settings sees it immediately after creation.
+                        state.identity = rt.block_on(state.daemon.get_identity());
                         self.step = Step::ShowPhrase;
                     }
                     Err(e) => self.error = Some(e.to_string()),
@@ -186,7 +188,10 @@ impl OnboardingPage {
             {
                 let rt = tokio::runtime::Handle::current();
                 match rt.block_on(state.daemon.restore_identity(self.phrase_input.trim().to_owned())) {
-                    Ok(_) => state.page = Page::Home,
+                    Ok(id) => {
+                        state.identity = Some(id);
+                        state.page = Page::Home;
+                    }
                     Err(e) => self.error = Some(e.to_string()),
                 }
             }

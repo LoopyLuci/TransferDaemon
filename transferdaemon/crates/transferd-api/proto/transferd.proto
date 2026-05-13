@@ -86,7 +86,16 @@ message SendTextRequest {
 // ---------------------------------------------------------------------------
 
 service TransferService {
-    rpc GetTransfers (Empty) returns (TransferList);
+    rpc GetTransfers (Empty)           returns (TransferList);
+    rpc SendFile     (SendFileRequest) returns (MessageReply);
+}
+
+message SendFileRequest {
+    string contact_id = 1;
+    string file_path  = 2;
+    string file_name  = 3;
+    uint64 file_size  = 4;
+    string mime_type  = 5;
 }
 
 message TransferReply {

@@ -21,7 +21,7 @@ use transferd_api::{
     GetMessagesRequest, MessageReply, MessageList, SendTextRequest,
     // Transfers
     TransferService, TransferServiceServer,
-    TransferReply, TransferList,
+    TransferReply, TransferList, SendFileRequest,
     // Settings
     SettingsService, SettingsServiceServer,
     GetSettingRequest, SetSettingRequest, SettingReply,
@@ -219,6 +219,49 @@ impl TransferService for TransferServiceImpl {
             bps:              t.bps,
         }).collect();
         Ok(Response::new(TransferList { transfers }))
+    }
+
+    async fn send_file(
+        &self, req: Request<SendFileRequest>,
+    ) -> Result<Response<MessageReply>, Status> {
+        let r = req.into_inner();
+        if r.contact_id.is_empty() {
+            return Err(Status::invalid_argument("contact_id required"));
+        }
+        let size_bytes = if r.file_size > 0 {
+            r.file_size
+        } else {
+            std::fs::metadata(&r.file_path).map(|m| m.len()).unwrap_or(0)
+        };
+        let mut s = self.0.lock();
+        let id = s.next_id();
+        let msg = crate::state::StoredMessage {
+            id: id.clone(),
+            contact_id: r.contact_id.clone(),
+            outbound: true,
+            content_type: "file".into(),
+            text: String::new(),
+            file_name: r.file_name.clone(),
+            file_size: size_bytes,
+            file_xferd: size_bytes,
+            file_mime: r.mime_type.clone(),
+            timestamp_ts: now_secs(),
+            status: "sent".into(),
+        };
+        let tid = s.next_id();
+        s.transfers.push(crate::state::Transfer {
+            id: tid,
+            contact_name: r.contact_id.clone(),
+            file_name: r.file_name,
+            size_bytes,
+            xferd_bytes: size_bytes,
+            outbound: true,
+            lanes_active: 1,
+            bps: 0,
+        });
+        let reply = stored_to_reply(&msg);
+        s.messages.entry(r.contact_id).or_default().push(msg);
+        Ok(Response::new(reply))
     }
 }
 

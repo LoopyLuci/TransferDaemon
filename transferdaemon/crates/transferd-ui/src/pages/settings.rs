@@ -71,11 +71,19 @@ impl SettingsPage {
             });
             ui.horizontal(|ui| {
                 ui.label(RichText::new("Daemon:").color(Color32::from_gray(160)));
-                ui.label(
-                    RichText::new("Mock (Phase 7: gRPC)")
-                        .color(Color32::from_rgb(255, 214, 10))
-                        .size(12.0),
-                );
+                if state.daemon_is_live {
+                    ui.label(
+                        RichText::new("gRPC (live)")
+                            .color(Color32::from_rgb(48, 209, 88))
+                            .size(12.0),
+                    );
+                } else {
+                    ui.label(
+                        RichText::new("Mock (offline)")
+                            .color(Color32::from_rgb(255, 214, 10))
+                            .size(12.0),
+                    );
+                }
             });
 
             ui.add_space(24.0);

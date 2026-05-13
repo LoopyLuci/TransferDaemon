@@ -42,6 +42,9 @@ pub trait DaemonApi: Send + Sync {
 
     async fn get_transfers(&self) -> Vec<TransferStatus>;
 
+    /// Send a local file to a contact. Returns the resulting file message.
+    async fn send_file(&self, contact_id: &str, path: String) -> Result<Message, DaemonError>;
+
     /// Returns the hex-encoded public key for QR code display.
     async fn get_public_key_hex(&self) -> Option<String>;
 }
@@ -221,6 +224,44 @@ impl DaemonApi for MockDaemon {
 
     async fn get_transfers(&self) -> Vec<TransferStatus> {
         self.state.lock().unwrap().transfers.clone()
+    }
+
+    async fn send_file(&self, contact_id: &str, path: String) -> Result<Message, DaemonError> {
+        let p = std::path::Path::new(&path);
+        let file_name = p.file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "unknown".into());
+        let size_bytes = std::fs::metadata(p)
+            .map(|m| m.len())
+            .map_err(|e| DaemonError::InvalidInput(format!("cannot read file: {e}")))?;
+        let mut s = self.state.lock().unwrap();
+        let id = s.next_id();
+        let msg = Message {
+            id,
+            contact_id: contact_id.to_owned(),
+            outbound: true,
+            content: MessageContent::File {
+                name: file_name.clone(),
+                size_bytes,
+                transferred_bytes: size_bytes,
+                mime: None,
+            },
+            timestamp_ts: now_ts(),
+            status: MessageStatus::Sent,
+        };
+        s.messages.entry(contact_id.to_owned()).or_default().push(msg.clone());
+        let tid = s.next_id();
+        s.transfers.push(TransferStatus {
+            id: tid,
+            contact_name: contact_id.to_owned(),
+            file_name,
+            size_bytes,
+            transferred_bytes: size_bytes,
+            outbound: true,
+            lanes_active: 1,
+            bps: 0,
+        });
+        Ok(msg)
     }
 
     async fn get_public_key_hex(&self) -> Option<String> {

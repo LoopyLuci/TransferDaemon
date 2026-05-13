@@ -11,7 +11,7 @@ pub use proto::{
     GetMessagesRequest, GetSettingRequest, IdentityReply,
     MessageList, MessageReply, PublicKeyReply, RecoveryPhraseReply,
     RestoreIdentityRequest, SendTextRequest, SetSettingRequest, SettingReply,
-    TransferList, TransferReply,
+    SendFileRequest, TransferList, TransferReply,
     // Call types (Phase 8)
     CallStartRequest, CallStartResponse,
     CallAcceptRequest, CallAcceptResponse,

@@ -26,6 +26,7 @@ pub enum Page {
 pub struct AppState {
     pub page: Page,
     pub daemon: Arc<dyn DaemonApi>,
+    pub daemon_is_live: bool, // true = gRPC daemon, false = MockDaemon
     pub identity: Option<Identity>,
     pub contacts: Vec<Contact>,
     pub transfers: Vec<TransferStatus>,
@@ -33,16 +34,17 @@ pub struct AppState {
 }
 
 impl AppState {
-    fn new(daemon: Arc<dyn DaemonApi>) -> Self {
-        // Bootstrap contacts and transfers from mock in blocking fashion.
-        // In production the background thread would push updates via channel.
+    fn new(daemon: Arc<dyn DaemonApi>, daemon_is_live: bool) -> Self {
         let rt = tokio::runtime::Handle::current();
         let contacts = rt.block_on(daemon.get_contacts());
         let transfers = rt.block_on(daemon.get_transfers());
         let identity = rt.block_on(daemon.get_identity());
+        // If an identity already exists, skip onboarding and go straight to Home.
+        let page = if identity.is_some() { Page::Home } else { Page::Onboarding };
         Self {
-            page: Page::Onboarding,
+            page,
             daemon,
+            daemon_is_live,
             identity,
             contacts,
             transfers,
@@ -65,12 +67,12 @@ pub struct TransferDaemonApp {
 
 impl TransferDaemonApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        Self::with_daemon(cc, Arc::new(MockDaemon::new()))
+        Self::with_daemon(cc, Arc::new(MockDaemon::new()), false)
     }
 
-    pub fn with_daemon(cc: &eframe::CreationContext<'_>, daemon: Arc<dyn DaemonApi>) -> Self {
+    pub fn with_daemon(cc: &eframe::CreationContext<'_>, daemon: Arc<dyn DaemonApi>, is_live: bool) -> Self {
         apply_theme(&cc.egui_ctx);
-        let state = AppState::new(daemon);
+        let state = AppState::new(daemon, is_live);
         Self {
             state,
             onboarding: OnboardingPage::default(),
