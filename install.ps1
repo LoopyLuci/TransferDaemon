@@ -111,11 +111,16 @@ if (-not ($userPath -split ";" | Where-Object { $_ -eq $InstallDir })) {
 
 # ── 5. Scheduled task for daemon autostart ───────────────────────────────────
 Write-Host "► Creating scheduled task for daemon autostart…"
+
+# Persist TRANSFERD_ADDR as a user environment variable so the daemon picks it
+# up whether launched by the scheduler, the launcher, or a manual run.
+[System.Environment]::SetEnvironmentVariable("TRANSFERD_ADDR", $DaemonAddr, "User")
+$env:TRANSFERD_ADDR = $DaemonAddr
+
 $taskName   = "TransferDaemon_Daemon"
 $taskAction = New-ScheduledTaskAction `
     -Execute "$InstallDir\transferd.exe" `
     -WorkingDirectory $InstallDir
-$taskAction.EnvironmentVariables = @{ TRANSFERD_ADDR = $DaemonAddr }
 
 $taskTrigger   = New-ScheduledTaskTrigger -AtLogon
 $taskSettings  = New-ScheduledTaskSettingsSet `
