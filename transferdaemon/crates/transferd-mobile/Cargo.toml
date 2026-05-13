@@ -3,15 +3,14 @@ name = "transferd-mobile"
 version = "0.1.0"
 edition = "2021"
 
-# cdylib for Android (.so) and iOS (.a via staticlib in Xcode).
-# On desktop the lib is used for integration tests only.
+# cdylib for Android (.so loaded by NativeActivity).
+# staticlib kept for potential iOS future use.
 [lib]
 name = "transferd_mobile"
 crate-type = ["cdylib", "staticlib"]
 
 [features]
 default = []
-# Enable the desktop/test path (no native window required).
 desktop = []
 
 [dependencies]
@@ -19,9 +18,22 @@ tokio        = { workspace = true }
 tonic        = "0.11"
 thiserror    = { workspace = true }
 transferd-api    = { path = "../transferd-api" }
+transferd_lib    = { package = "transferd", path = "../transferd" }
 
-# The daemon library (all six gRPC services).
-transferd_lib = { package = "transferd", path = "../transferd" }
-
+# ── Android-only ──────────────────────────────────────────────────────────────
 [target.'cfg(target_os = "android")'.dependencies]
 jni = { version = "0.21", default-features = false }
+
+# android-activity 0.5 is the version winit 0.29 / eframe 0.28 depend on.
+android-activity = { version = "0.5", features = ["native-activity"] }
+
+# eframe with Android NativeActivity support; disable desktop-only features.
+eframe = { version = "0.28", default-features = false, features = [
+    "glow",
+    "default_fonts",
+    "android-native-activity",
+] }
+egui = { workspace = true }
+
+# winit must be explicit so we can import EventLoopBuilderExtAndroid.
+winit = { version = "0.29", features = ["android-native-activity"] }

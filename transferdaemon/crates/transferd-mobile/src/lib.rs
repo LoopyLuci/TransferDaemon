@@ -1,28 +1,42 @@
 //! TransferDaemon mobile entry point.
 //!
-//! Exposes JNI entry points called by MainActivity and DaemonService.
-//! The function names follow the JNI convention:
-//!   Java_<package>_<Class>_<method>
+//! On Android this library is loaded by `android.app.NativeActivity`.
+//! The `android-activity` crate bridges `ANativeActivity_onCreate` → `android_main`.
 //!
-//! Daemon: DaemonService.startDaemon(String socketPath)
-//! UI:     MainActivity.startUi(Object surface, int width, int height)
+//! On desktop (feature = "desktop") the JNI shims below are omitted and the
+//! crate is used only by integration tests via `daemon_thread`.
 
 mod daemon_thread;
-mod platform;
+pub mod platform;
 
 // ---------------------------------------------------------------------------
-// Android JNI entry points
+// Android NativeActivity entry point
+// ---------------------------------------------------------------------------
+
+/// Called by the `android-activity` C bridge immediately after the .so is loaded
+/// by NativeActivity.  This function starts the daemon then runs the eframe loop.
+#[cfg(target_os = "android")]
+#[no_mangle]
+fn android_main(app: android_activity::AndroidApp) {
+    platform::android_main_impl(app);
+}
+
+// ---------------------------------------------------------------------------
+// Legacy JNI shim — kept so that DaemonService.startDaemon() still compiles
+// if the Java file is present. startUi is no longer called (NativeActivity
+// drives the UI via android_main above).
 // ---------------------------------------------------------------------------
 
 #[cfg(target_os = "android")]
 mod android_jni {
-    use super::{daemon_thread, platform};
+    use super::daemon_thread;
     use jni::objects::{JClass, JObject, JString};
     use jni::sys::jint;
     use jni::JNIEnv;
 
-    /// Called by DaemonService.startDaemon(String socketPath).
-    /// Spawns the gRPC daemon on a background thread listening on 127.0.0.1:50051.
+    /// Called by DaemonService.startDaemon() — starts the gRPC daemon.
+    /// With NativeActivity this is no longer the primary startup path
+    /// (android_main starts the daemon directly), but kept for compatibility.
     #[no_mangle]
     pub extern "system" fn Java_com_transferdaemon_app_DaemonService_startDaemon(
         mut env: JNIEnv,
@@ -36,27 +50,21 @@ mod android_jni {
         daemon_thread::spawn(path);
     }
 
-    /// Called by MainActivity.startUi(Object surface, int width, int height).
-    /// Spawns the UI thread. The Java Activity provides the visible layout;
-    /// this stub just ensures the call succeeds without crashing.
+    /// Legacy shim — not called when using NativeActivity.
     #[no_mangle]
     pub extern "system" fn Java_com_transferdaemon_app_MainActivity_startUi(
         _env: JNIEnv,
         _class: JClass,
         _surface: JObject,
-        width: jint,
-        height: jint,
+        _width: jint,
+        _height: jint,
     ) {
-        let w = width as u32;
-        let h = height as u32;
-        std::thread::spawn(move || {
-            platform::run_ui("http://127.0.0.1:50051", 0, w, h);
-        });
+        // No-op: NativeActivity / android_main owns the rendering loop.
     }
 }
 
 // ---------------------------------------------------------------------------
-// Desktop / test entry points (non-Android only)
+// Desktop / test entry points
 // ---------------------------------------------------------------------------
 
 #[cfg(not(target_os = "android"))]
@@ -84,9 +92,8 @@ pub mod desktop {
             .to_str()
             .unwrap_or("")
             .to_owned();
-        let win = native_window as usize;
         std::thread::spawn(move || {
-            platform::run_ui(&path, win, width, height);
+            platform::run_ui(&path, native_window as usize, width, height);
         });
     }
 }

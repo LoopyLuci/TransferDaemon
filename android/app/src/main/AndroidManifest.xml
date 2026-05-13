@@ -5,7 +5,8 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.CAMERA" />
-    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         android:maxSdkVersion="28" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
@@ -17,18 +18,34 @@
         android:icon="@drawable/ic_launcher"
         android:theme="@style/AppTheme"
         android:allowBackup="false"
-        android:supportsRtl="true">
+        android:supportsRtl="true"
+        android:extractNativeLibs="true">
 
+        <!--
+            NativeActivity loads libtransferd_mobile.so and calls android_main().
+            android_main starts the gRPC daemon + runs the eframe UI loop.
+        -->
         <activity
-            android:name=".MainActivity"
+            android:name="android.app.NativeActivity"
             android:exported="true"
-            android:configChanges="orientation|screenSize|keyboardHidden">
+            android:label="@string/app_name"
+            android:configChanges="orientation|screenSize|keyboardHidden|density">
+
+            <!-- Name of the .so to load (without "lib" prefix and ".so" suffix). -->
+            <meta-data
+                android:name="android.app.lib_name"
+                android:value="transferd_mobile" />
+
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
 
+        <!--
+            DaemonService is retained for future use (keep-alive background service).
+            It is not started automatically; android_main starts the daemon inline.
+        -->
         <service
             android:name=".DaemonService"
             android:exported="false"
