@@ -1,6 +1,7 @@
 # TransferDaemon all-in-one installer for Windows.
 # Places all binaries in <project-root>\bin\ and creates
 # <project-root>\TransferDaemon.exe as the user-facing entry point.
+# Keeps the last 10 installer runs in logs\installer_log_N.log.
 # No system-wide install, no PATH modification required.
 #
 # Run from an elevated PowerShell prompt:
@@ -23,11 +24,29 @@ function Write-Banner([string]$msg) {
     Write-Host "═══════════════════════════════════════════"
 }
 
+# ── Log rotation ──────────────────────────────────────────────────────────────
+$LogDir  = Join-Path $RepoDir "logs"
+$MaxLogs = 10
+New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
+
+for ($i = $MaxLogs - 1; $i -ge 0; $i--) {
+    $old = Join-Path $LogDir "installer_log_$i.log"
+    if (Test-Path $old) {
+        if ($i -lt $MaxLogs - 1) {
+            Move-Item -Force $old (Join-Path $LogDir "installer_log_$($i+1).log")
+        } else {
+            Remove-Item -Force $old
+        }
+    }
+}
+$LogFile = Join-Path $LogDir "installer_log_0.log"
+# Start-Transcript captures all console output (Write-Host, errors, native exe output).
+Start-Transcript -Path $LogFile -Append | Out-Null
+Write-Host "Installer started at $(Get-Date)"
+
 Write-Banner "$AppName — Windows Installer"
 
 # ── 1. Rust toolchain ────────────────────────────────────────────────────────
-# Ensure the default cargo bin dir is on PATH for this session (rustup may be
-# installed but not yet in the inherited environment).
 $cargoBin = Join-Path $env:USERPROFILE ".cargo\bin"
 if (Test-Path $cargoBin) {
     $env:PATH = "$cargoBin;$env:PATH"
@@ -102,8 +121,6 @@ if (Test-Path "target\release\relayd.exe") {
 }
 
 # ── 5. Root-level entry point ─────────────────────────────────────────────────
-# Copy the launcher to the project root as TransferDaemon.exe — the single
-# visible entry point. The launcher finds its siblings via relative path.
 $rootExe = Join-Path $RepoDir "TransferDaemon.exe"
 Copy-Item -Force "$BinDir\launcher.exe" $rootExe
 Write-Host "  Entry point: $rootExe"
@@ -180,4 +197,7 @@ Write-Host "  Or click the   TransferDaemon shortcut in the Start Menu."
 Write-Host ""
 Write-Host "  Daemon address: $DaemonAddr"
 Write-Host "  Binaries:       $BinDir\"
+Write-Host "  Install log:    $LogFile"
 Write-Host ""
+Write-Host "Installer finished successfully at $(Get-Date)"
+Stop-Transcript | Out-Null

@@ -2,6 +2,7 @@
 # TransferDaemon all-in-one installer for Linux.
 # Places all binaries in <project-root>/bin/ and creates ./transferdaemon
 # as a symlink to bin/launcher — no system-wide install required.
+# Keeps the last 10 installer runs in logs/installer_log_N.log.
 # Idempotent — safe to run multiple times.
 set -euo pipefail
 
@@ -10,6 +11,25 @@ DAEMON_ADDR="${DAEMON_ADDR:-http://127.0.0.1:50051}"
 BIN_DIR="${ROOT_DIR}/bin"
 
 banner() { echo; echo "═══════════════════════════════════════════"; echo "  $*"; echo "═══════════════════════════════════════════"; }
+
+# ── Log rotation ──────────────────────────────────────────────────────────────
+LOG_DIR="${ROOT_DIR}/logs"
+mkdir -p "${LOG_DIR}"
+MAX_LOGS=10
+for ((i=MAX_LOGS-1; i>=0; i--)); do
+    old="${LOG_DIR}/installer_log_${i}.log"
+    if [[ -f "${old}" ]]; then
+        if (( i < MAX_LOGS-1 )); then
+            mv "${old}" "${LOG_DIR}/installer_log_$((i+1)).log"
+        else
+            rm -f "${old}"
+        fi
+    fi
+done
+INSTALL_LOG="${LOG_DIR}/installer_log_0.log"
+# Tee all subsequent output to both console and log file.
+exec > >(tee -a "${INSTALL_LOG}") 2>&1
+echo "Installer started at $(date)"
 
 banner "TransferDaemon — Linux Installer"
 
@@ -65,13 +85,13 @@ echo "  Build complete."
 # ── 5. Install binaries into <root>/bin/ ─────────────────────────────────────
 mkdir -p "${BIN_DIR}"
 echo "► Installing binaries to ${BIN_DIR}…"
-cp -f transferdaemon/target/release/transferd    "${BIN_DIR}/transferd"
-cp -f transferdaemon/target/release/transferd-ui "${BIN_DIR}/transferd-ui"
-cp -f transferdaemon/target/release/launcher     "${BIN_DIR}/launcher"
-[[ -f transferdaemon/target/release/relayd ]] && cp -f transferdaemon/target/release/relayd "${BIN_DIR}/relayd"
+cp -f target/release/transferd    "${BIN_DIR}/transferd"
+cp -f target/release/transferd-ui "${BIN_DIR}/transferd-ui"
+cp -f target/release/launcher     "${BIN_DIR}/launcher"
+[[ -f target/release/relayd ]] && cp -f target/release/relayd "${BIN_DIR}/relayd"
 chmod +x "${BIN_DIR}/transferd" "${BIN_DIR}/transferd-ui" "${BIN_DIR}/launcher"
 
-# ── 6. Create root-level entry point ─────────────────────────────────────────
+# ── 6. Root-level entry point ─────────────────────────────────────────────────
 LAUNCHER_LINK="${ROOT_DIR}/transferdaemon"
 rm -f "${LAUNCHER_LINK}"
 ln -s "bin/launcher" "${LAUNCHER_LINK}"
@@ -134,4 +154,6 @@ echo "  Or click the TransferDaemon shortcut in your application menu."
 echo
 echo "  Daemon address: ${DAEMON_ADDR}"
 echo "  Binaries:       ${BIN_DIR}/"
+echo "  Install log:    ${INSTALL_LOG}"
 echo
+echo "Installer finished successfully at $(date)"

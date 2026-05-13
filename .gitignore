@@ -69,7 +69,8 @@ Desktop.ini
 /dist/
 /build/
 
-# Installer output — built binaries placed in project root by installers
+# Installer output — built binaries and logs placed in project root by installers
 /bin/
 /TransferDaemon.exe
+/logs/
 /TransferDaemon.exe

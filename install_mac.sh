@@ -2,6 +2,7 @@
 # TransferDaemon all-in-one installer for macOS.
 # Places all binaries in <project-root>/bin/ and creates ./transferdaemon
 # as a symlink to bin/launcher — no system-wide install required.
+# Keeps the last 10 installer runs in logs/installer_log_N.log.
 # Idempotent — safe to run multiple times.
 set -euo pipefail
 
@@ -11,6 +12,24 @@ PLIST_LABEL="com.transferdaemon.daemon"
 BIN_DIR="${ROOT_DIR}/bin"
 
 banner() { echo; echo "═══════════════════════════════════════════"; echo "  $*"; echo "═══════════════════════════════════════════"; }
+
+# ── Log rotation ──────────────────────────────────────────────────────────────
+LOG_DIR="${ROOT_DIR}/logs"
+mkdir -p "${LOG_DIR}"
+MAX_LOGS=10
+for ((i=MAX_LOGS-1; i>=0; i--)); do
+    old="${LOG_DIR}/installer_log_${i}.log"
+    if [[ -f "${old}" ]]; then
+        if (( i < MAX_LOGS-1 )); then
+            mv "${old}" "${LOG_DIR}/installer_log_$((i+1)).log"
+        else
+            rm -f "${old}"
+        fi
+    fi
+done
+INSTALL_LOG="${LOG_DIR}/installer_log_0.log"
+exec > >(tee -a "${INSTALL_LOG}") 2>&1
+echo "Installer started at $(date)"
 
 banner "TransferDaemon — macOS Installer"
 
@@ -125,4 +144,6 @@ echo "  Or open TransferDaemon from ~/Applications/"
 echo
 echo "  Daemon address: ${DAEMON_ADDR}"
 echo "  Binaries:       ${BIN_DIR}/"
+echo "  Install log:    ${INSTALL_LOG}"
 echo
+echo "Installer finished successfully at $(date)"
