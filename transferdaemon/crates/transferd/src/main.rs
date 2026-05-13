@@ -10,7 +10,11 @@ use parking_lot::Mutex;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let addr_str = std::env::var("TRANSFERD_ADDR").unwrap_or_else(|_| "[::1]:50051".into());
+    let raw = std::env::var("TRANSFERD_ADDR").unwrap_or_else(|_| "127.0.0.1:50051".into());
+    // Strip any scheme prefix (http:// or https://) — tonic serve() needs a bare SocketAddr.
+    let addr_str = raw
+        .trim_start_matches("https://")
+        .trim_start_matches("http://");
     let addr = addr_str.parse()?;
 
     let state = Arc::new(Mutex::new(state::DaemonState::default()));
