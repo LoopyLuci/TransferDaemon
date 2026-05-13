@@ -57,20 +57,25 @@ fn init_logging(base: &Path) {
 }
 
 /// Resolve a sibling binary relative to the launcher's own location.
-/// Falls back to a PATH search (supports in-tree `cargo run`).
+///
+/// Search order:
+///   1. `<launcher-dir>/bin/<name>`  — installer layout (portable package)
+///   2. `<launcher-dir>/<name>`      — flat layout / in-tree `cargo run`
+///   3. `find_binary` PATH search    — last resort
 fn sibling_binary(name: &str) -> PathBuf {
-    let sibling = std::env::current_exe()
+    let exe_dir = std::env::current_exe()
         .ok()
-        .and_then(|p| p.parent().map(|d| d.join(exe(name))));
+        .and_then(|p| p.parent().map(PathBuf::from))
+        .unwrap_or_else(|| PathBuf::from("."));
 
-    if let Some(ref p) = sibling {
-        if p.exists() {
-            return p.clone();
-        }
-    }
+    let in_bin  = exe_dir.join("bin").join(exe(name));
+    let in_root = exe_dir.join(exe(name));
+
+    if in_bin.exists()  { return in_bin; }
+    if in_root.exists() { return in_root; }
 
     launcher_lib::find_binary(name).unwrap_or_else(|| {
-        log::error!("'{name}' not found next to launcher or on PATH");
+        log::error!("'{name}' not found in bin/, next to launcher, or on PATH");
         std::process::exit(1);
     })
 }
