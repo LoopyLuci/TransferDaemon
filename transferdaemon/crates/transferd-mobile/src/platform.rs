@@ -35,14 +35,25 @@ mod android {
     /// the egui event loop.  Requires `android-activity` + `winit` with the
     /// `android` platform feature, wired up by `cargo-mobile`'s generated
     /// `android/` project.
-    pub fn run(addr: &str, window_ptr: usize, width: u32, height: u32) {
-        // Placeholder: full implementation follows cargo-mobile scaffolding.
-        // 1. Cast window_ptr back to *mut ANativeWindow.
-        // 2. Create a wgpu Surface from the ANativeWindow.
-        // 3. Create an egui_wgpu renderer.
-        // 4. Run the egui event loop (driven by android-activity's main loop).
-        // 5. Connect GrpcDaemon to addr and pass to TransferDaemonApp.
-        unimplemented!("Android UI — wire up via cargo-mobile")
+    pub fn run(addr: &str, _window_ptr: usize, _width: u32, _height: u32) {
+        // The Java Activity owns the visible layout (activity_main.xml).
+        // The Rust egui render loop is not yet wired to the ANativeWindow on this
+        // build. The daemon (started separately by DaemonService) is the active
+        // component; this function intentionally returns immediately.
+        android_log(addr);
+    }
+
+    fn android_log(addr: &str) {
+        // Write a single line to logcat so we can verify the JNI call landed.
+        let tag = b"TransferDaemon\0";
+        let msg = format!("[mobile] run_ui called, daemon at {addr}\0");
+        unsafe {
+            // __android_log_write(ANDROID_LOG_INFO=4, tag, msg)
+            extern "C" {
+                fn __android_log_write(prio: i32, tag: *const u8, text: *const u8) -> i32;
+            }
+            __android_log_write(4, tag.as_ptr(), msg.as_ptr());
+        }
     }
 }
 

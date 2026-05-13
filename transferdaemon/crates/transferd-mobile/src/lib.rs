@@ -1,48 +1,92 @@
 //! TransferDaemon mobile entry point.
 //!
-//! Exposes two C-ABI functions:
+//! Exposes JNI entry points called by MainActivity and DaemonService.
+//! The function names follow the JNI convention:
+//!   Java_<package>_<Class>_<method>
 //!
-//!   - `start_daemon(socket_path)` — spawns the daemon on a background thread.
-//!   - `start_ui(socket_path, native_window, width, height)` — spawns the UI thread.
-//!
-//! On Android the native_window is an `ANativeWindow *`.
-//! On iOS    the native_window is an opaque `MTKView *`.
-//! On desktop (feature = "desktop") the native_window is ignored; the platform
-//! module opens its own window using the standard eframe flow.
-
-use std::ffi::{c_char, c_void, CStr};
+//! Daemon: DaemonService.startDaemon(String socketPath)
+//! UI:     MainActivity.startUi(Object surface, int width, int height)
 
 mod daemon_thread;
 mod platform;
 
 // ---------------------------------------------------------------------------
-// Public C-ABI entry points
+// Android JNI entry points
 // ---------------------------------------------------------------------------
 
-/// Start the TransferDaemon gRPC server on a background thread.
-///
-/// `socket_path` must be a null-terminated UTF-8 path to the Unix socket
-/// (on Android: inside `filesDir`; on iOS: in the app sandbox tmp dir).
-#[no_mangle]
-pub extern "C" fn start_daemon(socket_path: *const c_char) {
-    let path = unsafe { CStr::from_ptr(socket_path) }.to_str().unwrap_or("").to_owned();
-    daemon_thread::spawn(path);
+#[cfg(target_os = "android")]
+mod android_jni {
+    use super::{daemon_thread, platform};
+    use jni::objects::{JClass, JObject, JString};
+    use jni::sys::jint;
+    use jni::JNIEnv;
+
+    /// Called by DaemonService.startDaemon(String socketPath).
+    /// Spawns the gRPC daemon on a background thread listening on 127.0.0.1:50051.
+    #[no_mangle]
+    pub extern "system" fn Java_com_transferdaemon_app_DaemonService_startDaemon(
+        mut env: JNIEnv,
+        _class: JClass,
+        socket_path: JString,
+    ) {
+        let path: String = env
+            .get_string(&socket_path)
+            .map(|s| s.into())
+            .unwrap_or_default();
+        daemon_thread::spawn(path);
+    }
+
+    /// Called by MainActivity.startUi(Object surface, int width, int height).
+    /// Spawns the UI thread. The Java Activity provides the visible layout;
+    /// this stub just ensures the call succeeds without crashing.
+    #[no_mangle]
+    pub extern "system" fn Java_com_transferdaemon_app_MainActivity_startUi(
+        _env: JNIEnv,
+        _class: JClass,
+        _surface: JObject,
+        width: jint,
+        height: jint,
+    ) {
+        let w = width as u32;
+        let h = height as u32;
+        std::thread::spawn(move || {
+            platform::run_ui("http://127.0.0.1:50051", 0, w, h);
+        });
+    }
 }
 
-/// Start the TransferDaemon UI on a background thread.
-///
-/// `native_window` is passed to the platform renderer.  On desktop builds
-/// (feature = "desktop") it is ignored and an OS window is created instead.
-#[no_mangle]
-pub extern "C" fn start_ui(
-    socket_path: *const c_char,
-    native_window: *mut c_void,
-    width:  u32,
-    height: u32,
-) {
-    let path = unsafe { CStr::from_ptr(socket_path) }.to_str().unwrap_or("").to_owned();
-    let win  = native_window as usize; // send the raw pointer across threads as usize
-    std::thread::spawn(move || {
-        platform::run_ui(&path, win, width, height);
-    });
+// ---------------------------------------------------------------------------
+// Desktop / test entry points (non-Android only)
+// ---------------------------------------------------------------------------
+
+#[cfg(not(target_os = "android"))]
+pub mod desktop {
+    use super::{daemon_thread, platform};
+    use std::ffi::{c_char, c_void, CStr};
+
+    #[no_mangle]
+    pub extern "C" fn start_daemon(socket_path: *const c_char) {
+        let path = unsafe { CStr::from_ptr(socket_path) }
+            .to_str()
+            .unwrap_or("")
+            .to_owned();
+        daemon_thread::spawn(path);
+    }
+
+    #[no_mangle]
+    pub extern "C" fn start_ui(
+        socket_path: *const c_char,
+        native_window: *mut c_void,
+        width: u32,
+        height: u32,
+    ) {
+        let path = unsafe { CStr::from_ptr(socket_path) }
+            .to_str()
+            .unwrap_or("")
+            .to_owned();
+        let win = native_window as usize;
+        std::thread::spawn(move || {
+            platform::run_ui(&path, win, width, height);
+        });
+    }
 }

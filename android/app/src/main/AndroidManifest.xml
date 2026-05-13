@@ -30,8 +30,7 @@
 
         <service
             android:name=".DaemonService"
-            android:exported="false"
-            android:foregroundServiceType="dataSync" />
+            android:exported="false" />
 
     </application>
 

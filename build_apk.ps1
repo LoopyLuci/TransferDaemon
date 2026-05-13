@@ -143,7 +143,7 @@ $abiMap = @{
 
 foreach ($triple in $abiMap.Keys) {
     Write-Host "► Compiling for $triple…"
-    cargo ndk --target $triple --platform 26 -- build --release -p transferd-mobile
+    cargo ndk --target $triple --platform 24 -- build --release -p transferd-mobile
     if ($LASTEXITCODE -ne 0) { throw "cargo-ndk build failed for $triple" }
 }
 
