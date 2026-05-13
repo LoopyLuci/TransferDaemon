@@ -23,12 +23,29 @@ function Write-Banner([string]$msg) {
 Write-Banner "$AppName — Windows Installer"
 
 # ── 1. Rust toolchain ────────────────────────────────────────────────────────
+# Ensure the default cargo bin dir is on PATH for this session (rustup may be
+# installed but not yet in the inherited environment).
+$cargoBin = Join-Path $env:USERPROFILE ".cargo\bin"
+if (Test-Path $cargoBin) {
+    $env:PATH = "$cargoBin;$env:PATH"
+}
+
 $rustup = Get-Command rustup -ErrorAction SilentlyContinue
 if (-not $rustup) {
-    Write-Host "► Rust not found — installing via winget…"
-    winget install --id Rustlang.Rustup --silent --accept-package-agreements --accept-source-agreements
+    Write-Host "► Rust not found — installing via rustup-init…"
+    # Try winget first; fall back to direct rustup-init download.
+    $winget = Get-Command winget -ErrorAction SilentlyContinue
+    if ($winget) {
+        winget install --id Rustlang.Rustup --silent --accept-package-agreements --accept-source-agreements
+    } else {
+        Write-Host "  winget not available — downloading rustup-init.exe…"
+        $rustupInit = Join-Path $env:TEMP "rustup-init.exe"
+        Invoke-WebRequest -Uri "https://win.rustup.rs/x86_64" -OutFile $rustupInit -UseBasicParsing
+        & $rustupInit -y --no-modify-path
+    }
     # Reload PATH so cargo/rustup are visible in this session.
-    $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH","Machine") + ";" +
+    $env:PATH = "$cargoBin;" +
+                [System.Environment]::GetEnvironmentVariable("PATH","Machine") + ";" +
                 [System.Environment]::GetEnvironmentVariable("PATH","User")
 } else {
     Write-Host "► Rust already present ($((rustup show active-toolchain) | Select-Object -First 1))"
@@ -39,10 +56,29 @@ rustup update
 # ── 2. protobuf compiler (required by tonic-build) ───────────────────────────
 $protoc = Get-Command protoc -ErrorAction SilentlyContinue
 if (-not $protoc) {
-    Write-Host "► Installing protoc via winget…"
-    winget install --id Google.Protobuf --silent --accept-package-agreements --accept-source-agreements
-    $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH","Machine") + ";" +
-                [System.Environment]::GetEnvironmentVariable("PATH","User")
+    Write-Host "► Installing protoc…"
+    $winget = Get-Command winget -ErrorAction SilentlyContinue
+    if ($winget) {
+        winget install --id Google.Protobuf --silent --accept-package-agreements --accept-source-agreements
+        $env:PATH = [System.Environment]::GetEnvironmentVariable("PATH","Machine") + ";" +
+                    [System.Environment]::GetEnvironmentVariable("PATH","User")
+    } else {
+        Write-Host "  winget not available — downloading protoc from GitHub releases…"
+        $protocVersion = "29.3"
+        $protocZip  = Join-Path $env:TEMP "protoc.zip"
+        $protocDir  = Join-Path $env:TEMP "protoc"
+        $protocUrl  = "https://github.com/protocolbuffers/protobuf/releases/download/v$protocVersion/protoc-$protocVersion-win64.zip"
+        Invoke-WebRequest -Uri $protocUrl -OutFile $protocZip -UseBasicParsing
+        Expand-Archive -Path $protocZip -DestinationPath $protocDir -Force
+        $protocBin = Join-Path $protocDir "bin"
+        $env:PATH = "$protocBin;$env:PATH"
+        # Persist so subsequent shells find it.
+        $userPath = [System.Environment]::GetEnvironmentVariable("PATH", "User")
+        if (-not ($userPath -split ";" | Where-Object { $_ -eq $protocBin })) {
+            [System.Environment]::SetEnvironmentVariable("PATH", "$protocBin;$userPath", "User")
+        }
+        Write-Host "  protoc installed to $protocBin"
+    }
 } else {
     Write-Host "► protoc already present ($((protoc --version)))"
 }
