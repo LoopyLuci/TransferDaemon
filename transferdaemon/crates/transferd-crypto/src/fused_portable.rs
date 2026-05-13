@@ -1,5 +1,6 @@
-//! Fused BLAKE3 + AES-256-GCM for aarch64 (ARMv8 Crypto Extensions selected at runtime).
-//! Same API as `fused_x86`; NT-store path omitted (ARM uses write-combining differently).
+//! Portable software fallback for AES-256-GCM + BLAKE3.
+//! Used on armv7, x86 (32-bit), WASM, and any target that is neither x86_64
+//! nor aarch64. No SIMD or NT-store acceleration; correctness is identical.
 
 use aes_gcm::{
     aead::{AeadInPlace, KeyInit},
