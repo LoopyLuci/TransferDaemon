@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 # TransferDaemon all-in-one installer for macOS.
+# Places all binaries in <project-root>/bin/ and creates ./transferdaemon
+# as a symlink to bin/launcher — no system-wide install required.
 # Idempotent — safe to run multiple times.
 set -euo pipefail
 
-REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-INSTALL_DIR="${INSTALL_DIR:-${HOME}/.local/bin}"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DAEMON_ADDR="${DAEMON_ADDR:-http://127.0.0.1:50051}"
 PLIST_LABEL="com.transferdaemon.daemon"
+BIN_DIR="${ROOT_DIR}/bin"
 
 banner() { echo; echo "═══════════════════════════════════════════"; echo "  $*"; echo "═══════════════════════════════════════════"; }
 
@@ -42,27 +44,26 @@ rustup update --quiet
 
 # ── 4. Build ─────────────────────────────────────────────────────────────────
 echo "► Building TransferDaemon (release)…"
-cd "${REPO_DIR}/transferdaemon"
+cd "${ROOT_DIR}/transferdaemon"
 cargo build --release -p transferd -p transferd-ui -p launcher 2>&1 | grep -E "^(Compiling|Finished|error)" || true
 echo "  Build complete."
 
-# ── 5. Install binaries ──────────────────────────────────────────────────────
-mkdir -p "${INSTALL_DIR}"
-echo "► Installing to ${INSTALL_DIR}…"
-cp -f target/release/transferd      "${INSTALL_DIR}/transferd"
-cp -f target/release/transferd-ui   "${INSTALL_DIR}/transferd-ui"
-cp -f target/release/launcher       "${INSTALL_DIR}/transferdaemon"
-[[ -f target/release/relayd ]] && cp -f target/release/relayd "${INSTALL_DIR}/relayd"
-chmod +x "${INSTALL_DIR}/transferd" "${INSTALL_DIR}/transferd-ui" "${INSTALL_DIR}/transferdaemon"
+# ── 5. Install binaries into <root>/bin/ ─────────────────────────────────────
+mkdir -p "${BIN_DIR}"
+echo "► Installing binaries to ${BIN_DIR}…"
+cp -f target/release/transferd    "${BIN_DIR}/transferd"
+cp -f target/release/transferd-ui "${BIN_DIR}/transferd-ui"
+cp -f target/release/launcher     "${BIN_DIR}/launcher"
+[[ -f target/release/relayd ]] && cp -f target/release/relayd "${BIN_DIR}/relayd"
+chmod +x "${BIN_DIR}/transferd" "${BIN_DIR}/transferd-ui" "${BIN_DIR}/launcher"
 
-for rc in "${HOME}/.bash_profile" "${HOME}/.zprofile"; do
-    if [[ -f "$rc" ]] && ! grep -q "${INSTALL_DIR}" "$rc"; then
-        echo "export PATH=\"${INSTALL_DIR}:\$PATH\"" >> "$rc"
-    fi
-done
-export PATH="${INSTALL_DIR}:${PATH}"
+# ── 6. Root-level entry point ─────────────────────────────────────────────────
+LAUNCHER_LINK="${ROOT_DIR}/transferdaemon"
+rm -f "${LAUNCHER_LINK}"
+ln -s "bin/launcher" "${LAUNCHER_LINK}"
+echo "  Entry point: ${LAUNCHER_LINK} → bin/launcher"
 
-# ── 6. launchd agent for autostart ──────────────────────────────────────────
+# ── 7. launchd agent for autostart ──────────────────────────────────────────
 LAUNCH_AGENTS="${HOME}/Library/LaunchAgents"
 mkdir -p "${LAUNCH_AGENTS}"
 PLIST_PATH="${LAUNCH_AGENTS}/${PLIST_LABEL}.plist"
@@ -76,7 +77,7 @@ cat > "${PLIST_PATH}" <<PLIST
     <key>Label</key>             <string>${PLIST_LABEL}</string>
     <key>ProgramArguments</key>
     <array>
-        <string>${INSTALL_DIR}/transferd</string>
+        <string>${BIN_DIR}/transferd</string>
     </array>
     <key>EnvironmentVariables</key>
     <dict>
@@ -94,7 +95,7 @@ launchctl unload "${PLIST_PATH}" 2>/dev/null || true
 launchctl load   "${PLIST_PATH}"
 echo "  launchd agent installed — daemon will start at login."
 
-# ── 7. macOS .app bundle (minimal) ──────────────────────────────────────────
+# ── 8. macOS .app bundle (minimal) ──────────────────────────────────────────
 APP_DIR="${HOME}/Applications/TransferDaemon.app"
 mkdir -p "${APP_DIR}/Contents/MacOS"
 cat > "${APP_DIR}/Contents/Info.plist" <<INFOPLIST
@@ -114,14 +115,14 @@ cat > "${APP_DIR}/Contents/Info.plist" <<INFOPLIST
 </dict>
 </plist>
 INFOPLIST
-cp -f "${INSTALL_DIR}/transferdaemon" "${APP_DIR}/Contents/MacOS/transferdaemon"
+cp -f "${BIN_DIR}/launcher" "${APP_DIR}/Contents/MacOS/transferdaemon"
 echo "  TransferDaemon.app created in ~/Applications/"
 
-# ── 8. Done ──────────────────────────────────────────────────────────────────
+# ── 9. Done ──────────────────────────────────────────────────────────────────
 banner "Installation complete!"
-echo "  Run:  transferdaemon"
+echo "  Run from project root:  ./transferdaemon"
 echo "  Or open TransferDaemon from ~/Applications/"
 echo
 echo "  Daemon address: ${DAEMON_ADDR}"
-echo "  Binaries:       ${INSTALL_DIR}/"
+echo "  Binaries:       ${BIN_DIR}/"
 echo

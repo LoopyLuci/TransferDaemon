@@ -1,4 +1,8 @@
 # TransferDaemon all-in-one installer for Windows.
+# Places all binaries in <project-root>\bin\ and creates
+# <project-root>\TransferDaemon.exe as the user-facing entry point.
+# No system-wide install, no PATH modification required.
+#
 # Run from an elevated PowerShell prompt:
 #   Set-ExecutionPolicy Bypass -Scope Process -Force; .\install.ps1
 # Idempotent — safe to run multiple times.
@@ -7,8 +11,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 $RepoDir    = Split-Path -Parent $MyInvocation.MyCommand.Path
-$InstallDir = if ($env:INSTALL_DIR) { $env:INSTALL_DIR }
-              else { Join-Path $env:LOCALAPPDATA "TransferDaemon\bin" }
+$BinDir     = Join-Path $RepoDir "bin"
 $DaemonAddr = if ($env:TRANSFERD_ADDR) { $env:TRANSFERD_ADDR }
               else { "http://127.0.0.1:50051" }
 $AppName    = "TransferDaemon"
@@ -33,7 +36,6 @@ if (Test-Path $cargoBin) {
 $rustup = Get-Command rustup -ErrorAction SilentlyContinue
 if (-not $rustup) {
     Write-Host "► Rust not found — installing via rustup-init…"
-    # Try winget first; fall back to direct rustup-init download.
     $winget = Get-Command winget -ErrorAction SilentlyContinue
     if ($winget) {
         winget install --id Rustlang.Rustup --silent --accept-package-agreements --accept-source-agreements
@@ -43,7 +45,6 @@ if (-not $rustup) {
         Invoke-WebRequest -Uri "https://win.rustup.rs/x86_64" -OutFile $rustupInit -UseBasicParsing
         & $rustupInit -y --no-modify-path
     }
-    # Reload PATH so cargo/rustup are visible in this session.
     $env:PATH = "$cargoBin;" +
                 [System.Environment]::GetEnvironmentVariable("PATH","Machine") + ";" +
                 [System.Environment]::GetEnvironmentVariable("PATH","User")
@@ -72,7 +73,6 @@ if (-not $protoc) {
         Expand-Archive -Path $protocZip -DestinationPath $protocDir -Force
         $protocBin = Join-Path $protocDir "bin"
         $env:PATH = "$protocBin;$env:PATH"
-        # Persist so subsequent shells find it.
         $userPath = [System.Environment]::GetEnvironmentVariable("PATH", "User")
         if (-not ($userPath -split ";" | Where-Object { $_ -eq $protocBin })) {
             [System.Environment]::SetEnvironmentVariable("PATH", "$protocBin;$userPath", "User")
@@ -90,37 +90,35 @@ cargo build --release -p transferd -p transferd-ui -p launcher
 if ($LASTEXITCODE -ne 0) { throw "cargo build failed" }
 Write-Host "  Build complete."
 
-# ── 4. Install binaries ──────────────────────────────────────────────────────
-New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
-Write-Host "► Installing to $InstallDir…"
+# ── 4. Install binaries into <root>\bin\ ─────────────────────────────────────
+New-Item -ItemType Directory -Force -Path $BinDir | Out-Null
+Write-Host "► Installing binaries to $BinDir…"
 
-Copy-Item -Force "target\release\transferd.exe"    "$InstallDir\transferd.exe"
-Copy-Item -Force "target\release\transferd-ui.exe" "$InstallDir\transferd-ui.exe"
-Copy-Item -Force "target\release\launcher.exe"     "$InstallDir\transferdaemon.exe"
+Copy-Item -Force "target\release\transferd.exe"    "$BinDir\transferd.exe"
+Copy-Item -Force "target\release\transferd-ui.exe" "$BinDir\transferd-ui.exe"
+Copy-Item -Force "target\release\launcher.exe"     "$BinDir\launcher.exe"
 if (Test-Path "target\release\relayd.exe") {
-    Copy-Item -Force "target\release\relayd.exe" "$InstallDir\relayd.exe"
+    Copy-Item -Force "target\release\relayd.exe"   "$BinDir\relayd.exe"
 }
 
-# Add InstallDir to user PATH persistently if not already present.
-$userPath = [System.Environment]::GetEnvironmentVariable("PATH", "User")
-if (-not ($userPath -split ";" | Where-Object { $_ -eq $InstallDir })) {
-    [System.Environment]::SetEnvironmentVariable("PATH", "$InstallDir;$userPath", "User")
-    $env:PATH = "$InstallDir;$env:PATH"
-    Write-Host "  Added $InstallDir to user PATH."
-}
+# ── 5. Root-level entry point ─────────────────────────────────────────────────
+# Copy the launcher to the project root as TransferDaemon.exe — the single
+# visible entry point. The launcher finds its siblings via relative path.
+$rootExe = Join-Path $RepoDir "TransferDaemon.exe"
+Copy-Item -Force "$BinDir\launcher.exe" $rootExe
+Write-Host "  Entry point: $rootExe"
 
-# ── 5. Scheduled task for daemon autostart ───────────────────────────────────
-Write-Host "► Creating scheduled task for daemon autostart…"
-
-# Persist TRANSFERD_ADDR as a user environment variable so the daemon picks it
-# up whether launched by the scheduler, the launcher, or a manual run.
+# ── 6. Persist daemon address ─────────────────────────────────────────────────
 [System.Environment]::SetEnvironmentVariable("TRANSFERD_ADDR", $DaemonAddr, "User")
 $env:TRANSFERD_ADDR = $DaemonAddr
+Write-Host "  TRANSFERD_ADDR set to $DaemonAddr (user environment)"
 
+# ── 7. Scheduled task for daemon autostart ────────────────────────────────────
+Write-Host "► Creating scheduled task for daemon autostart…"
 $taskName   = "TransferDaemon_Daemon"
 $taskAction = New-ScheduledTaskAction `
-    -Execute "$InstallDir\transferd.exe" `
-    -WorkingDirectory $InstallDir
+    -Execute   "$BinDir\transferd.exe" `
+    -WorkingDirectory $BinDir
 
 $taskTrigger   = New-ScheduledTaskTrigger -AtLogon
 $taskSettings  = New-ScheduledTaskSettingsSet `
@@ -128,7 +126,7 @@ $taskSettings  = New-ScheduledTaskSettingsSet `
     -RestartCount 3 `
     -RestartInterval (New-TimeSpan -Minutes 1) `
     -StartWhenAvailable `
-    -ExecutionTimeLimit ([timespan]::Zero)   # no time limit
+    -ExecutionTimeLimit ([timespan]::Zero)
 $taskPrincipal = New-ScheduledTaskPrincipal `
     -UserId ([System.Security.Principal.WindowsIdentity]::GetCurrent().Name) `
     -LogonType Interactive `
@@ -143,30 +141,27 @@ Register-ScheduledTask `
     -Principal $taskPrincipal `
     -Force | Out-Null
 
-# Start the daemon now without waiting.
 Start-ScheduledTask -TaskName $taskName
 Write-Host "  Scheduled task '$taskName' registered and started."
 
-# ── 6. Start Menu shortcut ───────────────────────────────────────────────────
+# ── 8. Start Menu shortcut ────────────────────────────────────────────────────
 Write-Host "► Creating Start Menu shortcut…"
-$startMenu  = [System.Environment]::GetFolderPath("StartMenu")
+$startMenu    = [System.Environment]::GetFolderPath("StartMenu")
 $shortcutPath = Join-Path $startMenu "Programs\TransferDaemon.lnk"
-$shell      = New-Object -ComObject WScript.Shell
-$shortcut   = $shell.CreateShortcut($shortcutPath)
-$shortcut.TargetPath   = "$InstallDir\transferdaemon.exe"
-$shortcut.WorkingDirectory = $InstallDir
-$shortcut.Description  = "Universal, private, zero-knowledge data transfer"
-# Use the exe icon if no separate icon file exists.
+$shell        = New-Object -ComObject WScript.Shell
+$shortcut     = $shell.CreateShortcut($shortcutPath)
+$shortcut.TargetPath      = $rootExe
+$shortcut.WorkingDirectory = $RepoDir
+$shortcut.Description     = "Universal, private, zero-knowledge data transfer"
 $iconPath = Join-Path $RepoDir "assets\icon.ico"
 if (Test-Path $iconPath) { $shortcut.IconLocation = $iconPath }
-else { $shortcut.IconLocation = "$InstallDir\transferdaemon.exe,0" }
+else                      { $shortcut.IconLocation = "$rootExe,0" }
 $shortcut.Save()
 Write-Host "  Start Menu shortcut created at $shortcutPath"
 
-# ── 7. Optional: Windows Firewall rule ───────────────────────────────────────
+# ── 9. Windows Firewall rule ──────────────────────────────────────────────────
 $ruleName = "TransferDaemon_gRPC"
-$existing = Get-NetFirewallRule -DisplayName $ruleName -ErrorAction SilentlyContinue
-if (-not $existing) {
+if (-not (Get-NetFirewallRule -DisplayName $ruleName -ErrorAction SilentlyContinue)) {
     New-NetFirewallRule `
         -DisplayName $ruleName `
         -Direction   Inbound `
@@ -177,11 +172,12 @@ if (-not $existing) {
     Write-Host "  Firewall rule '$ruleName' added (TCP 50051, inbound, private/domain)."
 }
 
-# ── 8. Done ──────────────────────────────────────────────────────────────────
+# ── 10. Done ──────────────────────────────────────────────────────────────────
 Write-Banner "Installation complete!"
-Write-Host "  Run:           transferdaemon"
+Write-Host "  Double-click:  $rootExe"
+Write-Host "  Or run:        .\TransferDaemon.exe"
 Write-Host "  Or click the   TransferDaemon shortcut in the Start Menu."
 Write-Host ""
 Write-Host "  Daemon address: $DaemonAddr"
-Write-Host "  Binaries:       $InstallDir\"
+Write-Host "  Binaries:       $BinDir\"
 Write-Host ""

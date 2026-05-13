@@ -68,3 +68,8 @@ Desktop.ini
 # Dist
 /dist/
 /build/
+
+# Installer output — built binaries placed in project root by installers
+/bin/
+/TransferDaemon.exe
+/TransferDaemon.exe
