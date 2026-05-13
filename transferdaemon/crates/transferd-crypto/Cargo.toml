@@ -1,0 +1,14 @@
+[package]
+name = "transferd-crypto"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+blake3 = { workspace = true }
+ring-channel = { path = "../ring-channel" }
+aes-gcm = { version = "0.10", features = ["aes", "zeroize"] }
+rand = "0.8"
+zeroize = "1"
+thiserror = { workspace = true }
+ml-kem = { version = "0.3.2", features = ["zeroize"] }
+x25519-dalek = { version = "2.0.1", features = ["static_secrets", "zeroize"] }

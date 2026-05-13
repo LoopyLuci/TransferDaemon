@@ -1,0 +1,169 @@
+syntax = "proto3";
+package transferd;
+
+// ---------------------------------------------------------------------------
+// Account
+// ---------------------------------------------------------------------------
+
+service AccountService {
+    rpc GetIdentity    (Empty)                   returns (IdentityReply);
+    rpc CreateIdentity (CreateIdentityRequest)   returns (RecoveryPhraseReply);
+    rpc RestoreIdentity(RestoreIdentityRequest)  returns (IdentityReply);
+    rpc GetPublicKeyHex(Empty)                   returns (PublicKeyReply);
+}
+
+message Empty {}
+
+message IdentityReply {
+    bool   has_identity  = 1;
+    string public_key    = 2;
+    string display_name  = 3;
+}
+
+message CreateIdentityRequest { string display_name = 1; }
+message RecoveryPhraseReply   { string phrase = 1; }
+message RestoreIdentityRequest { string phrase = 1; }
+message PublicKeyReply         { string hex = 1; }
+
+// ---------------------------------------------------------------------------
+// Friends / Contacts
+// ---------------------------------------------------------------------------
+
+service FriendService {
+    rpc GetContacts (Empty)             returns (ContactList);
+    rpc AddContact  (AddContactRequest) returns (ContactReply);
+}
+
+message ContactReply {
+    string id           = 1;
+    string name         = 2;
+    uint64 last_seen_ts = 3;
+    bool   online       = 4;
+}
+
+message ContactList { repeated ContactReply contacts = 1; }
+
+message AddContactRequest {
+    string public_key = 1;
+    string name       = 2;
+}
+
+// ---------------------------------------------------------------------------
+// Messaging
+// ---------------------------------------------------------------------------
+
+service MessageService {
+    rpc GetMessages (GetMessagesRequest) returns (MessageList);
+    rpc SendText    (SendTextRequest)    returns (MessageReply);
+}
+
+message GetMessagesRequest { string contact_id = 1; }
+
+message MessageReply {
+    string id           = 1;
+    string contact_id   = 2;
+    bool   outbound     = 3;
+    string content_type = 4; // "text" | "file"
+    string text         = 5; // set when content_type == "text"
+    // file fields
+    string file_name        = 6;
+    uint64 file_size_bytes  = 7;
+    uint64 file_transferred = 8;
+    string file_mime        = 9;
+    uint64 timestamp_ts     = 10;
+    string status           = 11; // "pending" | "sent" | "delivered" | "read" | "failed"
+}
+
+message MessageList { repeated MessageReply messages = 1; }
+
+message SendTextRequest {
+    string contact_id = 1;
+    string text       = 2;
+}
+
+// ---------------------------------------------------------------------------
+// File Transfer
+// ---------------------------------------------------------------------------
+
+service TransferService {
+    rpc GetTransfers (Empty) returns (TransferList);
+}
+
+message TransferReply {
+    string id               = 1;
+    string contact_name     = 2;
+    string file_name        = 3;
+    uint64 size_bytes       = 4;
+    uint64 transferred_bytes = 5;
+    bool   outbound         = 6;
+    uint32 lanes_active     = 7;
+    uint64 bps              = 8;
+}
+
+message TransferList { repeated TransferReply transfers = 1; }
+
+// ---------------------------------------------------------------------------
+// Settings
+// ---------------------------------------------------------------------------
+
+service SettingsService {
+    rpc GetSetting (GetSettingRequest) returns (SettingReply);
+    rpc SetSetting (SetSettingRequest) returns (Empty);
+}
+
+message GetSettingRequest { string key = 1; }
+message SettingReply      { string value = 1; bool found = 2; }
+message SetSettingRequest { string key = 1; string value = 2; }
+
+// ---------------------------------------------------------------------------
+// Calls (Phase 8 — WebRTC signaling over gRPC)
+// ---------------------------------------------------------------------------
+//
+// SDP and ICE candidates are JSON-encoded strings opaque to the daemon.
+// The daemon routes them between peers through the established session.
+
+service CallService {
+    rpc StartCall        (CallStartRequest)    returns (CallStartResponse);
+    rpc AcceptCall       (CallAcceptRequest)   returns (CallAcceptResponse);
+    rpc RejectCall       (CallRejectRequest)   returns (Empty);
+    rpc EndCall          (CallEndRequest)      returns (Empty);
+    rpc SendIceCandidate (IceCandidateMsg)     returns (Empty);
+    rpc StreamCallEvents (Empty)               returns (stream CallEvent);
+}
+
+message CallStartRequest {
+    string conv_id    = 1;
+    bool   video      = 2;
+    string local_sdp  = 3; // JSON-encoded SDP offer
+}
+
+message CallStartResponse {
+    string call_id = 1;
+}
+
+message CallAcceptRequest {
+    string call_id    = 1;
+    string answer_sdp = 2; // JSON-encoded SDP answer
+}
+
+message CallAcceptResponse {
+    bool   accepted    = 1;
+    string remote_sdp  = 2; // SDP offer from the caller
+}
+
+message CallRejectRequest { string call_id = 1; }
+message CallEndRequest    { string call_id = 1; }
+
+message IceCandidateMsg {
+    string call_id        = 1;
+    string candidate_json = 2; // JSON: { candidate, sdpMid, sdpMLineIndex }
+}
+
+message CallEvent {
+    string call_id    = 1;
+    // "invite" | "accepted" | "rejected" | "ended" | "ice_candidate"
+    string event_type = 2;
+    string payload    = 3; // SDP for invite/accepted; JSON for ice_candidate; empty otherwise
+    string conv_id    = 4;
+    bool   video      = 5;
+}

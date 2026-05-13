@@ -1,0 +1,23 @@
+[package]
+name = "launcher"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "launcher"
+path = "src/main.rs"
+
+[lib]
+name = "launcher_lib"
+path = "src/lib.rs"
+
+[dependencies]
+tokio        = { workspace = true }
+tonic        = "0.11"
+thiserror    = { workspace = true }
+transferd-api = { path = "../transferd-api" }
+
+[dev-dependencies]
+tokio-stream  = { version = "0.1", features = ["net", "sync"] }
+parking_lot   = "0.12"
+transferd_lib = { package = "transferd", path = "../transferd" }

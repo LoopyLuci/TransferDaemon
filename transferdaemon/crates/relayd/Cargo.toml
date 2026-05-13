@@ -1,0 +1,23 @@
+[package]
+name = "relayd"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "relayd"
+path = "src/main.rs"
+
+[lib]
+name = "relayd"
+path = "src/lib.rs"
+
+[dependencies]
+tokio    = { workspace = true }
+serde    = { workspace = true }
+bincode  = { workspace = true }
+blake3   = { workspace = true }
+rand     = "0.8"
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tokio    = { workspace = true }

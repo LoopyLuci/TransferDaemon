@@ -1,0 +1,24 @@
+[package]
+name = "transferd-mobile"
+version = "0.1.0"
+edition = "2021"
+
+# cdylib for Android (.so) and iOS (.a via staticlib in Xcode).
+# On desktop the lib is used for integration tests only.
+[lib]
+name = "transferd_mobile"
+crate-type = ["cdylib", "staticlib"]
+
+[features]
+default = []
+# Enable the desktop/test path (no native window required).
+desktop = []
+
+[dependencies]
+tokio        = { workspace = true }
+tonic        = "0.11"
+thiserror    = { workspace = true }
+transferd-api    = { path = "../transferd-api" }
+
+# The daemon library (all six gRPC services).
+transferd_lib = { package = "transferd", path = "../transferd" }

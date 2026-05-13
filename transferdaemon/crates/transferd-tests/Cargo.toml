@@ -1,0 +1,46 @@
+[package]
+name = "transferd-tests"
+version = "0.1.0"
+edition = "2021"
+
+[dev-dependencies]
+tokio = { workspace = true }
+bytes = { workspace = true }
+blake3 = { workspace = true }
+ring-channel = { path = "../ring-channel" }
+transferd-core = { path = "../transferd-core" }
+transferd-crypto = { path = "../transferd-crypto" }
+relayd = { path = "../relayd" }
+bincode = { workspace = true }
+
+[[test]]
+name = "e2e_zero_copy"
+path = "../../tests/e2e_zero_copy.rs"
+
+[[test]]
+name = "e2e_lossy_transfer"
+path = "../../tests/e2e_lossy_transfer.rs"
+
+[[test]]
+name = "dual_lane_ate"
+path = "../../tests/dual_lane_ate.rs"
+
+[[test]]
+name = "crypto_roundtrip"
+path = "../../tests/crypto_roundtrip.rs"
+
+[[test]]
+name = "handshake_integration"
+path = "../../tests/handshake_integration.rs"
+
+[[test]]
+name = "relay_integration"
+path = "../../tests/relay_integration.rs"
+
+[[test]]
+name = "multipath_relay"
+path = "../../tests/multipath_relay.rs"
+
+[[test]]
+name = "tcp_lane_integration"
+path = "../../tests/tcp_lane_integration.rs"

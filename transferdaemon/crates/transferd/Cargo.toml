@@ -1,0 +1,30 @@
+[package]
+name = "transferd"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "transferd"
+path = "src/main.rs"
+
+[lib]
+name = "transferd_lib"
+path = "src/lib.rs"
+
+[dependencies]
+tonic        = "0.11"
+prost        = "0.12"
+tokio        = { workspace = true }
+futures      = { workspace = true }
+parking_lot  = "0.12"
+tokio-stream = { version = "0.1", features = ["net", "sync"] }
+thiserror    = { workspace = true }
+serde        = { workspace = true }
+serde_json   = "1"
+uuid         = { version = "1", features = ["v4"] }
+transferd-core   = { path = "../transferd-core" }
+transferd-api    = { path = "../transferd-api" }
+transferd-crypto = { path = "../transferd-crypto" }
+
+[dev-dependencies]
+futures-core = "0.3"

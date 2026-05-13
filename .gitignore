@@ -1,0 +1,67 @@
+# Rust build artifacts
+/target/
+**/target/
+**/*.rs.bk
+*.pdb
+*.log
+
+# Hugepage files
+*.hugepage
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Compiled binaries
+*.dylib
+*.so
+*.dll
+*.exe
+*.a
+*.lib
+
+# Secrets
+*.pem
+*.key
+*.cert
+*.p12
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Linux
+.directory
+
+# Backup files
+*.orig
+*.bak
+
+# Package files
+*.rpm
+*.deb
+*.tar.gz
+*.zip
+*.7z
+
+# Environment
+.env
+.env.local
+.env.production
+.env.*.local
+
+# Dist
+/dist/
+/build/

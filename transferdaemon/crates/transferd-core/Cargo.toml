@@ -1,0 +1,16 @@
+[package]
+name = "transferd-core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+bytes = { workspace = true }
+async-trait = { workspace = true }
+tokio = { workspace = true }
+blake3 = { workspace = true }
+serde = { workspace = true }
+bincode = { workspace = true }
+thiserror = { workspace = true }
+futures = { workspace = true }
+ring-channel = { path = "../ring-channel" }
+transferd-crypto = { path = "../transferd-crypto" }
