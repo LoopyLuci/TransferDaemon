@@ -84,10 +84,12 @@ impl AccountService for AccountServiceImpl {
 
         let mut s = self.0.lock();
         s.identity = Some(crate::state::Identity {
-            public_key: pk_hex,
+            public_key:   pk_hex,
             display_name: name,
-            phrase: phrase.clone(),
+            phrase:       phrase.clone(),
         });
+        s.set_phrase(&phrase);
+        s.try_save();
         Ok(Response::new(RecoveryPhraseReply { phrase }))
     }
 
@@ -108,20 +110,36 @@ impl AccountService for AccountServiceImpl {
         let pk_hex = hex::encode(signing_key.verifying_key().to_bytes());
 
         let mut s = self.0.lock();
-        // Preserve existing display name if available, otherwise use a default.
-        let display_name = s.identity.as_ref()
-            .map(|i| i.display_name.clone())
-            .filter(|n| !n.is_empty())
-            .unwrap_or_else(|| "Restored User".into());
-        s.identity = Some(crate::state::Identity {
-            public_key: pk_hex.clone(),
-            display_name: display_name.clone(),
-            phrase: phrase_str,
-        });
+
+        // Try to load the full persisted state (contacts, messages, display
+        // name) from disk.  This is the primary path after a clean restart.
+        let loaded_from_disk = s.try_load(&phrase_str);
+
+        if !loaded_from_disk {
+            // No store file (or wrong phrase) — reconstruct the key only.
+            // Preserve in-memory display name if we happen to have it, otherwise
+            // leave blank so the UI can prompt the user to set one.
+            let display_name = s.identity.as_ref()
+                .map(|i| i.display_name.clone())
+                .filter(|n| !n.is_empty())
+                .unwrap_or_default();
+            s.identity = Some(crate::state::Identity {
+                public_key:   pk_hex.clone(),
+                display_name: display_name.clone(),
+                phrase:       phrase_str.clone(),
+            });
+            s.set_phrase(&phrase_str);
+            s.try_save(); // create the store file for future restores
+        }
+
+        let (pk, name) = {
+            let id = s.identity.as_ref().unwrap();
+            (id.public_key.clone(), id.display_name.clone())
+        };
         Ok(Response::new(IdentityReply {
             has_identity: true,
-            public_key: pk_hex,
-            display_name,
+            public_key:   pk,
+            display_name: name,
         }))
     }
 
@@ -174,6 +192,7 @@ impl FriendService for FriendServiceImpl {
             return Err(Status::already_exists("contact already exists"));
         }
         s.contacts.push(contact);
+        s.try_save();
         Ok(Response::new(ContactReply {
             id:           r.public_key,
             name:         r.name,
@@ -230,6 +249,7 @@ impl MessageService for MessageServiceImpl {
         let msg = StoredMessage::new_text(id, r.contact_id.clone(), true, r.text);
         let reply = stored_to_reply(&msg);
         s.messages.entry(r.contact_id).or_default().push(msg);
+        s.try_save();
         Ok(Response::new(reply))
     }
 }
@@ -297,6 +317,7 @@ impl TransferService for TransferServiceImpl {
         });
         let reply = stored_to_reply(&msg);
         s.messages.entry(r.contact_id).or_default().push(msg);
+        s.try_save();
         Ok(Response::new(reply))
     }
 }
@@ -324,7 +345,9 @@ impl SettingsService for SettingsServiceImpl {
         &self, req: Request<SetSettingRequest>,
     ) -> Result<Response<Empty>, Status> {
         let r = req.into_inner();
-        self.0.lock().settings.insert(r.key, r.value);
+        let s = &mut *self.0.lock();
+        s.settings.insert(r.key, r.value);
+        s.try_save();
         Ok(Response::new(Empty {}))
     }
 }

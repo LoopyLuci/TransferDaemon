@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/transferd-store",
     "crates/ring-channel",
     "crates/transferd-crypto",
     "crates/transferd-core",
@@ -38,5 +39,8 @@ ed25519-dalek = "2"
 hex = "0.4"
 image = { version = "0.25", default-features = false, features = ["png"] }
 base64 = "0.22"
-cpal   = "0.15"
-nokhwa = { version = "0.10", default-features = false }
+cpal    = "0.15"
+nokhwa  = { version = "0.10", default-features = false }
+aes-gcm = "0.10"
+argon2  = "0.5"
+dirs    = "5"

@@ -1,0 +1,19 @@
+[package]
+name = "transferd-store"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+bincode   = { workspace = true }
+serde     = { workspace = true }
+blake3    = { workspace = true }
+hex       = { workspace = true }
+thiserror = { workspace = true }
+rand      = { workspace = true }
+zeroize   = { workspace = true }
+aes-gcm   = { workspace = true }
+argon2    = { workspace = true }
+dirs      = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
