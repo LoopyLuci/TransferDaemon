@@ -11,9 +11,20 @@ serde        = { workspace = true }
 serde_json   = "1"
 tonic        = { version = "0.11", optional = true }
 transferd-api = { path = "../transferd-api", optional = true }
+cpal         = { workspace = true, optional = true }
 
 [features]
-grpc-signaling = ["tonic", "transferd-api"]
+grpc-signaling   = ["tonic", "transferd-api"]
+desktop-capture  = ["cpal", "nokhwa"]
+
+[target.'cfg(target_os = "windows")'.dependencies]
+nokhwa = { workspace = true, features = ["input-msmf"],  optional = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+nokhwa = { workspace = true, features = ["input-v4l"],   optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+nokhwa = { workspace = true, features = ["input-avfoundation"], optional = true }
 
 [dev-dependencies]
 tokio-stream = { version = "0.1", features = ["net", "sync"] }

@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
 use transferd_tui_video::VideoCallOverlay;
-use transferd_webrtc::{media::MockMediaCapture, SimulatedCallSession};
+use transferd_webrtc::{new_default_capture, SimulatedCallSession};
 
 // ---------------------------------------------------------------------------
 // Enums
@@ -217,12 +217,12 @@ impl App {
         };
         let contact_id = self.contacts[self.selected_contact].id.clone();
 
-        // Create the WebRTC session using the mock media source.
-        let media = Arc::new(MockMediaCapture::new_with_video());
+        // Create the WebRTC session — real hardware when available, mock in CI.
+        let media = new_default_capture(video);
         let session = SimulatedCallSession::new_outgoing(
             contact_id.clone(),
             video,
-            Arc::clone(&media) as Arc<dyn transferd_webrtc::media::MediaCapture>,
+            Arc::clone(&media),
         ).await;
         session.activate().await;
         let call_id = session.call_id.clone();

@@ -38,3 +38,5 @@ ed25519-dalek = "2"
 hex = "0.4"
 image = { version = "0.25", default-features = false, features = ["png"] }
 base64 = "0.22"
+cpal   = "0.15"
+nokhwa = { version = "0.10", default-features = false }

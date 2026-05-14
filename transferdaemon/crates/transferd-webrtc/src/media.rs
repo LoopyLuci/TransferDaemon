@@ -1,13 +1,19 @@
 //! MediaCapture abstraction and platform implementations.
 //!
-//! On desktop the `DesktopAudioCapture` impl uses `cpal` (behind the
-//! `desktop-capture` feature).  In tests and on mobile the `MockMediaCapture`
-//! generates synthetic audio/video without any hardware dependency.
+//! - `DesktopMediaCapture` (feature `desktop-capture`): real camera + mic via
+//!   nokhwa and cpal.  Falls back to silence/no-video if hardware is absent.
+//! - `MockMediaCapture`: deterministic synthetic sources for tests and CI.
+//! - `SilentCapture`: stub for audio-only paths.
 
 use async_trait::async_trait;
 use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
 use tokio::sync::mpsc;
 use crate::types::{AudioSamples, VideoFrame};
+
+#[cfg(feature = "desktop-capture")]
+mod desktop_capture;
+#[cfg(feature = "desktop-capture")]
+pub use desktop_capture::DesktopMediaCapture;
 
 // ---------------------------------------------------------------------------
 // Trait
@@ -140,6 +146,31 @@ impl MediaCapture for SilentCapture {
     async fn stop_audio(&self) {}
     async fn start_video(&self) -> Option<mpsc::Receiver<VideoFrame>> { None }
     async fn stop_video(&self) {}
+}
+
+// ---------------------------------------------------------------------------
+// Factory — picks the best available backend at runtime
+// ---------------------------------------------------------------------------
+
+/// Return the best `MediaCapture` available on this machine.
+///
+/// With the `desktop-capture` feature, attempts real hardware (nokhwa/cpal).
+/// Without it (or in CI), returns a `MockMediaCapture` that generates
+/// synthetic colour-bar video and a 440 Hz sine-wave tone.
+pub fn new_default_capture(video: bool) -> Arc<dyn MediaCapture> {
+    #[cfg(feature = "desktop-capture")]
+    {
+        let _ = video; // DesktopMediaCapture always tries camera; returns None if absent
+        return Arc::new(DesktopMediaCapture::new());
+    }
+    #[cfg(not(feature = "desktop-capture"))]
+    {
+        if video {
+            Arc::new(MockMediaCapture::new_with_video())
+        } else {
+            Arc::new(SilentCapture)
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

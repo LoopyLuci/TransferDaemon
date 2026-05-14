@@ -21,6 +21,6 @@ hex         = { workspace = true }
 tonic       = { workspace = true }
 transferd-api      = { path = "../transferd-api" }
 transferd-tui-video = { path = "../transferd-tui-video" }
-transferd-webrtc    = { path = "../transferd-webrtc" }
+transferd-webrtc    = { path = "../transferd-webrtc", features = ["desktop-capture"] }
 image  = { workspace = true }
 qrcode = "0.14"

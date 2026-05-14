@@ -11,6 +11,8 @@ pub mod types;
 pub mod grpc_signaling;
 
 pub use manager::CallManager;
-pub use media::{MediaCapture, MockMediaCapture, SilentCapture};
+pub use media::{MediaCapture, MockMediaCapture, SilentCapture, new_default_capture};
+#[cfg(feature = "desktop-capture")]
+pub use media::DesktopMediaCapture;
 pub use session::SimulatedCallSession;
 pub use types::{AudioSamples, CallState, IceCandidateInit, VideoFrame};
