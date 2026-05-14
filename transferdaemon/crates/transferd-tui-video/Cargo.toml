@@ -1,0 +1,15 @@
+[package]
+name = "transferd-tui-video"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+image   = { workspace = true }
+base64  = { workspace = true }
+ratatui = "0.27"
+
+# For terminal capability probing we reuse crossterm (already a TUI dep).
+crossterm = "0.27"
+
+tokio            = { workspace = true }
+transferd-webrtc = { path = "../transferd-webrtc" }

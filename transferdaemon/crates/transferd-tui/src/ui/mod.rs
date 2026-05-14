@@ -11,18 +11,23 @@ use ratatui::{
     layout::{Constraint, Direction, Layout},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Tabs},
+    widgets::{Block, Borders, Paragraph, Tabs},
     Frame,
 };
 
-pub fn render(f: &mut Frame, app: &App) {
-    match &app.screen {
-        Screen::Onboarding(step) => onboarding::render(f, app, step),
-        Screen::Main => render_main(f, app),
+/// Main render entry — called inside `terminal.draw()`.
+///
+/// The call overlay needs `&mut App` because it drains the video frame channel.
+/// The rest of the render functions take `&App` (read-only).
+pub fn render(f: &mut Frame, app: &mut App) {
+    match &app.screen.clone() {
+        Screen::Onboarding(step) => {
+            onboarding::render(f, app, step);
+            return;
+        }
+        Screen::Main => {}
     }
-}
 
-fn render_main(f: &mut Frame, app: &App) {
     let area = f.size();
 
     let chunks = Layout::default()
@@ -60,9 +65,11 @@ fn render_main(f: &mut Frame, app: &App) {
     let daemon_label = if app.daemon_live { "gRPC" } else { "Mock" };
     let daemon_color = if app.daemon_live { Color::Green } else { Color::Yellow };
     let call_label = app.call_state.as_ref()
-        .map(|cs| format!("  📞 {} {}s",
-            cs.contact_name,
-            cs.started_at.elapsed().as_secs()))
+        .map(|cs| {
+            let elapsed = cs.started_at.elapsed().as_secs();
+            let icon = if cs.video_enabled { "📹" } else { "📞" };
+            format!("  {} {} {:02}:{:02}", icon, cs.contact_name, elapsed / 60, elapsed % 60)
+        })
         .unwrap_or_default();
     let status_line = Line::from(vec![
         Span::styled(format!(" {} ", daemon_label), Style::default().fg(daemon_color)),
@@ -71,11 +78,10 @@ fn render_main(f: &mut Frame, app: &App) {
         Span::raw(&call_label),
         Span::styled("  Ctrl+Q quit", Style::default().fg(Color::DarkGray)),
     ]);
-    use ratatui::widgets::Paragraph;
     f.render_widget(Paragraph::new(status_line), chunks[2]);
 
     // ── Modals ───────────────────────────────────────────────────────────────
-    if let Some(modal) = &app.modal {
+    if let Some(modal) = &app.modal.clone() {
         match modal {
             Modal::AddContact { key_input, name_input, field } =>
                 popups::render_add_contact(f, key_input, name_input, *field),
@@ -91,7 +97,8 @@ fn render_main(f: &mut Frame, app: &App) {
     }
 
     // ── Call overlay ─────────────────────────────────────────────────────────
-    if let Some(cs) = &app.call_state {
-        call_overlay::render(f, cs);
+    if app.call_state.is_some() {
+        // call_overlay::render needs &mut CallState for the video overlay.
+        call_overlay::render(f, app.call_state.as_mut().unwrap());
     }
 }

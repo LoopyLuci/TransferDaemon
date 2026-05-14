@@ -7,13 +7,14 @@ mod ui;
 
 use app::App;
 use crossterm::{
+    cursor::MoveTo,
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use daemon::MockDaemon;
 use grpc_daemon::GrpcDaemon;
 use ratatui::{backend::CrosstermBackend, Terminal};
-use std::{io, sync::Arc, time::Duration};
+use std::{io, io::Write, sync::Arc, time::Duration};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -52,7 +53,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
-        terminal.draw(|f| ui::render(f, &app))?;
+        // Draw the main ratatui UI.
+        terminal.draw(|f| ui::render(f, &mut app))?;
+
+        // After ratatui draws, handle any pending Kitty/Sixel direct writes.
+        // These overwrite the placeholder cells ratatui left for the video area.
+        if let Some(cs) = &mut app.call_state {
+            if let Some(ref mut overlay) = cs.video {
+                if let Some((rect, seq)) = overlay.take_direct_render() {
+                    let mut out = io::stdout();
+                    execute!(out, MoveTo(rect.x, rect.y))?;
+                    out.write_all(seq.as_bytes())?;
+                    out.flush()?;
+                }
+            }
+        }
 
         tokio::select! {
             biased;

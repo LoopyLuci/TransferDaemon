@@ -12,6 +12,7 @@ members = [
     "crates/transferd-mobile",
     "crates/launcher",
     "crates/transferd-tui",
+    "crates/transferd-tui-video",
 ]
 resolver = "2"
 
@@ -35,3 +36,5 @@ prost = "0.12"
 bip39 = "2"
 ed25519-dalek = "2"
 hex = "0.4"
+image = { version = "0.25", default-features = false, features = ["png"] }
+base64 = "0.22"

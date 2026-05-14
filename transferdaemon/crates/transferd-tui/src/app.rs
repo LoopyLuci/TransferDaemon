@@ -3,6 +3,8 @@ use crate::types::*;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
+use transferd_tui_video::VideoCallOverlay;
+use transferd_webrtc::{media::MockMediaCapture, SimulatedCallSession};
 
 // ---------------------------------------------------------------------------
 // Enums
@@ -55,12 +57,17 @@ pub enum Modal {
     RevealPhrase { phrase: String },
 }
 
-/// Live call state.
+/// Live call state — wraps the WebRTC session and terminal video overlay.
 pub struct CallState {
     pub contact_name: String,
     pub call_id: String,
     pub started_at: Instant,
     pub muted: bool,
+    pub video_enabled: bool,
+    /// The running WebRTC session (simulated in mock mode).
+    pub session: Option<SimulatedCallSession>,
+    /// Terminal video renderer; `None` for audio-only calls.
+    pub video: Option<VideoCallOverlay>,
 }
 
 // ---------------------------------------------------------------------------
@@ -193,6 +200,60 @@ impl App {
             let msgs = self.daemon.get_messages(&id).await;
             self.messages.insert(id, msgs);
         }
+        // Drain new video frames into the overlay.
+        if let Some(cs) = &mut self.call_state {
+            if let Some(video) = &mut cs.video {
+                video.tick();
+            }
+        }
         self.last_tick = Instant::now();
+    }
+
+    /// Start a call to the currently selected contact.
+    pub async fn start_call_to_selected(&mut self, video: bool) {
+        let contact_name = match self.contacts.get(self.selected_contact) {
+            Some(c) => c.name.clone(),
+            None => { self.set_status("No contact selected."); return; }
+        };
+        let contact_id = self.contacts[self.selected_contact].id.clone();
+
+        // Create the WebRTC session using the mock media source.
+        let media = Arc::new(MockMediaCapture::new_with_video());
+        let session = SimulatedCallSession::new_outgoing(
+            contact_id.clone(),
+            video,
+            Arc::clone(&media) as Arc<dyn transferd_webrtc::media::MediaCapture>,
+        ).await;
+        session.activate().await;
+        let call_id = session.call_id.clone();
+
+        // Also tell the daemon (for gRPC signaling).
+        let _ = self.daemon.start_call(&contact_id).await;
+
+        // Build the video overlay if video is enabled.
+        let video_overlay = if video {
+            let mut overlay = VideoCallOverlay::new(contact_name.clone());
+            if let Some(rx) = session.remote_video_rx {
+                // remote_video_rx has been moved out — store it in the overlay.
+                // (The session field below won't have it; that's fine for mock mode.)
+                overlay.set_frame_rx(rx);
+            }
+            Some(overlay)
+        } else {
+            None
+        };
+
+        self.call_state = Some(CallState {
+            contact_name: contact_name.clone(),
+            call_id,
+            started_at: Instant::now(),
+            muted: false,
+            video_enabled: video,
+            session: None, // video_rx already consumed above
+            video: video_overlay,
+        });
+
+        let mode = if video { "video" } else { "audio" };
+        self.set_status(format!("Call started ({mode}). [M] mute  [H] hang up  [V] toggle video"));
     }
 }

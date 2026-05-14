@@ -1,7 +1,6 @@
 use crate::app::*;
 use crate::types::*;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use std::time::Instant;
 
 /// Returns `true` when the app should quit.
 pub async fn handle_key(app: &mut App, key: KeyEvent) -> bool {
@@ -26,6 +25,19 @@ pub async fn handle_key(app: &mut App, key: KeyEvent) -> bool {
                 if let Some(cs) = app.call_state.take() {
                     let _ = app.daemon.end_call(&cs.call_id).await;
                     app.set_status("Call ended.");
+                }
+                return false;
+            }
+            // Toggle video overlay visibility.
+            KeyCode::Char('v') | KeyCode::Char('V') => {
+                if let Some(cs) = &mut app.call_state {
+                    if cs.video.is_some() {
+                        cs.video = None;
+                        app.set_status("Video hidden. [V] show again");
+                    } else if cs.video_enabled {
+                        cs.video = Some(transferd_tui_video::VideoCallOverlay::new(cs.contact_name.clone()));
+                        app.set_status("Video shown.");
+                    }
                 }
                 return false;
             }
@@ -230,22 +242,12 @@ async fn handle_chats(app: &mut App, key: KeyEvent) {
                         }
                     }
                     KeyCode::Char('c') => {
-                        // Start call.
-                        if let Some(id) = app.open_contact_id().map(|s| s.to_owned()) {
-                            let name = app.open_contact_name().unwrap_or("Unknown").to_owned();
-                            match app.daemon.start_call(&id).await {
-                                Ok(call_id) => {
-                                    app.call_state = Some(CallState {
-                                        contact_name: name,
-                                        call_id,
-                                        started_at: Instant::now(),
-                                        muted: false,
-                                    });
-                                    app.set_status("Call started. [M] mute  [H] hang up");
-                                }
-                                Err(e) => app.set_status(format!("Call failed: {}", e)),
-                            }
-                        }
+                        // Start audio call.
+                        app.start_call_to_selected(false).await;
+                    }
+                    KeyCode::Char('v') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        // Start video call.
+                        app.start_call_to_selected(true).await;
                     }
                     KeyCode::Char('n') => {
                         // New conversation → open add-contact modal.

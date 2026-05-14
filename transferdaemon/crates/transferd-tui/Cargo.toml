@@ -19,5 +19,8 @@ bip39       = { workspace = true }
 ed25519-dalek = { workspace = true }
 hex         = { workspace = true }
 tonic       = { workspace = true }
-transferd-api = { path = "../transferd-api" }
-qrcode      = "0.14"
+transferd-api      = { path = "../transferd-api" }
+transferd-tui-video = { path = "../transferd-tui-video" }
+transferd-webrtc    = { path = "../transferd-webrtc" }
+image  = { workspace = true }
+qrcode = "0.14"
