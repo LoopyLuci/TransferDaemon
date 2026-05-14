@@ -1,5 +1,9 @@
 # TransferDaemon
 
+[![Release v1.0.0](https://img.shields.io/badge/release-v1.0.0-blue)](https://github.com/LoopyLuci/TransferDaemon/releases/tag/v1.0.0)
+[![License: MIT/Apache 2.0](https://img.shields.io/badge/license-MIT%2FApache--2.0-green)](LICENSE)
+[![Tests](https://img.shields.io/badge/tests-120%2B%20passing-brightgreen)](#)
+
 **A truly next-generation, production-grade messaging and file-transfer platform that unifies every existing protocol into a single, secure, zero-knowledge Universal Data Transfer Protocol.**
 
 TransferDaemon lets any user, on any device, send any data — from a few bytes to multi-terabyte datasets — with absolute privacy and end-to-end security. It intelligently selects the best transport (DMI, TCP, relay, Wi-Fi Direct, Bluetooth, etc.) automatically, while the user sees only a single, simple unified interface. The entire stack is built in pure Rust with no third-party analytics, no cloud accounts, and no metadata leakage.
@@ -30,7 +34,10 @@ A global network of relay nodes provides rendezvous even when peers are behind r
 Your identity is a key pair — no email, phone number, or personal information required. Share your public key via QR code or text and add friends directly. All communication is end-to-end encrypted.
 
 ### Voice & Video Calls
-WebRTC-style calls with signaling over the daemon's encrypted control channel. No external STUN/TURN servers are needed; the relay network acts as a fallback. The full call state machine (Idle → Outgoing/Incoming → Active → Ended) is implemented via `SimulatedCallSession` and the `MediaCapture` trait, with a live call overlay in the chat UI.
+WebRTC-style calls with signaling over the daemon's encrypted control channel. No external STUN/TURN servers are needed; the relay network acts as a fallback. The full call state machine (Idle → Outgoing/Incoming → Active → Ended) is implemented via `SimulatedCallSession` and the `MediaCapture` trait, with a live call overlay in both the desktop GUI and the terminal UI.
+
+### Terminal UI with Live Video
+A full-featured ratatui terminal UI (`transferd-tui`) provides identical functionality to the desktop GUI — chat, contacts, file transfers, settings, and **real WebRTC video calls in the terminal**. The `transferd-tui-video` crate renders camera frames using four adaptive backends: Kitty graphics protocol, Sixel, half-block Unicode (`▀`), and ASCII art. The backend is auto-detected at runtime from the terminal's capabilities.
 
 ### Pure Rust, Zero External Services
 The entire stack is written in Rust, from the low-level DMI ring to the egui desktop UI. There are no web views, no JavaScript, no telemetry, and no third-party analytics. The app works completely offline and only uses the network when you initiate a transfer.
@@ -39,6 +46,20 @@ The entire stack is written in Rust, from the low-level DMI ring to the egui des
 - **Desktop**: Linux, macOS, Windows with a native egui/eframe interface (OLED dark theme, 420×740 window).
 - **Mobile**: Android and iOS via thin native shells that host the same Rust UI code and daemon.
 - **Embedded/IoT**: The core daemon can run headless on ARM devices, with MQTT/CoAP adapters for sensor data.
+
+---
+
+## Download v1.0.0
+
+| Platform | Package |
+|----------|---------|
+| Windows  | [TransferDaemon-1.0.0.msi](https://github.com/LoopyLuci/TransferDaemon/releases/download/v1.0.0/TransferDaemon-1.0.0.msi) |
+| Linux (.deb) | [transferdaemon_1.0.0_amd64.deb](https://github.com/LoopyLuci/TransferDaemon/releases/download/v1.0.0/transferdaemon_1.0.0_amd64.deb) |
+| Linux (.rpm) | [transferdaemon-1.0.0-1.x86_64.rpm](https://github.com/LoopyLuci/TransferDaemon/releases/download/v1.0.0/transferdaemon-1.0.0-1.x86_64.rpm) |
+| macOS    | [TransferDaemon-1.0.0.dmg](https://github.com/LoopyLuci/TransferDaemon/releases/download/v1.0.0/TransferDaemon-1.0.0.dmg) |
+| Android (APK) | [TransferDaemon-1.0.0.apk](https://github.com/LoopyLuci/TransferDaemon/releases/download/v1.0.0/TransferDaemon-1.0.0.apk) |
+
+See [RELEASE_NOTES.md](transferdaemon/RELEASE_NOTES.md) for full changelog and known issues.
 
 ---
 
@@ -76,7 +97,12 @@ After installation, run `transferdaemon` or click the **TransferDaemon** shortcu
 ```bash
 git clone https://github.com/LoopyLuci/TransferDaemon.git
 cd TransferDaemon/transferdaemon
-cargo build --release -p transferd -p transferd-ui -p launcher
+cargo build --release -p transferd -p transferd-ui -p transferd-tui -p launcher
+```
+
+To include real webcam/mic support in the terminal UI:
+```bash
+cargo build --release -p transferd-tui   # desktop-capture feature is enabled by default
 ```
 
 Requires: Rust stable, protoc (protobuf compiler).
@@ -118,12 +144,14 @@ Everything is encrypted end-to-end. The daemon runs silently in the background, 
 | `transferd-api` | gRPC protobuf schema (6 services) and tonic generated client/server code |
 | `transferd` | Daemon binary — gRPC server implementing all six services (account, friends, messaging, transfer, calls, settings) |
 | `transferd-ui` | Desktop UI (pure Rust, egui/eframe) — onboarding, chat, contacts, file progress, call overlay |
-| `transferd-webrtc` | Call session manager, `MediaCapture` trait, `SimulatedCallSession`, `CallManager` |
+| `transferd-webrtc` | Call session manager, `MediaCapture` trait, `SimulatedCallSession`, `GrpcSignaling`, `DesktopMediaCapture` (nokhwa + cpal) |
 | `relayd` | Blind relay server with BLAKE3 PoW, forwarding table, and session token routing |
 | `transferd-mobile` | Mobile library crate with C-ABI entry points for Android/iOS integration |
 | `launcher` | Probes daemon liveness, spawns it if absent, then launches the UI |
+| `transferd-tui` | Full terminal UI (ratatui 0.27) — onboarding, chat, contacts, transfers, settings, call overlay |
+| `transferd-tui-video` | Terminal video renderer — Kitty, Sixel, half-block Unicode, ASCII art backends |
 
-All crates are tested together; the suite currently contains **118 integration tests** with zero failures.
+All crates are tested together; the suite currently contains **120+ integration tests** with zero failures.
 
 ---
 
@@ -147,7 +175,7 @@ The adaptive engine stripes chunks across multiple lanes simultaneously for maxi
 
 Contributions are welcome. The codebase is pure Rust; run `cargo test --all` for validation. All contributions must:
 
-- Pass the existing 118 tests
+- Pass the existing 120+ tests
 - Include tests for new functionality
 - Follow the existing code style (rustfmt)
 

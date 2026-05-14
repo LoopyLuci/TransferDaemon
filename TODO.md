@@ -15,12 +15,19 @@
 - [x] Phase 9.5 — `transferd-mobile` cdylib with C-ABI `start_daemon()` / `start_ui()`
 - [x] Phase 10 — `launcher` crate, `probe_daemon`, `find_binary`, `spawn_daemon`, 10 tests; `install.sh`, `install_mac.sh`, `install.ps1`
 
-**Total: 118 tests, 0 failures**
+- [x] Phase 10.5 — `transferd-tui` crate: full ratatui terminal UI, all screens, modals, call overlay
+- [x] Phase 11 — `transferd-tui-video` crate: 4 video backends (Kitty, Sixel, HalfBlock, ASCII), runtime detection
+- [x] Phase 12 — `DesktopMediaCapture` (nokhwa + cpal, feature `desktop-capture`), `new_default_capture()` factory
+- [x] Phase 12.5 — `GrpcSignaling` module, WebRTC e2e integration test (`webrtc_e2e.rs`)
+- [x] Phase 13 — Packaging: Windows MSI (WiX 4), Linux .deb/.rpm, macOS .dmg + entitlements; `v1.0.0` git tag
 
-## Future Work
+**Total: 120+ tests, 0 failures**
 
-- [ ] Native camera/mic integration (Android Camera2 API, iOS AVFoundation) behind `MediaCapture` trait
-- [ ] `cargo-mobile` scaffolding: wire `TransferDaemonApp` into generated Android/iOS projects
+## v1.1.0 Planned
+
+- [ ] Android camera/mic integration (Camera2 API + AudioRecord) behind `MediaCapture` trait
+- [ ] iOS camera/mic integration (AVFoundation) behind `MediaCapture` trait
+- [ ] Public relay node deployment
 - [ ] `SwarmLane` real implementation (libp2p or custom DHT)
 - [ ] Hardware-bound keys: TPM 2.0 (Windows), Secure Enclave (macOS/iOS)
 - [ ] Tor transport layer for sender/receiver IP anonymity

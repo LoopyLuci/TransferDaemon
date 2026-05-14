@@ -1,6 +1,6 @@
 # Development Plan
 
-## Status: Production-Ready — 118 tests, 0 failures
+## Status: v1.0.0 Released — 120+ tests, 0 failures
 
 ---
 
@@ -44,12 +44,35 @@
 - `install.sh` (Linux: systemd + .desktop), `install_mac.sh` (macOS: launchd + .app), `install.ps1` (Windows: scheduled task + Start Menu + firewall)
 - 10 launcher integration tests
 
+### Sprint 7 — Terminal TUI (Phase 10.5–11)
+- `transferd-tui` crate: ratatui 0.27 + crossterm 0.27 full terminal UI
+- Onboarding, Chats, Contacts, Transfers, Settings tabs; all modals; call overlay
+- `GrpcDaemon` / `MockDaemon` backends; 250 ms tick; 50 ms event poll
+- `transferd-tui-video` crate: `VideoCallOverlay` with Kitty, Sixel, HalfBlock, ASCII backends
+- Runtime capability detection; `TRANSFERD_VIDEO_BACKEND` override
+
+### Sprint 8 — Real Media & E2E Tests (Phase 12–12.5)
+- `DesktopMediaCapture` (feature `desktop-capture`): nokhwa webcam + cpal mic
+- Bridges blocking hardware APIs into tokio channels via `spawn_blocking`
+- Handles F32/I16/U16 audio formats; graceful fallback on missing hardware
+- `new_default_capture()` factory: selects real or mock backend by feature flag
+- `GrpcSignaling` module (feature `grpc-signaling`): thin gRPC wrapper for call signaling
+- `tests/webrtc_e2e.rs`: full signaling pipeline — invite → accept → ICE → video frames
+- Fixed broadcast-timing invariant: subscribe before `StartCall`
+
+### Sprint 9 — Packaging & Release (Phase 13)
+- WiX 4 MSI (`installer/windows/`): embeds all binaries, Start Menu + desktop shortcuts, `MajorUpgrade`
+- Linux `.deb` (`dpkg-deb`, FHS layout, `.desktop` file)
+- Linux `.rpm` (`rpmbuild` spec file)
+- macOS `.dmg` (`.app` bundle, `Info.plist`, drag-to-Applications, optional notarization)
+- macOS entitlements: camera, mic, network, file access for hardened runtime
+- Git tag `v1.0.0`; `dist/TransferDaemon-1.0.0.msi` verified (5.7 MB)
+
 ---
 
-## Next Steps
+## Next Steps (v1.1.0)
 
-1. **`cargo-mobile` scaffolding** — run `cargo mobile init` to generate Android Gradle project and iOS Xcode project; wire `TransferDaemonApp` into the generated entry points
-2. **Native rendering stubs** — replace `unimplemented!()` in `transferd-mobile/src/platform.rs` with real Android `SurfaceView` + `GLSurfaceView` and iOS `MTKView` bindings
-3. **Native camera/mic** — implement `MediaCapture` for Android (Camera2 + AudioRecord) and iOS (AVFoundation) behind the existing trait
+1. **Android camera/mic** — implement `MediaCapture` for Android (Camera2 + AudioRecord) behind the existing trait
+2. **iOS camera/mic** — implement `MediaCapture` for iOS (AVFoundation) behind the existing trait
+3. **Public relay deployment** — deploy relay nodes on public infrastructure
 4. **Persistent storage** — encrypted SQLite via `rusqlite` for message history and transfer state
-5. **Git tag v1.0.0** and publish to GitHub
