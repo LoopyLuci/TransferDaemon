@@ -9,12 +9,14 @@ members = [
     "crates/transferd-tests",
     "crates/relayd",
     "crates/transferd-ui",
+    "crates/transferd-ui-shared",
     "crates/transferd-api",
     "crates/transferd-webrtc",
     "crates/transferd-mobile",
     "crates/launcher",
     "crates/transferd-tui",
     "crates/transferd-tui-video",
+    "crates/transferd-relay",
 ]
 resolver = "2"
 

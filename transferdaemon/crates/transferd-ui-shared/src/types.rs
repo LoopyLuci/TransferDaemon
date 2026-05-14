@@ -33,9 +33,9 @@ pub struct Contact {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Message {
-    pub id: String,       // UUIDv4 or GSN-derived
+    pub id: String,
     pub contact_id: String,
-    pub outbound: bool,   // true = we sent it
+    pub outbound: bool,
     pub content: MessageContent,
     pub timestamp_ts: u64,
     pub status: MessageStatus,
@@ -74,6 +74,24 @@ impl MessageStatus {
 }
 
 // ---------------------------------------------------------------------------
+// Conversation summary (chat list row)
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+pub struct Conversation {
+    /// Same as the contact's public-key id.
+    pub contact_id: String,
+    pub display_name: String,
+    pub online: bool,
+    /// Most-recent message text (empty = no messages yet).
+    pub last_message: String,
+    /// Unix timestamp of the most-recent message, or 0.
+    pub last_time_sec: u64,
+    /// Number of unread inbound messages.
+    pub unread: u32,
+}
+
+// ---------------------------------------------------------------------------
 // Active transfers
 // ---------------------------------------------------------------------------
 
@@ -86,7 +104,7 @@ pub struct TransferStatus {
     pub transferred_bytes: u64,
     pub outbound: bool,
     pub lanes_active: u8,
-    pub bps: u64, // current throughput
+    pub bps: u64,
 }
 
 impl TransferStatus {

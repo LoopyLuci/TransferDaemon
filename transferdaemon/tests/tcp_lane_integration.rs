@@ -202,7 +202,7 @@ async fn test_plugin_registry_creates_tcp_lane() {
     println!("test_plugin_registry_creates_tcp_lane: PASSED");
 }
 
-/// default_registry() covers tcp/relay/swarm; unknown and stub schemes error correctly.
+/// default_registry() covers tcp/relay/swarm; unknown schemes error correctly.
 #[tokio::test]
 async fn test_default_registry_scheme_coverage() {
     let registry = default_registry();
@@ -214,10 +214,15 @@ async fn test_default_registry_scheme_coverage() {
     // Unknown scheme → ProtocolViolation.
     assert!(registry.create_lane(0, "ftp", "127.0.0.1:21", SESSION_KEY).await.is_err());
 
-    // SwarmLane stub → LinkDown error.
-    assert!(registry.create_lane(0, "swarm", "magnet:?xt=...", SESSION_KEY).await.is_err());
+    // SwarmPlugin now creates a live seeder lane.
+    let swarm_lane = registry
+        .create_lane(0, "swarm", "magnet:?xt=...", SESSION_KEY)
+        .await
+        .expect("swarm plugin must create a seeder lane");
+    assert!(swarm_lane.is_alive(), "swarm lane must be alive");
+    assert!(swarm_lane.capacity() > 0, "swarm seeder must report capacity");
 
-    // RelayPlugin stub → ProtocolViolation.
+    // RelayPlugin is a documented stub → ProtocolViolation.
     assert!(registry.create_lane(0, "relay", "127.0.0.1:7777", SESSION_KEY).await.is_err());
 
     println!("test_default_registry_scheme_coverage: PASSED");

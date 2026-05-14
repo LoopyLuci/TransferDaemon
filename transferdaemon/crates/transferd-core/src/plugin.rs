@@ -206,33 +206,46 @@ impl ProtocolPlugin for RelayPlugin {
 // Built-in: SwarmPlugin stub
 // ---------------------------------------------------------------------------
 
-/// Plugin for the `swarm://` scheme — decentralized BitTorrent/IPFS distribution.
+/// Plugin for the `swarm://` scheme — decentralized piece-swarm distribution.
 ///
-/// Not yet implemented; registered so the ATE knows the scheme exists and can
-/// report it in diagnostics.
+/// Creates a **seeder** lane backed by a fresh `SwarmStore`.  The caller is
+/// responsible for sharing the store with leecher lanes via
+/// `SwarmLane::new_leecher(id, store.clone())`.
+///
+/// ## Endpoint format
+///
+/// Currently unused — any non-empty string is accepted.  In a future librqbit
+/// integration, this would be a magnet URI (`magnet:?xt=urn:btih:…`) that the
+/// leecher uses to join the real BitTorrent swarm.
 pub struct SwarmPlugin;
 
 impl ProtocolPlugin for SwarmPlugin {
-    fn name(&self) -> &'static str { "Swarm (BitTorrent/IPFS)" }
+    fn name(&self) -> &'static str { "Swarm (piece-store / BitTorrent)" }
     fn scheme(&self) -> &'static str { "swarm" }
 
     fn capabilities(&self) -> LaneCapabilities {
         LaneCapabilities {
-            max_bps: 500_000_000,
-            typical_rtt_ms: 200,
+            max_bps: 500_000_000,  // 500 Mbps — realistic for a well-seeded swarm
+            typical_rtt_ms: 200,   // higher latency than TCP/relay
             local_only: false,
-            transport_encrypted: false,
+            transport_encrypted: false, // payload encryption handled by transferd-crypto
         }
     }
 
     fn create_lane<'a>(
         &'a self,
-        _id: u32,
+        id: u32,
         _endpoint: &'a str,
         _session_key: &'a [u8; 32],
     ) -> Pin<Box<dyn Future<Output = Result<Box<dyn TransportLane>, TransportError>> + Send + 'a>> {
         Box::pin(async move {
-            Err(TransportError::LinkDown("SwarmLane not yet implemented".into()))
+            // LIBRQBIT: when wiring the real BitTorrent backend, parse `_endpoint`
+            // as a magnet URI here and create either a seeder (if we own the data)
+            // or a leecher (if we're downloading).  For now we create a seeder with
+            // a fresh in-process store.
+            let store = crate::lanes::swarm_lane::SwarmStore::new();
+            let lane = crate::lanes::swarm_lane::SwarmLane::new_seeder(id, store);
+            Ok(Box::new(lane) as Box<dyn TransportLane>)
         })
     }
 }

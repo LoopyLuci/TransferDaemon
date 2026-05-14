@@ -1,8 +1,4 @@
-//! GrpcDaemon — DaemonApi implementation backed by a live transferd gRPC server.
-//!
-//! Connects to `127.0.0.1:50051` (configurable via `TRANSFERD_ADDR` env var).
-//! Each method opens no persistent connection state beyond the shared channel;
-//! tonic handles HTTP/2 multiplexing internally.
+//! GrpcDaemon — DaemonApi backed by a live transferd gRPC server.
 
 use crate::daemon::{DaemonApi, DaemonError};
 use crate::types::{Contact, Identity, Message, MessageContent, MessageStatus, TransferStatus};
@@ -16,19 +12,12 @@ use transferd_api::{
 };
 use tonic::transport::Channel;
 
-// ---------------------------------------------------------------------------
-// Connection
-// ---------------------------------------------------------------------------
-
-/// Clones cheaply — shares the underlying HTTP/2 connection pool.
 #[derive(Clone)]
 pub struct GrpcDaemon {
     channel: Channel,
 }
 
 impl GrpcDaemon {
-    /// Connect to the transferd daemon.
-    /// `addr` example: `"http://127.0.0.1:50051"`
     pub async fn connect(addr: &str) -> Result<Self, DaemonError> {
         let channel = Channel::from_shared(addr.to_owned())
             .map_err(|e| DaemonError::NotReachable(e.to_string()))?
@@ -38,7 +27,6 @@ impl GrpcDaemon {
         Ok(Self { channel })
     }
 
-    /// Try to connect with a short timeout; returns `None` if the daemon is not running.
     pub async fn try_connect(addr: &str) -> Option<Self> {
         let channel = Channel::from_shared(addr.to_owned()).ok()?
             .connect_timeout(std::time::Duration::from_millis(500))
@@ -48,26 +36,12 @@ impl GrpcDaemon {
         Some(Self { channel })
     }
 
-    fn account(&self) -> AccountServiceClient<Channel> {
-        AccountServiceClient::new(self.channel.clone())
-    }
-    fn friends(&self) -> FriendServiceClient<Channel> {
-        FriendServiceClient::new(self.channel.clone())
-    }
-    fn messages(&self) -> MessageServiceClient<Channel> {
-        MessageServiceClient::new(self.channel.clone())
-    }
-    fn transfers(&self) -> TransferServiceClient<Channel> {
-        TransferServiceClient::new(self.channel.clone())
-    }
-    fn settings(&self) -> SettingsServiceClient<Channel> {
-        SettingsServiceClient::new(self.channel.clone())
-    }
+    fn account(&self) -> AccountServiceClient<Channel> { AccountServiceClient::new(self.channel.clone()) }
+    fn friends(&self) -> FriendServiceClient<Channel> { FriendServiceClient::new(self.channel.clone()) }
+    fn messages(&self) -> MessageServiceClient<Channel> { MessageServiceClient::new(self.channel.clone()) }
+    fn transfers(&self) -> TransferServiceClient<Channel> { TransferServiceClient::new(self.channel.clone()) }
+    fn settings(&self) -> SettingsServiceClient<Channel> { SettingsServiceClient::new(self.channel.clone()) }
 }
-
-// ---------------------------------------------------------------------------
-// Mapping helpers
-// ---------------------------------------------------------------------------
 
 fn map_status(s: &str) -> MessageStatus {
     match s {
@@ -122,19 +96,12 @@ fn proto_to_transfer(r: transferd_api::TransferReply) -> TransferStatus {
     }
 }
 
-// ---------------------------------------------------------------------------
-// DaemonApi impl
-// ---------------------------------------------------------------------------
-
 #[async_trait]
 impl DaemonApi for GrpcDaemon {
     async fn get_identity(&self) -> Option<Identity> {
         let reply = self.account().get_identity(Empty {}).await.ok()?.into_inner();
         if reply.has_identity {
-            Some(Identity {
-                public_key: reply.public_key,
-                display_name: reply.display_name,
-            })
+            Some(Identity { public_key: reply.public_key, display_name: reply.display_name })
         } else {
             None
         }
@@ -155,10 +122,7 @@ impl DaemonApi for GrpcDaemon {
             .map_err(|e| DaemonError::NotReachable(e.to_string()))?
             .into_inner();
         if reply.has_identity {
-            Ok(Identity {
-                public_key: reply.public_key,
-                display_name: reply.display_name,
-            })
+            Ok(Identity { public_key: reply.public_key, display_name: reply.display_name })
         } else {
             Err(DaemonError::InvalidInput("restore failed".into()))
         }
@@ -243,26 +207,18 @@ impl DaemonApi for GrpcDaemon {
     async fn get_public_key_hex(&self) -> Option<String> {
         let reply = self.account()
             .get_public_key_hex(Empty {})
-            .await
-            .ok()?
-            .into_inner();
+            .await.ok()?.into_inner();
         if reply.hex.is_empty() { None } else { Some(reply.hex) }
     }
-}
 
-// ---------------------------------------------------------------------------
-// Settings helpers (not part of DaemonApi — directly usable by settings page)
-// ---------------------------------------------------------------------------
-
-impl GrpcDaemon {
-    pub async fn get_setting(&self, key: &str) -> Option<String> {
+    async fn get_setting(&self, key: &str) -> Option<String> {
         let r = self.settings()
             .get_setting(GetSettingRequest { key: key.to_owned() })
             .await.ok()?.into_inner();
         if r.found { Some(r.value) } else { None }
     }
 
-    pub async fn set_setting(&self, key: &str, value: &str) -> Result<(), DaemonError> {
+    async fn set_setting(&self, key: &str, value: &str) -> Result<(), DaemonError> {
         self.settings()
             .set_setting(SetSettingRequest { key: key.to_owned(), value: value.to_owned() })
             .await

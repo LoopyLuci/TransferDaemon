@@ -7,6 +7,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use transferd_store::{PersistedUserData, StoreParams};
@@ -122,6 +123,9 @@ pub struct DaemonState {
     pub calls:     HashMap<String, CallRecord>,
     pub next_id:   u64,
 
+    /// Running relay engine, if the relay is enabled.
+    pub relay_engine: Option<Arc<transferd_relay::RelayEngine>>,
+
     // ── Persistence ──────────────────────────────────────────────────────────
     /// Path to the encrypted user data file.  `None` → persistence disabled
     /// (default for in-memory / test mode).
@@ -143,6 +147,7 @@ impl Default for DaemonState {
             settings:     HashMap::new(),
             calls:        HashMap::new(),
             next_id:      0,
+            relay_engine: None,
             store_path:   None,
             store_params: StoreParams::production(),
             store_key:    None,

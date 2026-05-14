@@ -22,12 +22,28 @@
         android:extractNativeLibs="true">
 
         <!--
+            Gate activity: requests CAMERA + RECORD_AUDIO at runtime, then
+            launches NativeActivity.  This is the true LAUNCHER entry point.
+        -->
+        <activity
+            android:name=".PermissionsActivity"
+            android:exported="true"
+            android:label="@string/app_name"
+            android:theme="@style/AppTheme">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!--
             NativeActivity loads libtransferd_mobile.so and calls android_main().
             android_main starts the gRPC daemon + runs the eframe UI loop.
+            Not exported as a launcher — PermissionsActivity starts it.
         -->
         <activity
             android:name="android.app.NativeActivity"
-            android:exported="true"
+            android:exported="false"
             android:label="@string/app_name"
             android:configChanges="orientation|screenSize|keyboardHidden|density">
 
@@ -35,11 +51,6 @@
             <meta-data
                 android:name="android.app.lib_name"
                 android:value="transferd_mobile" />
-
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
         </activity>
 
         <!--
@@ -50,6 +61,13 @@
             android:name=".DaemonService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
+
+        <!-- Transparent trampoline that hosts ACTION_GET_CONTENT and delivers the
+             chosen file path back to Rust via JNI (deliverFilePath). -->
+        <activity
+            android:name=".FilePickerActivity"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
+            android:exported="false" />
 
     </application>
 

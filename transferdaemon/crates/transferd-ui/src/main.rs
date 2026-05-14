@@ -1,28 +1,18 @@
 //! TransferDaemon UI — egui/eframe desktop application.
 //!
-//! Entry point. Starts a tokio runtime in the background (for daemon communication
-//! and database writes), then launches the eframe event loop on the main thread.
-//!
 //! Daemon selection:
 //!   - If `TRANSFERD_ADDR` env var is set, connect via gRPC to that address.
 //!   - Otherwise try `http://127.0.0.1:50051` with a 500 ms timeout.
 //!   - Fall back to `MockDaemon` when the daemon is not reachable.
 
-mod app;
-mod daemon;
-mod db;
-mod grpc_daemon;
-mod pages;
-mod types;
-mod widgets;
-
-use app::TransferDaemonApp;
-use daemon::MockDaemon;
-use grpc_daemon::GrpcDaemon;
+use transferd_ui_shared::{
+    app::TransferDaemonApp,
+    daemon::MockDaemon,
+    grpc_daemon::GrpcDaemon,
+};
 use std::sync::Arc;
 
 fn main() -> eframe::Result<()> {
-    // Start a background tokio runtime for async daemon calls.
     let rt = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(2)
         .enable_all()
@@ -30,8 +20,7 @@ fn main() -> eframe::Result<()> {
         .expect("tokio runtime");
     let _guard = rt.enter();
 
-    // Resolve daemon: gRPC if available, otherwise mock.
-    let daemon_arc: Arc<dyn daemon::DaemonApi>;
+    let daemon_arc: Arc<dyn transferd_ui_shared::daemon::DaemonApi>;
     let daemon_is_live: bool;
     {
         let addr = std::env::var("TRANSFERD_ADDR")

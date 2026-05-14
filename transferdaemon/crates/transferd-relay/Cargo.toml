@@ -1,0 +1,19 @@
+[package]
+name = "transferd-relay"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "transferd_relay"
+path = "src/lib.rs"
+
+[dependencies]
+tokio     = { workspace = true }
+serde     = { workspace = true }
+bincode   = { workspace = true }
+blake3    = { workspace = true }
+thiserror = { workspace = true }
+relayd    = { path = "../relayd" }
+
+[dev-dependencies]
+tokio = { workspace = true }

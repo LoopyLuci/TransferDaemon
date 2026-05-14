@@ -31,6 +31,7 @@ rand      = { workspace = true }
 bip39     = { workspace = true }
 ed25519-dalek = { workspace = true }
 hex       = { workspace = true }
+transferd-relay  = { path = "../transferd-relay" }
 
 [dev-dependencies]
 futures-core     = "0.3"

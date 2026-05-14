@@ -7,6 +7,8 @@
 //! crate is used only by integration tests via `daemon_thread`.
 
 mod daemon_thread;
+pub mod file_picker;
+pub mod grpc_bridge;
 pub mod platform;
 
 // ---------------------------------------------------------------------------
@@ -92,8 +94,9 @@ pub mod desktop {
             .to_str()
             .unwrap_or("")
             .to_owned();
+        let ptr = native_window as usize; // usize is Send
         std::thread::spawn(move || {
-            platform::run_ui(&path, native_window as usize, width, height);
+            platform::run_ui(&path, ptr, width, height);
         });
     }
 }

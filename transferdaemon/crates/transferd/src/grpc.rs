@@ -351,6 +351,19 @@ impl SettingsService for SettingsServiceImpl {
     ) -> Result<Response<SettingReply>, Status> {
         let key = req.into_inner().key;
         let s = self.0.lock();
+
+        // Synthesise relay.status from the live engine rather than stored settings.
+        if key == "relay.status" {
+            let value = match &s.relay_engine {
+                Some(eng) => {
+                    let st = eng.status();
+                    format!("running,sessions={},port={}", st.active_sessions, st.port)
+                }
+                None => "stopped".to_string(),
+            };
+            return Ok(Response::new(SettingReply { value, found: true }));
+        }
+
         match s.settings.get(&key) {
             Some(v) => Ok(Response::new(SettingReply { value: v.clone(), found: true })),
             None    => Ok(Response::new(SettingReply { value: String::new(), found: false })),
@@ -361,10 +374,66 @@ impl SettingsService for SettingsServiceImpl {
         &self, req: Request<SetSettingRequest>,
     ) -> Result<Response<Empty>, Status> {
         let r = req.into_inner();
+
+        if r.key == "relay.enabled" {
+            let enable = r.value == "true" || r.value == "1";
+            let state_clone = self.0.clone();
+            tokio::spawn(async move {
+                apply_relay_enabled(state_clone, enable).await;
+            });
+            // Also persist the intent.
+            let s = &mut *self.0.lock();
+            s.settings.insert(r.key, r.value);
+            s.try_save();
+            return Ok(Response::new(Empty {}));
+        }
+
         let s = &mut *self.0.lock();
         s.settings.insert(r.key, r.value);
         s.try_save();
         Ok(Response::new(Empty {}))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Relay helpers
+// ---------------------------------------------------------------------------
+
+async fn apply_relay_enabled(state: State, enable: bool) {
+    if enable {
+        // Build settings from current stored values.
+        let settings = {
+            let s = state.lock();
+            let port = s.settings.get("relay.port")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(7777u16);
+            let bandwidth_kbps = s.settings.get("relay.bandwidth_kbps")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(10_000u64);
+            let difficulty = s.settings.get("relay.difficulty")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(14u32);
+            transferd_relay::RelaySettings {
+                enabled: true,
+                port,
+                difficulty,
+                bandwidth_kbps,
+                max_sessions: 256,
+                auth_policy: transferd_relay::AuthPolicy::Public,
+                ..transferd_relay::RelaySettings::default()
+            }
+        };
+        match transferd_relay::RelayEngine::start(settings).await {
+            Ok(engine) => {
+                state.lock().relay_engine = Some(engine);
+            }
+            Err(e) => {
+                eprintln!("[relay] failed to start: {e}");
+            }
+        }
+    } else {
+        // Dropping the Arc stops the engine via Drop.
+        state.lock().relay_engine = None;
     }
 }
 

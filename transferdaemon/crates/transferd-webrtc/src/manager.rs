@@ -9,7 +9,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use crate::media::MediaCapture;
 use crate::session::SimulatedCallSession;
-use crate::types::CallState;
+use crate::types::{CallState, VideoFrame};
 
 #[derive(Default)]
 pub struct CallManager {
@@ -70,5 +70,14 @@ impl CallManager {
     /// `true` when a call is live.
     pub async fn is_active(&self) -> bool {
         self.state().await.is_active()
+    }
+
+    /// Non-blocking drain of the latest remote video frame, if any.
+    /// Returns `None` when there is no active call or no pending frame.
+    pub async fn poll_remote_video(&self) -> Option<VideoFrame> {
+        let mut guard = self.session.lock().await;
+        let sess = guard.as_mut()?;
+        let rx = sess.remote_video_rx.as_mut()?;
+        rx.try_recv().ok()
     }
 }

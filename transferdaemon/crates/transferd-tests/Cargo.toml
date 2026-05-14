@@ -11,6 +11,7 @@ ring-channel = { path = "../ring-channel" }
 transferd-core = { path = "../transferd-core" }
 transferd-crypto = { path = "../transferd-crypto" }
 relayd = { path = "../relayd" }
+transferd-relay = { path = "../transferd-relay" }
 bincode = { workspace = true }
 
 [[test]]
@@ -44,3 +45,7 @@ path = "../../tests/multipath_relay.rs"
 [[test]]
 name = "tcp_lane_integration"
 path = "../../tests/tcp_lane_integration.rs"
+
+[[test]]
+name = "relay_mesh_integration"
+path = "../../tests/relay_mesh_integration.rs"

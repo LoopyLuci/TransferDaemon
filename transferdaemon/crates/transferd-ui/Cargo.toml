@@ -11,28 +11,5 @@ path = "src/main.rs"
 eframe    = { workspace = true }
 egui      = { workspace = true }
 tokio     = { workspace = true }
-serde     = { workspace = true }
-bytes     = { workspace = true }
-thiserror = { workspace = true }
-async-trait = { workspace = true }
 
-# Local SQLite database (bundled = no system SQLite required)
-rusqlite  = { version = "0.31", features = ["bundled"] }
-serde_json = "1"
-
-# QR code generation for contact key sharing
-qrcode    = "0.14"
-
-# Image utilities for QR texture upload
-image     = { version = "0.25", default-features = false, features = ["png"] }
-
-# Internal crates (core types, crypto, gRPC API)
-transferd-core   = { path = "../transferd-core" }
-transferd-crypto = { path = "../transferd-crypto" }
-transferd-api    = { path = "../transferd-api" }
-transferd-webrtc = { path = "../transferd-webrtc" }
-tonic            = { workspace = true }
-rand             = { workspace = true }
-bip39            = { workspace = true }
-ed25519-dalek    = { workspace = true }
-hex              = { workspace = true }
+transferd-ui-shared = { path = "../transferd-ui-shared" }

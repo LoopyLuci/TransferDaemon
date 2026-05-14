@@ -5,7 +5,6 @@ use egui::{Color32, ProgressBar, Ui};
 
 pub fn transfer_bar(ui: &mut Ui, t: &TransferStatus) -> bool {
     let mut cancelled = false;
-
     egui::Frame::none()
         .fill(Color32::from_rgb(28, 28, 30))
         .rounding(8.0)
@@ -15,49 +14,27 @@ pub fn transfer_bar(ui: &mut Ui, t: &TransferStatus) -> bool {
                 let icon = if t.outbound { "⬆" } else { "⬇" };
                 ui.label(egui::RichText::new(icon).size(18.0));
                 ui.vertical(|ui| {
-                    // File name + contact
-                    ui.label(
-                        egui::RichText::new(&t.file_name)
-                            .strong()
-                            .color(Color32::WHITE),
-                    );
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "{} · {} lane{}",
-                            t.contact_name,
-                            t.lanes_active,
-                            if t.lanes_active == 1 { "" } else { "s" }
-                        ))
-                        .size(12.0)
-                        .color(Color32::from_gray(160)),
-                    );
-
-                    // Progress bar
+                    ui.label(egui::RichText::new(&t.file_name).strong().color(Color32::WHITE));
+                    ui.label(egui::RichText::new(format!(
+                        "{} · {} lane{}", t.contact_name, t.lanes_active,
+                        if t.lanes_active == 1 { "" } else { "s" }
+                    )).size(12.0).color(Color32::from_gray(160)));
                     let bar = ProgressBar::new(t.progress())
                         .text(format!("{:.0}%", t.progress() * 100.0))
                         .fill(Color32::from_rgb(0, 122, 255));
                     ui.add(bar);
-
-                    // Throughput + ETA
                     let bps_str = format_bps(t.bps);
                     let eta_str = t.eta_secs()
                         .map(|s| format!("  ETA {}", format_duration(s)))
                         .unwrap_or_default();
-                    ui.label(
-                        egui::RichText::new(format!("{bps_str}{eta_str}"))
-                            .size(12.0)
-                            .color(Color32::from_gray(160)),
-                    );
+                    ui.label(egui::RichText::new(format!("{bps_str}{eta_str}"))
+                        .size(12.0).color(Color32::from_gray(160)));
                 });
-
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("✕").clicked() {
-                        cancelled = true;
-                    }
+                    if ui.button("✕").clicked() { cancelled = true; }
                 });
             });
         });
-
     cancelled
 }
 

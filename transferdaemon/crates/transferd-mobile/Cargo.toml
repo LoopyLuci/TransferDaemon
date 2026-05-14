@@ -17,8 +17,11 @@ desktop = []
 tokio        = { workspace = true }
 tonic        = "0.11"
 thiserror    = { workspace = true }
+async-trait  = { workspace = true }
 transferd-api    = { path = "../transferd-api" }
 transferd_lib    = { package = "transferd", path = "../transferd" }
+transferd-ui-shared = { path = "../transferd-ui-shared" }
+transferd-webrtc    = { path = "../transferd-webrtc" }
 
 # ── Android-only ──────────────────────────────────────────────────────────────
 [target.'cfg(target_os = "android")'.dependencies]
