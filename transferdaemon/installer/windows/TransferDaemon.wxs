@@ -1,0 +1,134 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  TransferDaemon Windows Installer — WiX 4
+  Build: wix build TransferDaemon.wxs -o ../../dist/TransferDaemon-1.0.0.msi
+
+  Install layout:
+    C:\Program Files\TransferDaemon\
+      TransferDaemon.exe   (launcher — starts daemon then UI)
+      bin\
+        transferd.exe      (gRPC daemon)
+        transferd-ui.exe   (egui desktop GUI)
+        transferd-tui.exe  (ratatui terminal UI)
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+
+  <Package
+    Name="TransferDaemon"
+    Version="1.0.0"
+    Manufacturer="TransferDaemon Project"
+    UpgradeCode="8f4b3c2a-1d5e-4f7a-9b0c-6e2d3a4f5b8c"
+    Language="1033"
+    Scope="perMachine">
+
+    <SummaryInformation
+      Description="Privacy-first file transfer and encrypted calling"
+      Keywords="privacy security transfer calling p2p" />
+
+    <!-- Remove any earlier version before installing this one. -->
+    <MajorUpgrade
+      DowngradeErrorMessage="A newer version of TransferDaemon is already installed." />
+
+    <!-- Embed the cab so we ship a single .msi file. -->
+    <MediaTemplate EmbedCab="yes" />
+
+    <Feature Id="Complete" Title="TransferDaemon" Level="1">
+      <ComponentGroupRef Id="MainComponents" />
+      <ComponentGroupRef Id="ShortcutComponents" />
+    </Feature>
+
+  </Package>
+
+  <!-- ── Directory tree ──────────────────────────────────────────────────── -->
+  <Fragment>
+    <StandardDirectory Id="ProgramFiles6432Folder">
+      <Directory Id="INSTALLFOLDER" Name="TransferDaemon">
+        <Directory Id="BINDIR" Name="bin" />
+      </Directory>
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="STARTMENUFOLDER" Name="TransferDaemon" />
+    </StandardDirectory>
+
+    <StandardDirectory Id="DesktopFolder" />
+  </Fragment>
+
+  <!-- ── Files ───────────────────────────────────────────────────────────── -->
+  <Fragment>
+    <ComponentGroup Id="MainComponents">
+
+      <!-- Launcher: the user-visible entry point. -->
+      <Component Id="CompLauncher" Directory="INSTALLFOLDER">
+        <File Id="FileLauncher"
+              Source="..\..\target\release\launcher.exe"
+              Name="TransferDaemon.exe"
+              KeyPath="yes" />
+      </Component>
+
+      <!-- gRPC daemon binary (runs in background, managed by launcher). -->
+      <Component Id="CompDaemon" Directory="BINDIR">
+        <File Id="FileDaemon"
+              Source="..\..\target\release\transferd.exe"
+              KeyPath="yes" />
+      </Component>
+
+      <!-- egui desktop GUI. -->
+      <Component Id="CompUI" Directory="BINDIR">
+        <File Id="FileUI"
+              Source="..\..\target\release\transferd-ui.exe"
+              KeyPath="yes" />
+      </Component>
+
+      <!-- ratatui terminal UI. -->
+      <Component Id="CompTUI" Directory="BINDIR">
+        <File Id="FileTUI"
+              Source="..\..\target\release\transferd-tui.exe"
+              KeyPath="yes" />
+      </Component>
+
+    </ComponentGroup>
+
+    <!-- ── Shortcuts (in their own components so they clean up on uninstall) -->
+    <ComponentGroup Id="ShortcutComponents">
+
+      <Component Id="CompDesktopShortcut" Directory="DesktopFolder">
+        <Shortcut Id="DesktopShortcut"
+                  Name="TransferDaemon"
+                  Description="Privacy-first file transfer and encrypted calling"
+                  Target="[INSTALLFOLDER]TransferDaemon.exe"
+                  WorkingDirectory="INSTALLFOLDER" />
+        <RegistryValue Root="HKCU"
+                       Key="Software\TransferDaemon"
+                       Name="DesktopShortcut"
+                       Value="1" Type="integer" KeyPath="yes" />
+      </Component>
+
+      <Component Id="CompStartMenuShortcut" Directory="STARTMENUFOLDER">
+        <Shortcut Id="StartMenuShortcut"
+                  Name="TransferDaemon"
+                  Description="Privacy-first file transfer and encrypted calling"
+                  Target="[INSTALLFOLDER]TransferDaemon.exe"
+                  WorkingDirectory="INSTALLFOLDER" />
+        <!-- Remove the Start Menu folder on uninstall. -->
+        <RemoveFolder Id="RemoveStartMenuFolder"
+                      Directory="STARTMENUFOLDER"
+                      On="uninstall" />
+        <RegistryValue Root="HKCU"
+                       Key="Software\TransferDaemon"
+                       Name="StartMenu"
+                       Value="1" Type="integer" KeyPath="yes" />
+      </Component>
+
+      <!-- Add/Remove Programs uninstall entry. -->
+      <Component Id="CompUninstallEntry" Directory="INSTALLFOLDER">
+        <RegistryValue Root="HKCU"
+                       Key="Software\TransferDaemon"
+                       Name="InstallDir"
+                       Value="[INSTALLFOLDER]" Type="string" KeyPath="yes" />
+      </Component>
+
+    </ComponentGroup>
+  </Fragment>
+
+</Wix>
