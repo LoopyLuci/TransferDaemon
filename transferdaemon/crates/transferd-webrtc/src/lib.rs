@@ -7,6 +7,8 @@ pub mod media;
 pub mod manager;
 pub mod session;
 pub mod types;
+#[cfg(feature = "grpc-signaling")]
+pub mod grpc_signaling;
 
 pub use manager::CallManager;
 pub use media::{MediaCapture, MockMediaCapture, SilentCapture};
