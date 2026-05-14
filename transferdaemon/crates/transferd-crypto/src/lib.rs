@@ -1,6 +1,7 @@
 pub mod common;
 pub mod epochs;
 pub mod handshake;
+pub mod identity;
 
 #[cfg(target_arch = "x86_64")]
 pub mod fused_x86;
@@ -21,3 +22,4 @@ pub use fused_aarch64::{DecryptError, DmiDecryptor, DmiEncryptor, EncryptResult}
 pub use fused_portable::{DecryptError, DmiDecryptor, DmiEncryptor, EncryptResult};
 
 pub use handshake::SessionKey;
+pub use identity::{HybridSigningKey, HybridVerifyingKey, HybridSignature, HYBRID_PK_LEN, HYBRID_SIG_LEN};

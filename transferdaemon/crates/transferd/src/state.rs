@@ -22,9 +22,13 @@ pub fn now_secs() -> u64 {
 
 #[derive(Debug, Clone, Default)]
 pub struct Identity {
-    pub public_key:   String, // hex-encoded 32-byte Ed25519 key
-    pub display_name: String,
-    pub phrase:       String, // 12-word recovery phrase (kept in memory for auto-save)
+    /// Hex-encoded 32-byte Ed25519 verifying key (classical component).
+    pub public_key:          String,
+    /// Hex-encoded 2624-byte hybrid public key: `ed25519_pk ‖ ml_dsa_87_pk`.
+    /// Empty on very old records that pre-date the quantum upgrade.
+    pub hybrid_public_key:   String,
+    pub display_name:        String,
+    pub phrase:              String, // 12-word recovery phrase (kept in memory for auto-save)
 }
 
 // ---------------------------------------------------------------------------
@@ -163,10 +167,11 @@ impl DaemonState {
     fn snapshot(&self) -> PersistedUserData {
         let id = self.identity.as_ref();
         PersistedUserData {
-            version:         1,
-            display_name:    id.map(|i| i.display_name.clone()).unwrap_or_default(),
-            public_key_hex:  id.map(|i| i.public_key.clone()).unwrap_or_default(),
-            recovery_phrase: id.map(|i| i.phrase.clone()).unwrap_or_default(),
+            version:              1,
+            display_name:         id.map(|i| i.display_name.clone()).unwrap_or_default(),
+            public_key_hex:       id.map(|i| i.public_key.clone()).unwrap_or_default(),
+            hybrid_public_key_hex: id.map(|i| i.hybrid_public_key.clone()).unwrap_or_default(),
+            recovery_phrase:      id.map(|i| i.phrase.clone()).unwrap_or_default(),
             contacts: self.contacts.iter().map(|c| transferd_store::PersistedContact {
                 id:           c.id.clone(),
                 name:         c.name.clone(),
@@ -200,9 +205,10 @@ impl DaemonState {
     /// from disk after successful decryption).
     fn apply(&mut self, data: PersistedUserData) {
         self.identity = Some(Identity {
-            public_key:   data.public_key_hex,
-            display_name: data.display_name,
-            phrase:       data.recovery_phrase,
+            public_key:        data.public_key_hex,
+            hybrid_public_key: data.hybrid_public_key_hex,
+            display_name:      data.display_name,
+            phrase:            data.recovery_phrase,
         });
         self.contacts = data.contacts.into_iter().map(|c| Contact {
             id:           c.id,

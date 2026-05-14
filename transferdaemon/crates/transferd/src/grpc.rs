@@ -36,6 +36,7 @@ use transferd_api::{
 use crate::state::{DaemonState, Contact, CallRecord, StoredMessage, now_secs};
 use rand::rngs::OsRng;
 use rand::RngCore;
+use transferd_crypto::identity::HybridSigningKey;
 
 type State = Arc<Mutex<DaemonState>>;
 type BoxStream<T> = Pin<Box<dyn futures::Stream<Item = Result<T, Status>> + Send>>;
@@ -52,9 +53,10 @@ impl AccountService for AccountServiceImpl {
         let s = self.0.lock();
         Ok(Response::new(match &s.identity {
             Some(id) => IdentityReply {
-                has_identity: true,
-                public_key:   id.public_key.clone(),
-                display_name: id.display_name.clone(),
+                has_identity:      true,
+                public_key:        id.public_key.clone(),
+                hybrid_public_key: id.hybrid_public_key.clone(),
+                display_name:      id.display_name.clone(),
             },
             None => IdentityReply { has_identity: false, ..Default::default() },
         }))
@@ -75,18 +77,22 @@ impl AccountService for AccountServiceImpl {
             .map_err(|e| Status::internal(format!("mnemonic generation failed: {e}")))?;
         let phrase = mnemonic.to_string();
 
-        // Derive Ed25519 signing key from the 64-byte BIP-39 seed (empty passphrase).
+        // Derive hybrid Ed25519 + ML-DSA-87 key pair from the 64-byte BIP-39 seed.
         let seed = mnemonic.to_seed("");
-        let signing_key = ed25519_dalek::SigningKey::from_bytes(
-            seed[..32].try_into().map_err(|_| Status::internal("seed slice error"))?,
-        );
-        let pk_hex = hex::encode(signing_key.verifying_key().to_bytes());
+        let seed_arr: &[u8; 64] = seed[..64].try_into()
+            .map_err(|_| Status::internal("seed too short"))?;
+        let hybrid_sk = HybridSigningKey::from_bip39_seed(seed_arr);
+        let hybrid_vk = hybrid_sk.verifying_key();
+        // Classical public key (first 32 bytes of hybrid key, hex-encoded).
+        let pk_hex = hex::encode(&hybrid_vk.to_bytes()[..32]);
+        let hybrid_pk_hex = hybrid_vk.to_hex();
 
         let mut s = self.0.lock();
         s.identity = Some(crate::state::Identity {
-            public_key:   pk_hex,
-            display_name: name,
-            phrase:       phrase.clone(),
+            public_key:        pk_hex,
+            hybrid_public_key: hybrid_pk_hex,
+            display_name:      name,
+            phrase:            phrase.clone(),
         });
         s.set_phrase(&phrase);
         s.try_save();
@@ -102,12 +108,14 @@ impl AccountService for AccountServiceImpl {
         let mnemonic = phrase_str.trim().parse::<bip39::Mnemonic>()
             .map_err(|e| Status::invalid_argument(format!("invalid recovery phrase: {e}")))?;
 
-        // Re-derive the same Ed25519 key from the phrase.
+        // Re-derive the hybrid Ed25519 + ML-DSA-87 key pair from the phrase.
         let seed = mnemonic.to_seed("");
-        let signing_key = ed25519_dalek::SigningKey::from_bytes(
-            seed[..32].try_into().map_err(|_| Status::internal("seed slice error"))?,
-        );
-        let pk_hex = hex::encode(signing_key.verifying_key().to_bytes());
+        let seed_arr: &[u8; 64] = seed[..64].try_into()
+            .map_err(|_| Status::internal("seed too short"))?;
+        let hybrid_sk = HybridSigningKey::from_bip39_seed(seed_arr);
+        let hybrid_vk = hybrid_sk.verifying_key();
+        let pk_hex = hex::encode(&hybrid_vk.to_bytes()[..32]);
+        let hybrid_pk_hex = hybrid_vk.to_hex();
 
         let mut s = self.0.lock();
 
@@ -124,22 +132,30 @@ impl AccountService for AccountServiceImpl {
                 .filter(|n| !n.is_empty())
                 .unwrap_or_default();
             s.identity = Some(crate::state::Identity {
-                public_key:   pk_hex.clone(),
-                display_name: display_name.clone(),
-                phrase:       phrase_str.clone(),
+                public_key:        pk_hex.clone(),
+                hybrid_public_key: hybrid_pk_hex.clone(),
+                display_name:      display_name.clone(),
+                phrase:            phrase_str.clone(),
             });
             s.set_phrase(&phrase_str);
             s.try_save(); // create the store file for future restores
+        } else if let Some(ref mut id) = s.identity {
+            // Upgrade: if an existing store lacked the hybrid key, populate it now.
+            if id.hybrid_public_key.is_empty() {
+                id.hybrid_public_key = hybrid_pk_hex;
+                s.try_save();
+            }
         }
 
-        let (pk, name) = {
+        let (pk, hpk, name) = {
             let id = s.identity.as_ref().unwrap();
-            (id.public_key.clone(), id.display_name.clone())
+            (id.public_key.clone(), id.hybrid_public_key.clone(), id.display_name.clone())
         };
         Ok(Response::new(IdentityReply {
-            has_identity: true,
-            public_key:   pk,
-            display_name: name,
+            has_identity:      true,
+            public_key:        pk,
+            hybrid_public_key: hpk,
+            display_name:      name,
         }))
     }
 

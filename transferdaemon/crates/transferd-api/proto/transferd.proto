@@ -15,9 +15,12 @@ service AccountService {
 message Empty {}
 
 message IdentityReply {
-    bool   has_identity  = 1;
-    string public_key    = 2;
-    string display_name  = 3;
+    bool   has_identity       = 1;
+    string public_key         = 2;
+    string display_name       = 3;
+    // Hex-encoded 2624-byte hybrid public key: ed25519_pk ‖ ml_dsa_87_pk.
+    // Empty on daemons that pre-date the quantum-resistant identity upgrade.
+    string hybrid_public_key  = 4;
 }
 
 message CreateIdentityRequest { string display_name = 1; }

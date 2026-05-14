@@ -122,18 +122,23 @@ pub struct PersistedMessage {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PersistedUserData {
-    /// Bump when the schema changes (current: 1).
-    pub version:          u32,
-    pub display_name:     String,
-    pub public_key_hex:   String,
-    pub recovery_phrase:  String,
-    pub contacts:         Vec<PersistedContact>,
+    /// Bump when the schema changes (current: 2).
+    pub version:               u32,
+    pub display_name:          String,
+    /// Hex-encoded 32-byte Ed25519 verifying key.
+    pub public_key_hex:        String,
+    /// Hex-encoded 2624-byte hybrid public key: `ed25519_pk ‖ ml_dsa_87_pk`.
+    /// Empty on records written before the quantum-resistant identity upgrade.
+    #[serde(default)]
+    pub hybrid_public_key_hex: String,
+    pub recovery_phrase:       String,
+    pub contacts:              Vec<PersistedContact>,
     /// contact_id → messages
-    pub messages:         HashMap<String, Vec<PersistedMessage>>,
-    pub settings:         HashMap<String, String>,
-    pub next_id:          u64,
-    pub created_at:       u64,
-    pub last_modified:    u64,
+    pub messages:              HashMap<String, Vec<PersistedMessage>>,
+    pub settings:              HashMap<String, String>,
+    pub next_id:               u64,
+    pub created_at:            u64,
+    pub last_modified:         u64,
 }
 
 // ---------------------------------------------------------------------------
@@ -290,10 +295,11 @@ mod tests {
 
     fn test_data() -> PersistedUserData {
         PersistedUserData {
-            version:         1,
-            display_name:    "Alice".into(),
-            public_key_hex:  "abcd".repeat(16),
-            recovery_phrase: "word ".repeat(12).trim().into(),
+            version:               2,
+            display_name:          "Alice".into(),
+            public_key_hex:        "abcd".repeat(16),
+            hybrid_public_key_hex: "ef01".repeat(656), // 2624 bytes hex = 5248 chars
+            recovery_phrase:       "word ".repeat(12).trim().into(),
             contacts: vec![PersistedContact {
                 id:           "bob-key".into(),
                 name:         "Bob".into(),

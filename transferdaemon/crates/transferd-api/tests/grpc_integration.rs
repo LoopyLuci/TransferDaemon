@@ -18,8 +18,8 @@ use transferd_api::{
     SettingsService, SettingsServiceServer,
     AddContactRequest, ContactList, ContactReply, CreateIdentityRequest, Empty,
     GetMessagesRequest, GetSettingRequest, IdentityReply, MessageList, MessageReply,
-    PublicKeyReply, RecoveryPhraseReply, RestoreIdentityRequest, SendTextRequest,
-    SetSettingRequest, SettingReply, TransferList, TransferReply,
+    PublicKeyReply, RecoveryPhraseReply, RestoreIdentityRequest, SendFileRequest,
+    SendTextRequest, SetSettingRequest, SettingReply, TransferList, TransferReply,
     AccountServiceClient, FriendServiceClient, MessageServiceClient,
     TransferServiceClient, SettingsServiceClient,
 };
@@ -65,9 +65,10 @@ impl AccountService for TestAccountService {
     async fn get_identity(&self, _: Request<Empty>) -> Result<Response<IdentityReply>, Status> {
         let s = self.0.lock().unwrap();
         Ok(Response::new(IdentityReply {
-            has_identity: s.public_key.is_some(),
-            public_key: s.public_key.clone().unwrap_or_default(),
-            display_name: s.display_name.clone().unwrap_or_default(),
+            has_identity:      s.public_key.is_some(),
+            public_key:        s.public_key.clone().unwrap_or_default(),
+            hybrid_public_key: String::new(),
+            display_name:      s.display_name.clone().unwrap_or_default(),
         }))
     }
 
@@ -97,9 +98,10 @@ impl AccountService for TestAccountService {
         s.public_key = Some("cafebabe00000000cafebabe00000000cafebabe00000000cafebabe00000000".into());
         s.display_name = Some("Restored".into());
         Ok(Response::new(IdentityReply {
-            has_identity: true,
-            public_key: s.public_key.clone().unwrap(),
-            display_name: s.display_name.clone().unwrap(),
+            has_identity:      true,
+            public_key:        s.public_key.clone().unwrap(),
+            hybrid_public_key: String::new(),
+            display_name:      s.display_name.clone().unwrap(),
         }))
     }
 
@@ -203,6 +205,10 @@ impl TransferService for TestTransferService {
                 bps: 50_000,
             }],
         }))
+    }
+
+    async fn send_file(&self, _: Request<SendFileRequest>) -> Result<Response<MessageReply>, Status> {
+        Err(Status::unimplemented("send_file not implemented in test stub"))
     }
 }
 
