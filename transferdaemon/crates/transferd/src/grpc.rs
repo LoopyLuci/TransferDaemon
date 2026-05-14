@@ -34,6 +34,8 @@ use transferd_api::{
 };
 
 use crate::state::{DaemonState, Contact, CallRecord, StoredMessage, now_secs};
+use rand::rngs::OsRng;
+use rand::RngCore;
 
 type State = Arc<Mutex<DaemonState>>;
 type BoxStream<T> = Pin<Box<dyn futures::Stream<Item = Result<T, Status>> + Send>>;
@@ -65,28 +67,62 @@ impl AccountService for AccountServiceImpl {
         if name.trim().is_empty() {
             return Err(Status::invalid_argument("display name required"));
         }
-        let phrase = "abandon ability able about above absent absorb abstract absurd abuse access accident".to_string();
-        let pk = "aabbccdd00112233aabbccdd00112233aabbccdd00112233aabbccdd00112233".to_string();
+
+        // 128 bits of fresh OS entropy → 12-word BIP-39 mnemonic.
+        let mut entropy = [0u8; 16];
+        OsRng.fill_bytes(&mut entropy);
+        let mnemonic = bip39::Mnemonic::from_entropy(&entropy)
+            .map_err(|e| Status::internal(format!("mnemonic generation failed: {e}")))?;
+        let phrase = mnemonic.to_string();
+
+        // Derive Ed25519 signing key from the 64-byte BIP-39 seed (empty passphrase).
+        let seed = mnemonic.to_seed("");
+        let signing_key = ed25519_dalek::SigningKey::from_bytes(
+            seed[..32].try_into().map_err(|_| Status::internal("seed slice error"))?,
+        );
+        let pk_hex = hex::encode(signing_key.verifying_key().to_bytes());
+
         let mut s = self.0.lock();
-        s.identity = Some(crate::state::Identity { public_key: pk, display_name: name, phrase: phrase.clone() });
+        s.identity = Some(crate::state::Identity {
+            public_key: pk_hex,
+            display_name: name,
+            phrase: phrase.clone(),
+        });
         Ok(Response::new(RecoveryPhraseReply { phrase }))
     }
 
     async fn restore_identity(
         &self, req: Request<RestoreIdentityRequest>,
     ) -> Result<Response<IdentityReply>, Status> {
-        let phrase = req.into_inner().phrase;
-        if phrase.split_whitespace().count() < 12 {
-            return Err(Status::invalid_argument("recovery phrase must be at least 12 words"));
-        }
-        let pk = "cafebabe00000000cafebabe00000000cafebabe00000000cafebabe00000000".to_string();
+        let phrase_str = req.into_inner().phrase;
+
+        // Parse and validate the BIP-39 phrase (also rejects unknown words).
+        let mnemonic = phrase_str.trim().parse::<bip39::Mnemonic>()
+            .map_err(|e| Status::invalid_argument(format!("invalid recovery phrase: {e}")))?;
+
+        // Re-derive the same Ed25519 key from the phrase.
+        let seed = mnemonic.to_seed("");
+        let signing_key = ed25519_dalek::SigningKey::from_bytes(
+            seed[..32].try_into().map_err(|_| Status::internal("seed slice error"))?,
+        );
+        let pk_hex = hex::encode(signing_key.verifying_key().to_bytes());
+
         let mut s = self.0.lock();
+        // Preserve existing display name if available, otherwise use a default.
+        let display_name = s.identity.as_ref()
+            .map(|i| i.display_name.clone())
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| "Restored User".into());
         s.identity = Some(crate::state::Identity {
-            public_key: pk.clone(),
-            display_name: "Restored Identity".into(),
-            phrase: String::new(),
+            public_key: pk_hex.clone(),
+            display_name: display_name.clone(),
+            phrase: phrase_str,
         });
-        Ok(Response::new(IdentityReply { has_identity: true, public_key: pk, display_name: "Restored Identity".into() }))
+        Ok(Response::new(IdentityReply {
+            has_identity: true,
+            public_key: pk_hex,
+            display_name,
+        }))
     }
 
     async fn get_public_key_hex(&self, _: Request<Empty>) -> Result<Response<PublicKeyReply>, Status> {
@@ -431,6 +467,113 @@ impl CallService for CallServiceImpl {
             Err(_) => None,
         });
         Ok(Response::new(Box::pin(stream)))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Unit tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    fn fresh_account_svc() -> AccountServiceImpl {
+        use std::sync::Arc;
+        use parking_lot::Mutex;
+        AccountServiceImpl(Arc::new(Mutex::new(crate::state::DaemonState::default())))
+    }
+
+    #[tokio::test]
+    async fn create_identity_generates_unique_phrases_and_keys() {
+        let svc = fresh_account_svc();
+        let mut phrases: HashSet<String> = HashSet::new();
+        let mut pubkeys: HashSet<String> = HashSet::new();
+
+        for i in 0..10 {
+            let req = tonic::Request::new(CreateIdentityRequest {
+                display_name: format!("user-{i}"),
+            });
+            let resp = svc.create_identity(req).await.unwrap().into_inner();
+
+            // Phrase must be exactly 12 BIP-39 words.
+            assert_eq!(
+                resp.phrase.split_whitespace().count(), 12,
+                "Expected 12 words, got: {}", resp.phrase
+            );
+
+            // Each phrase must be unique.
+            assert!(
+                phrases.insert(resp.phrase.clone()),
+                "Duplicate recovery phrase on iteration {i}: {}", resp.phrase
+            );
+
+            // Public key stored must be 64 hex chars.
+            let pk = svc.0.lock().identity.as_ref().unwrap().public_key.clone();
+            assert_eq!(pk.len(), 64, "Public key must be 64 hex chars, got {}", pk.len());
+
+            // Each public key must be unique.
+            assert!(
+                pubkeys.insert(pk.clone()),
+                "Duplicate public key on iteration {i}: {pk}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn restore_identity_reproduces_same_key() {
+        let svc = fresh_account_svc();
+
+        // Create a fresh identity.
+        let create_resp = svc
+            .create_identity(tonic::Request::new(CreateIdentityRequest {
+                display_name: "Alice".into(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+        let original_pk = svc.0.lock().identity.as_ref().unwrap().public_key.clone();
+
+        // Wipe the identity to simulate a fresh daemon start.
+        svc.0.lock().identity = None;
+
+        // Restore from the phrase.
+        let restore_resp = svc
+            .restore_identity(tonic::Request::new(RestoreIdentityRequest {
+                phrase: create_resp.phrase.clone(),
+            }))
+            .await
+            .unwrap()
+            .into_inner();
+
+        assert!(restore_resp.has_identity);
+        assert_eq!(
+            restore_resp.public_key, original_pk,
+            "Restored public key must match the original"
+        );
+    }
+
+    #[tokio::test]
+    async fn restore_identity_rejects_invalid_phrase() {
+        let svc = fresh_account_svc();
+        let result = svc
+            .restore_identity(tonic::Request::new(RestoreIdentityRequest {
+                phrase: "not a real bip39 phrase with enough words here abc".into(),
+            }))
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn create_identity_rejects_empty_name() {
+        let svc = fresh_account_svc();
+        let result = svc
+            .create_identity(tonic::Request::new(CreateIdentityRequest {
+                display_name: "  ".into(),
+            }))
+            .await;
+        assert!(result.is_err());
     }
 }
 

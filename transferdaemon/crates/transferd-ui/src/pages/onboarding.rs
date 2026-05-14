@@ -105,7 +105,9 @@ impl OnboardingPage {
                 let phrase = rt.block_on(state.daemon.create_identity(name));
                 match phrase {
                     Ok(p) => {
-                        self.recovery_phrase = p;
+                        self.recovery_phrase = p.clone();
+                        // Keep phrase in AppState so Settings can offer a reveal button.
+                        state.recovery_phrase = Some(p);
                         // Refresh identity so Settings sees it immediately after creation.
                         state.identity = rt.block_on(state.daemon.get_identity());
                         self.step = Step::ShowPhrase;

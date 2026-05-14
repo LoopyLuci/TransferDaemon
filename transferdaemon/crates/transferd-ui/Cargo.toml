@@ -32,3 +32,7 @@ transferd-crypto = { path = "../transferd-crypto" }
 transferd-api    = { path = "../transferd-api" }
 transferd-webrtc = { path = "../transferd-webrtc" }
 tonic            = { workspace = true }
+rand             = { workspace = true }
+bip39            = { workspace = true }
+ed25519-dalek    = { workspace = true }
+hex              = { workspace = true }

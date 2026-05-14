@@ -28,6 +28,10 @@ pub struct AppState {
     pub daemon: Arc<dyn DaemonApi>,
     pub daemon_is_live: bool, // true = gRPC daemon, false = MockDaemon
     pub identity: Option<Identity>,
+    /// Recovery phrase returned by the most recent create_identity call.
+    /// Only present in-memory for the current session; shown once in onboarding
+    /// and again if the user reveals it in Settings before restarting.
+    pub recovery_phrase: Option<String>,
     pub contacts: Vec<Contact>,
     pub transfers: Vec<TransferStatus>,
     pub open_chat: Option<String>, // contact ID
@@ -46,6 +50,7 @@ impl AppState {
             daemon,
             daemon_is_live,
             identity,
+            recovery_phrase: None,
             contacts,
             transfers,
             open_chat: None,

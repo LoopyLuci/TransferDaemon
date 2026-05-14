@@ -25,6 +25,10 @@ uuid         = { version = "1", features = ["v4"] }
 transferd-core   = { path = "../transferd-core" }
 transferd-api    = { path = "../transferd-api" }
 transferd-crypto = { path = "../transferd-crypto" }
+rand      = { workspace = true }
+bip39     = { workspace = true }
+ed25519-dalek = { workspace = true }
+hex       = { workspace = true }
 
 [dev-dependencies]
 futures-core = "0.3"

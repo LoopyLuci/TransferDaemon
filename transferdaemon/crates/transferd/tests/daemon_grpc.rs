@@ -91,11 +91,19 @@ async fn daemon_restore_identity_bad_phrase_rejected() {
 async fn daemon_restore_identity_twelve_words() {
     let addr = start_daemon().await;
     let mut ac = client!(AccountServiceClient<_>, addr);
-    let r = ac.restore_identity(RestoreIdentityRequest {
-        phrase: "abandon ability able about above absent absorb abstract absurd abuse access accident".into(),
-    }).await.unwrap().into_inner();
+    // Create a fresh identity first to get a valid BIP-39 phrase.
+    let created = ac.create_identity(CreateIdentityRequest { display_name: "Test".into() })
+        .await.unwrap().into_inner();
+    assert_eq!(created.phrase.split_whitespace().count(), 12);
+
+    // Restore from the phrase — must reproduce the same public key.
+    let original_pk = ac.get_public_key_hex(Empty {}).await.unwrap().into_inner().hex;
+
+    let r = ac.restore_identity(RestoreIdentityRequest { phrase: created.phrase.clone() })
+        .await.unwrap().into_inner();
     assert!(r.has_identity);
-    assert!(!r.public_key.is_empty());
+    assert_eq!(r.public_key.len(), 64, "restored public key must be 64 hex chars");
+    assert_eq!(r.public_key, original_pk, "restored key must match the original");
 }
 
 #[tokio::test]

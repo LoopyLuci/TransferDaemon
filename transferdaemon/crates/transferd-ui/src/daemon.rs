@@ -8,6 +8,9 @@
 
 use crate::types::{Contact, Identity, Message, MessageContent, MessageStatus, TransferStatus};
 use async_trait::async_trait;
+use rand::rngs::OsRng;
+use rand::RngCore;
+// bip39, ed25519_dalek, hex used in MockDaemon crypto methods below.
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -168,23 +171,38 @@ impl DaemonApi for MockDaemon {
     }
 
     async fn create_identity(&self, display_name: String) -> Result<String, DaemonError> {
-        let phrase = "abandon ability able about above absent absorb abstract absurd abuse access accident".into();
-        let identity = Identity {
-            public_key: "deadbeefcafe0000deadbeefcafe0000deadbeefcafe0000deadbeefcafe0000".into(),
-            display_name,
-        };
+        // Generate 128 bits of fresh OS entropy → 12-word BIP-39 mnemonic.
+        let mut entropy = [0u8; 16];
+        OsRng.fill_bytes(&mut entropy);
+        let mnemonic = bip39::Mnemonic::from_entropy(&entropy)
+            .map_err(|e| DaemonError::InvalidInput(format!("mnemonic: {e}")))?;
+        let phrase = mnemonic.to_string();
+
+        // Derive Ed25519 key from BIP-39 seed (empty passphrase).
+        let seed = mnemonic.to_seed("");
+        let signing_key = ed25519_dalek::SigningKey::from_bytes(
+            seed[..32].try_into().expect("seed slice"),
+        );
+        let public_key = hex::encode(signing_key.verifying_key().to_bytes());
+
+        let identity = Identity { public_key, display_name };
         self.state.lock().unwrap().identity = Some(identity);
         Ok(phrase)
     }
 
     async fn restore_identity(&self, phrase: String) -> Result<Identity, DaemonError> {
-        if phrase.split_whitespace().count() < 12 {
-            return Err(DaemonError::InvalidInput("Recovery phrase must be at least 12 words".into()));
-        }
-        let identity = Identity {
-            public_key: "cafebabe0000deadcafebabe0000deadcafebabe0000deadcafebabe0000dead".into(),
-            display_name: "Restored User".into(),
-        };
+        // Parse and validate the BIP-39 phrase.
+        let mnemonic = phrase.trim().parse::<bip39::Mnemonic>()
+            .map_err(|e| DaemonError::InvalidInput(format!("Invalid recovery phrase: {e}")))?;
+
+        // Re-derive the same Ed25519 key deterministically.
+        let seed = mnemonic.to_seed("");
+        let signing_key = ed25519_dalek::SigningKey::from_bytes(
+            seed[..32].try_into().expect("seed slice"),
+        );
+        let public_key = hex::encode(signing_key.verifying_key().to_bytes());
+
+        let identity = Identity { public_key, display_name: "Restored User".into() };
         self.state.lock().unwrap().identity = Some(identity.clone());
         Ok(identity)
     }
