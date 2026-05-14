@@ -11,6 +11,7 @@ members = [
     "crates/transferd-webrtc",
     "crates/transferd-mobile",
     "crates/launcher",
+    "crates/transferd-tui",
 ]
 resolver = "2"
 

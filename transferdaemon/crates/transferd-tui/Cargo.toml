@@ -1,0 +1,23 @@
+[package]
+name = "transferd-tui"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "transferd-tui"
+path = "src/main.rs"
+
+[dependencies]
+ratatui   = "0.27"
+crossterm = "0.27"
+tokio     = { workspace = true }
+async-trait = { workspace = true }
+thiserror   = { workspace = true }
+serde       = { workspace = true }
+rand        = { workspace = true }
+bip39       = { workspace = true }
+ed25519-dalek = { workspace = true }
+hex         = { workspace = true }
+tonic       = { workspace = true }
+transferd-api = { path = "../transferd-api" }
+qrcode      = "0.14"
