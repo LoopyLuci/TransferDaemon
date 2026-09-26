@@ -1,5 +1,25 @@
 # Changelog
 
+## v2.1.0 - 2026-09-26
+
+### Autonomous nodes + resilient transport
+
+- **Multi-relay protocol + auto-routing**: a peer publishes a LIST of relay
+  endpoints (`PeerEndpoint.relays`); `TRANSFERD_RELAY_ADDR` is comma-separated;
+  a session builds one lane per shared relay and the ATE fails over when a
+  relay dies (proven both directions by `text_round_trips_over_two_relays_with_failover`).
+  The handshake routes through the first relay that responds.
+- **WebSocket relay (`relayd-ws`)**: the same blind, PoW-authenticated relay
+  over WebSocket frames (same wire format) — traverses any NAT/firewall.
+- **Cloudflare free-tier Worker** (`deploy/cloudflare-worker/`): the relay as a
+  Durable Object on Cloudflare's edge, zero servers, byte-level bincode
+  compatible with the Rust client. PoW delegated to Cloudflare edge protections;
+  self-hosted relays keep full BLAKE3 PoW.
+- **System design** (`docs/NODE_SYSTEM.md`): node roles (relay/relay-ws/
+  bootstrap/peer/ingress), the ranked-lanes transport model, the deployment
+  matrix (VPS/Docker/Cloudflare/Android/router/metal), Tailscale/NGINX
+  integration plan, and the security/evolution model.
+
 ## v2.0.1 - 2026-09-26
 
 ### Hosted relay + Internet-routability
