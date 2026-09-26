@@ -12,7 +12,7 @@ fn bench_lane_encrypt(c: &mut Criterion) {
     let nonce = DmiEncryptor::nonce_for(1, 0);
 
     for size in [1024usize, 16 * 1024, 64 * 1024] {
-        let mut buf = vec![0xABu8; size];
+        let buf = vec![0xABu8; size];
         c.bench_function(&format!("lane_encrypt_{size}_bytes"), |b| {
             b.iter(|| {
                 let mut v = black_box(buf.clone());
