@@ -180,7 +180,7 @@ mod tests {
         futures_util::stream::SplitStream<WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>>,
     ) {
         let req = format!("ws://{addr}/").into_client_request().unwrap();
-        let (mut ws, _) = tokio_tungstenite::connect_async(req).await.unwrap();
+        let (ws, _) = tokio_tungstenite::connect_async(req).await.unwrap();
         let (mut sink, mut source) = ws.split();
 
         // Ask for the challenge, solve PoW, register.
@@ -232,7 +232,7 @@ mod tests {
 
         let token_a = [0xAAu8; 32];
         let token_b = [0xBBu8; 32];
-        let (mut a_sink, mut a_source) = connect_and_register(addr, token_a).await;
+        let (mut a_sink, _a_source) = connect_and_register(addr, token_a).await;
         let (_b_sink, mut b_source) = connect_and_register(addr, token_b).await;
 
         // A forwards an opaque blob to B.
