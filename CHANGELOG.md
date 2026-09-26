@@ -1,5 +1,13 @@
 # Changelog
 
+## v2.0.1 - 2026-09-26
+
+### Hosted relay + Internet-routability
+
+- **`DhtNode::start_with_advertised` + `TRANSFERD_DHT_ADVERTISE`**: a DHT node bound to `0.0.0.0` (as a public bootstrap must be) can now advertise its externally-reachable address, fixing the #22 wildcard problem for public operation. New test `advertised_address_is_used_for_routing`.
+- **`dhtd`** (transferd-relay): standalone DHT bootstrap binary for a VPS.
+- **Deployment package** (`deploy/relayd.Dockerfile`, `docker-compose.yml`, `docs/DEPLOYMENT.md`): runs `relayd` + `dhtd` publicly. NAT rationale documented (45 s keepalive inside the 90 s relay TTL; reply-to-src; bootstrap-centric discovery), client config for desktop env + mobile `daemon.config`, and the security model (PoW difficulty, per-IP token bucket, TTL pruning).
+
 ## v2.0.0 - 2026-09-26
 
 ### On-device relay E2E (desktop <-> Kindle over the LAN relay)
