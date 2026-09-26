@@ -194,7 +194,7 @@ mod tests {
             .await
             .expect("challenge reply must arrive within 5s")
             .expect("stream must stay open");
-            if let Some(Ok(Message::Binary(f))) = frame {
+            if let Ok(Message::Binary(f)) = frame {
                 if let Some((Tag::Challenge, body)) = split(&f) {
                     let c: ChallengeMsg = bincode::deserialize(body).unwrap();
                     break (c.challenge, c.difficulty);
