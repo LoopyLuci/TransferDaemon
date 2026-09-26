@@ -18,6 +18,8 @@ futures = { workspace = true }
 ring-channel = { path = "../ring-channel" }
 transferd-crypto = { path = "../transferd-crypto" }
 relayd = { path = "../relayd" }
+tokio-tungstenite = "0.24"
+futures-util = "0.3"
 arti-client = { version = "0.22", optional = true }
 
 [dev-dependencies]

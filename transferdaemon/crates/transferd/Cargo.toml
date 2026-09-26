@@ -52,4 +52,5 @@ futures-core     = "0.3"
 tempfile         = "3"
 transferd-webrtc = { path = "../transferd-webrtc", features = ["grpc-signaling"] }
 tracing-subscriber = { workspace = true }
+tokio-tungstenite = "0.24"
 

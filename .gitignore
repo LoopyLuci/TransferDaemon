@@ -79,4 +79,4 @@ Desktop.ini
 /Screenshots/
 # Android signing keystore (never commit the signing key)
 /transferdaemon.keystore
-
+ProjectData.md

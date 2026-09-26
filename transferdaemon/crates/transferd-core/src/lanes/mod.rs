@@ -2,6 +2,8 @@ pub mod dmi_lane;
 pub mod simulated_wifi;
 pub mod relay_lane;
 pub mod relay_client;
+pub mod relay_ws_client;
+pub mod relay_ws_lane;
 pub mod tcp_lane;
 pub mod swarm_lane;
 #[cfg(feature = "tor-transport")]

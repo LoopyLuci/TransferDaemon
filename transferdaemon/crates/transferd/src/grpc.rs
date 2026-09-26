@@ -95,8 +95,11 @@ async fn ensure_contact_session(state: &State, contact_id: &str, address: Option
     let policy = { let s = state.lock(); s.settings.get("conn.policy").cloned().unwrap_or_else(|| "auto".into()) };
 
     // Prefer a direct address when one is known; otherwise use the relay set.
-    let direct = resolved.iter().find(|a| !a.starts_with("relay://"));
-    let relays: Vec<&String> = resolved.iter().filter(|a| a.starts_with("relay://")).collect();
+    let direct = resolved.iter().find(|a| !a.starts_with("relay://") && !a.starts_with("wsrelay://"));
+    let relays: Vec<&String> = resolved
+        .iter()
+        .filter(|a| a.starts_with("relay://") || a.starts_with("wsrelay://"))
+        .collect();
 
     let session = if let Some(d) = direct {
         if policy == "relay" {
@@ -122,7 +125,11 @@ async fn ensure_contact_session(state: &State, contact_id: &str, address: Option
         let mut shared: Vec<std::net::SocketAddr> = Vec::new();
         let mut token = String::new();
         for r in &relays {
-            if let Some((a, t)) = r.strip_prefix("relay://").and_then(|r| r.split_once('/')) {
+            // Both `relay://host:port/token` and `wsrelay://host:port/token`.
+            let rest = r
+                .strip_prefix("relay://")
+                .or_else(|| r.strip_prefix("wsrelay://"));
+            if let Some((a, t)) = rest.and_then(|r| r.split_once('/')) {
                 if let Ok(addr) = a.parse::<std::net::SocketAddr>() {
                     if hub.as_ref().map(|h| h.has_relay(addr)).unwrap_or(false) {
                         shared.push(addr);

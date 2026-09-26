@@ -502,18 +502,40 @@ pub async fn establish_relay_session(
 
     let mut lanes: Vec<Box<dyn transferd_core::transport::TransportLane>> = Vec::new();
     for (idx, relay_addr) in relay_order.iter().enumerate() {
-        let lane = transferd_core::lanes::relay_lane::RelayLane::new(
-            0x52454C59 + idx as u32, // "RELY"+n lane ID
-            *relay_addr,
-            self_token,
-            peer_token,
-            &send_key,
-            &recv_key,
-            false, // registration is owned by the hub
-        )
-        .await
-        .map_err(|e| format!("Failed to create relay lane: {e}"))?;
-        lanes.push(Box::new(lane));
+        let lane_id = 0x52454C59 + idx as u32; // "RELY"+n lane ID
+        let lane: Box<dyn transferd_core::transport::TransportLane> =
+            match hub.relay_kind(*relay_addr) {
+                Some(crate::relay_hub::RelayKind::Udp) => {
+                    Box::new(transferd_core::lanes::relay_lane::RelayLane::new(
+                        lane_id,
+                        *relay_addr,
+                        self_token,
+                        peer_token,
+                        &send_key,
+                        &recv_key,
+                        false, // registration is owned by the hub
+                    )
+                    .await
+                    .map_err(|e| format!("Failed to create relay lane: {e}"))?)
+                }
+                Some(crate::relay_hub::RelayKind::Ws) => {
+                    let ws_client = hub
+                        .ws_client_for(*relay_addr)
+                        .ok_or_else(|| "ws client missing".to_string())?;
+                    Box::new(transferd_core::lanes::relay_ws_lane::RelayWsLane::new(
+                        lane_id,
+                        ws_client,
+                        self_token,
+                        peer_token,
+                        &send_key,
+                    )
+                    .await)
+                }
+                None => {
+                    return Err(format!("relay not registered on {relay_addr}"));
+                }
+            };
+        lanes.push(lane);
     }
 
     tracing::info!("[PeerManager] relay session established for {contact_id} via {} relays", relay_addrs.len());

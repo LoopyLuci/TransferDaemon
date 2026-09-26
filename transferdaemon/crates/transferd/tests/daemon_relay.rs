@@ -496,3 +496,102 @@ async fn text_round_trips_over_two_relays_with_failover() {
         "reverse leg must survive relay 1 death"
     );
 }
+/// Two daemons deliver through a WebSocket relay (the relayd-ws protocol) —
+/// the firewall-agnostic transport. Both register on the WS relay, publish
+/// ws:// endpoints to the DHT, and the session builds a WS relay lane.
+#[tokio::test]
+async fn text_delivers_between_two_daemons_over_ws_relay() {
+    let _guard = relay_test_lock().await;
+    // In-process WebSocket relay (difficulty 4 = fast PoW).
+    let ws_relay = Arc::new(TokioMutex::new(relayd::ws::WsRelay::new(4, 90)));
+    tokio::spawn(relayd::ws::maintenance_loop(ws_relay.clone()));
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let ws_addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        loop {
+            let Ok((stream, peer)) = listener.accept().await else { break };
+            let ws_relay = ws_relay.clone();
+            tokio::spawn(async move {
+                let Ok(ws) = tokio_tungstenite::accept_async(stream).await else { return };
+                relayd::ws::handle_connection(ws, peer, ws_relay).await;
+            });
+        }
+    });
+
+    std::env::set_var("TRANSFERD_RELAY_ADDR", format!("ws://{ws_addr}"));
+
+    // Two DHT nodes that know each other.
+    let dht_a = Arc::new(transferd_relay::DhtNode::start("127.0.0.1:0", [0x41u8; 32]).await.unwrap());
+    let dht_b = Arc::new(transferd_relay::DhtNode::start("127.0.0.1:0", [0x42u8; 32]).await.unwrap());
+    let (da, db) = (dht_a.addr(), dht_b.addr());
+    dht_a.bootstrap(vec![db]).await;
+    dht_b.bootstrap(vec![da]).await;
+
+    // ── Bob (receiver) ───────────────────────────────────────────────────────
+    let b_state = new_state();
+    b_state.lock().dht = Some(dht_b.clone());
+    let b_grpc = start_grpc(b_state.clone()).await;
+    let b_url = format!("http://{b_grpc}");
+    let mut b_acct = AccountServiceClient::connect(b_url.clone()).await.unwrap();
+    b_acct
+        .create_identity(CreateIdentityRequest { display_name: "Bob".into() })
+        .await
+        .unwrap();
+    for _ in 0..100 {
+        if b_state.lock().relay_hub.is_some() { break; }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(b_state.lock().relay_hub.is_some(), "Bob hub must register on the WS relay");
+    publish_endpoint_if_ready(&b_state).await;
+    let b_pk = b_acct.get_public_key_hex(Empty {}).await.unwrap().into_inner().hex;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // ── Alice (sender) ───────────────────────────────────────────────────────
+    let a_state = new_state();
+    a_state.lock().dht = Some(dht_a.clone());
+    let a_grpc = start_grpc(a_state.clone()).await;
+    let a_url = format!("http://{a_grpc}");
+    let mut a_acct = AccountServiceClient::connect(a_url.clone()).await.unwrap();
+    a_acct
+        .create_identity(CreateIdentityRequest { display_name: "Alice".into() })
+        .await
+        .unwrap();
+    for _ in 0..100 {
+        if a_state.lock().relay_hub.is_some() { break; }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(a_state.lock().relay_hub.is_some(), "Alice hub must register on the WS relay");
+
+    // Bob published a ws:// endpoint; Alice resolves a wsrelay:// URI.
+    let resolved = resolve_peer(&dht_a, &b_pk).await.expect("resolve Bob via DHT");
+    assert!(resolved.iter().any(|a| a.starts_with("wsrelay://")), "Bob must publish a WS relay URI: {resolved:?}");
+
+    a_state.lock().contacts.push(Contact {
+        id: b_pk.clone(),
+        name: "Bob".into(),
+        last_seen_ts: 0,
+        online: false,
+        blocked: false,
+        address: None,
+        hybrid_public_key: None,
+    });
+
+    let mut a_msg = MessageServiceClient::connect(a_url.clone()).await.unwrap();
+    a_msg
+        .send_text(SendTextRequest { contact_id: b_pk.clone(), text: "over the websocket relay".into(), reply_to: String::new() })
+        .await
+        .unwrap();
+    for _ in 0..1000 {
+        pump_transport(&a_state).await;
+        if b_state.lock().messages.values().flatten().any(|m| m.text == "over the websocket relay") { break; }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let s = b_state.lock();
+    let got = s
+        .messages
+        .values()
+        .flatten()
+        .find(|m| m.text == "over the websocket relay")
+        .expect("receiver must get the WS-relayed message");
+    assert!(!got.outbound);
+}

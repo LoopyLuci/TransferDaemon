@@ -9167,6 +9167,7 @@ dependencies = [
  "thiserror 2.0.21",
  "tokio",
  "tokio-stream",
+ "tokio-tungstenite",
  "tonic",
  "tracing",
  "tracing-subscriber",
@@ -9212,12 +9213,14 @@ dependencies = [
  "bytes",
  "criterion",
  "futures",
+ "futures-util",
  "rand 0.8.8",
  "relayd",
  "ring-channel",
  "serde",
  "thiserror 2.0.21",
  "tokio",
+ "tokio-tungstenite",
  "transferd-crypto",
 ]
 

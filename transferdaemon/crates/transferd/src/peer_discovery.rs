@@ -82,25 +82,25 @@ pub fn signing_key_from_phrase(phrase: &str) -> Option<SigningKey> {
 pub async fn publish_endpoint_if_ready(
     state: &std::sync::Arc<parking_lot::Mutex<crate::state::DaemonState>>,
 ) {
-    let (pk, phrase, relays) = {
+    let (pk, phrase, relay_strs) = {
         let s = state.lock();
         let Some(id) = &s.identity else { return };
         let Some(hub) = &s.relay_hub else { return };
         let Some(_dht) = &s.dht else { return };
-        (id.public_key.clone(), id.phrase.clone(), hub.relay_addrs())
+        (id.public_key.clone(), id.phrase.clone(), hub.relay_endpoint_strs())
     };
-    if relays.is_empty() {
+    if relay_strs.is_empty() {
         return;
     }
     let Some(key) = signing_key_from_phrase(&phrase) else {
         tracing::warn!("[dht] could not derive signing key from phrase");
         return;
     };
-    let relays: Vec<(String, String)> = relays
+    let relays: Vec<(String, String)> = relay_strs
         .into_iter()
         .map(|addr| {
             let token = crate::relay_hub::relay_token_for(&pk);
-            (addr.to_string(), hex::encode(token))
+            (addr, hex::encode(token))
         })
         .collect();
     let (first_addr, first_token) = &relays[0];
@@ -235,7 +235,14 @@ impl PeerEndpoint {
         let addrs: Vec<String> = ep
             .relay_endpoints()
             .into_iter()
-            .map(|(addr, token)| format!("relay://{addr}/{token}"))
+            .map(|(addr, token)| {
+                // `ws://host:port` / `wss://host:port` publish as WS relay URIs.
+                if let Some(stripped) = addr.strip_prefix("ws://").or_else(|| addr.strip_prefix("wss://")) {
+                    format!("wsrelay://{stripped}/{token}")
+                } else {
+                    format!("relay://{addr}/{token}")
+                }
+            })
             .collect();
         if addrs.is_empty() { None } else { Some(addrs) }
     }

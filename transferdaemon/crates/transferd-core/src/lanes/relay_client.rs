@@ -237,3 +237,12 @@ fn now_secs() -> u64 {
         .unwrap_or_default()
         .as_secs()
 }
+use crate::lanes::relay_ws_client::RelayForward;
+
+#[async_trait::async_trait]
+impl RelayForward for RelayClient {
+    async fn relay_send_forward(&self, token: [u8; 32], payload: &[u8]) -> std::io::Result<()> {
+        self.send_forward(token, payload).await
+    }
+}
+
