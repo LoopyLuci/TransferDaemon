@@ -1,5 +1,4 @@
 use crate::app::*;
-use crate::types::*;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 /// Returns `true` when the app should quit.
@@ -56,6 +55,7 @@ pub async fn handle_key(app: &mut App, key: KeyEvent) -> bool {
         KeyCode::F(2) => { app.tab = Tab::Contacts;  app.set_status(""); return false; }
         KeyCode::F(3) => { app.tab = Tab::Transfers; app.set_status(""); return false; }
         KeyCode::F(4) => { app.tab = Tab::Settings;  app.set_status(""); return false; }
+        KeyCode::F(5) => { app.tab = Tab::Telemetry; app.set_status(""); return false; }
         _ => {}
     }
 
@@ -65,6 +65,7 @@ pub async fn handle_key(app: &mut App, key: KeyEvent) -> bool {
         Tab::Contacts  => handle_contacts(app, key).await,
         Tab::Transfers => handle_transfers(app, key).await,
         Tab::Settings  => handle_settings(app, key).await,
+        Tab::Telemetry => {} // telemetry is read-only; no key handling needed
     }
 
     false
@@ -204,11 +205,10 @@ async fn handle_chats(app: &mut App, key: KeyEvent) {
 
     match app.chat_focus {
         ChatFocus::ContactList => match key.code {
-            KeyCode::Up => {
-                if app.selected_contact > 0 { app.selected_contact -= 1; app.msg_scroll = 0; }
-            }
-            KeyCode::Down => {
-                if app.selected_contact + 1 < app.contacts.len() {
+            KeyCode::Up
+                if app.selected_contact > 0 => { app.selected_contact -= 1; app.msg_scroll = 0; }
+            KeyCode::Down
+                if app.selected_contact + 1 < app.contacts.len() => {
                     app.selected_contact += 1;
                     app.msg_scroll = 0;
                     // Lazy-load messages.
@@ -219,13 +219,12 @@ async fn handle_chats(app: &mut App, key: KeyEvent) {
                         }
                     }
                 }
-            }
             KeyCode::Enter => { app.chat_focus = ChatFocus::Input; }
             _ => {}
         },
 
         ChatFocus::Messages => match key.code {
-            KeyCode::Up => { if app.msg_scroll > 0 { app.msg_scroll -= 1; } }
+            KeyCode::Up if app.msg_scroll > 0 => { app.msg_scroll -= 1; }
             KeyCode::Down => { app.msg_scroll += 1; }
             KeyCode::Enter | KeyCode::Char('i') => { app.chat_focus = ChatFocus::Input; }
             _ => {}
@@ -293,12 +292,10 @@ async fn handle_chats(app: &mut App, key: KeyEvent) {
 
 async fn handle_contacts(app: &mut App, key: KeyEvent) {
     match key.code {
-        KeyCode::Up => {
-            if app.contacts_selected > 0 { app.contacts_selected -= 1; }
-        }
-        KeyCode::Down => {
-            if app.contacts_selected + 1 < app.contacts.len() { app.contacts_selected += 1; }
-        }
+        KeyCode::Up
+            if app.contacts_selected > 0 => { app.contacts_selected -= 1; }
+        KeyCode::Down
+            if app.contacts_selected + 1 < app.contacts.len() => { app.contacts_selected += 1; }
         KeyCode::Char('a') | KeyCode::Char('A') => {
             app.modal = Some(Modal::AddContact {
                 key_input: String::new(),
@@ -312,6 +309,17 @@ async fn handle_contacts(app: &mut App, key: KeyEvent) {
                     label: c.name.clone(),
                     contact_id: c.id.clone(),
                 });
+            }
+        }
+        KeyCode::Char('b') | KeyCode::Char('B') => {
+            if let Some(c) = app.contacts.get(app.contacts_selected) {
+                let id = c.id.clone();
+                if c.blocked {
+                    let _ = app.daemon.unblock_contact(id).await;
+                } else {
+                    let _ = app.daemon.block_contact(id).await;
+                }
+                app.contacts = app.daemon.get_contacts().await;
             }
         }
         KeyCode::Char('q') | KeyCode::Char('Q') => {
@@ -341,8 +349,8 @@ async fn handle_contacts(app: &mut App, key: KeyEvent) {
 
 async fn handle_transfers(app: &mut App, key: KeyEvent) {
     match key.code {
-        KeyCode::Up   => { if app.transfers_selected > 0 { app.transfers_selected -= 1; } }
-        KeyCode::Down => { if app.transfers_selected + 1 < app.transfers.len() { app.transfers_selected += 1; } }
+        KeyCode::Up if app.transfers_selected > 0 => { app.transfers_selected -= 1; }
+        KeyCode::Down if app.transfers_selected + 1 < app.transfers.len() => { app.transfers_selected += 1; }
         KeyCode::Char('c') | KeyCode::Char('C') => {
             if let Some(t) = app.transfers.get(app.transfers_selected) {
                 let id = t.id.clone();
@@ -366,6 +374,25 @@ async fn handle_settings(app: &mut App, key: KeyEvent) {
                 app.modal = Some(Modal::RevealPhrase { phrase: phrase.clone() });
             } else {
                 app.set_status("Recovery phrase not available in this session.");
+            }
+        }
+        KeyCode::Char('q') | KeyCode::Char('Q') => {
+            if let Some(id) = &app.identity {
+                app.modal = Some(Modal::ShowQr { hex: id.public_key.clone() });
+            } else {
+                app.set_status("No identity — cannot show QR.");
+            }
+        }
+        KeyCode::Char('c') | KeyCode::Char('C') => {
+            if let Some(id) = &app.identity {
+                use base64::Engine;
+                let encoded = base64::engine::general_purpose::STANDARD.encode(id.public_key.as_bytes());
+                // OSC 52: terminal clipboard paste — works in Windows Terminal, kitty, iTerm2, xterm.
+                print!("\x1b]52;c;{encoded}\x07");
+                let _ = std::io::Write::flush(&mut std::io::stdout());
+                app.set_status("Public key copied to clipboard.");
+            } else {
+                app.set_status("No identity — nothing to copy.");
             }
         }
         _ => {}

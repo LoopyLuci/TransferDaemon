@@ -43,6 +43,7 @@ pub trait ProtocolPlugin: Send + Sync {
     /// Creates a lane connected to `endpoint` using `session_key` for encryption.
     ///
     /// `endpoint` is the scheme-specific address string, e.g. `"127.0.0.1:9000"`.
+    #[allow(clippy::type_complexity)]
     fn create_lane<'a>(
         &'a self,
         id: u32,
@@ -156,7 +157,7 @@ impl ProtocolPlugin for TcpPlugin {
             let addr: std::net::SocketAddr = endpoint
                 .parse()
                 .map_err(|_| TransportError::LinkDown(format!("invalid addr: {endpoint}")))?;
-            let lane = crate::lanes::tcp_lane::TcpLane::connect(id, addr, session_key)
+            let lane = crate::lanes::tcp_lane::TcpLane::connect(id, addr, session_key, session_key)
                 .await
                 .map_err(|e| TransportError::LinkDown(e.to_string()))?;
             Ok(Box::new(lane) as Box<dyn TransportLane>)

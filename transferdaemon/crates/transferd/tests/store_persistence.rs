@@ -81,7 +81,7 @@ async fn data_persists_across_restarts() {
         .await.unwrap();
 
     // Send a message.
-    mc1.send_text(SendTextRequest { contact_id: bob_key.clone(), text: "hello persistent world".into() })
+    mc1.send_text(SendTextRequest { contact_id: bob_key.clone(), text: "hello persistent world".into(), reply_to: String::new() })
         .await.unwrap();
 
     // Save a setting.

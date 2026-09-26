@@ -10,27 +10,37 @@ use tokio_stream::StreamExt as _;
 
 use transferd_api::{
     // Account
-    AccountService, AccountServiceServer,
+    AccountService,
     CreateIdentityRequest, RestoreIdentityRequest, IdentityReply,
     RecoveryPhraseReply, PublicKeyReply, Empty,
     // Friends
-    FriendService, FriendServiceServer,
+    FriendService,
     AddContactRequest, ContactReply, ContactList,
+    RenameContactRequest, RemoveContactRequest, BlockContactRequest,
+    SafetyNumberRequest, SafetyNumberReply,
+    UpdateService, UpdateServiceServer, UpdateReply,
     // Messages
-    MessageService, MessageServiceServer,
-    GetMessagesRequest, MessageReply, MessageList, SendTextRequest,
+    MessageService,
+    GetMessagesRequest, MessageReply, MessageList, SendTextRequest, SearchMessagesRequest,
+    SendTypingRequest, ReactionRequest, Reaction,
     // Transfers
-    TransferService, TransferServiceServer,
-    TransferReply, TransferList, SendFileRequest,
+    TransferService,
+    CancelTransferRequest, TransferReply, TransferList, SendFileRequest,
     // Settings
-    SettingsService, SettingsServiceServer,
+    SettingsService,
     GetSettingRequest, SetSettingRequest, SettingReply,
     // Calls
-    CallService, CallServiceServer,
+    CallService,
     CallStartRequest, CallStartResponse,
     CallAcceptRequest, CallAcceptResponse,
     CallRejectRequest, CallEndRequest,
     IceCandidateMsg, CallEvent,
+    // Groups
+    GroupService,
+    // Telemetry
+    TelemetryService,
+    TelemetryEventMsg, TelemetrySnapshot,
+    SystemHealthMsg, AteLaneMsg,
 };
 
 use crate::state::{DaemonState, Contact, CallRecord, StoredMessage, now_secs};
@@ -40,6 +50,101 @@ use transferd_crypto::identity::HybridSigningKey;
 
 type State = Arc<Mutex<DaemonState>>;
 type BoxStream<T> = Pin<Box<dyn futures::Stream<Item = Result<T, Status>> + Send>>;
+
+/// Establish a transport session for a contact.
+///
+/// Address resolution: an explicit contact address is used when present;
+/// otherwise the contact's relay endpoint is discovered via the DHT.
+/// Address formats:
+///   `relay://host:port/<64-hex-token>` → relay session via the daemon's RelayHub
+///   `<host>:<port>` → direct TCP session
+///
+/// Returns `true` if a session exists (or was just established).
+async fn ensure_contact_session(state: &State, contact_id: &str, address: Option<&str>) -> bool {
+    let transport = state.lock().transport.clone();
+    if transport.lock().await.has_session(contact_id) {
+        return true;
+    }
+
+    // Resolve the endpoint address: explicit, or DHT-discovered by public key.
+    // (The parking_lot guard is dropped before any await so the future stays Send.)
+    let resolved = match address {
+        Some(addr) => Some(addr.to_owned()),
+        None => {
+            let dht = { let s = state.lock(); s.dht.clone() };
+            match dht {
+                Some(dht) => {
+                    match crate::peer_discovery::resolve_peer(&dht, contact_id).await {
+                        Some(addr) => {
+                            tracing::info!("[grpc] discovered relay endpoint for {contact_id}");
+                            Some(addr)
+                        }
+                        None => None,
+                    }
+                }
+                None => None,
+            }
+        }
+    };
+    let Some(resolved) = resolved else { return false };
+
+    // Policy steers which transports may be used.
+    let policy = { let s = state.lock(); s.settings.get("conn.policy").cloned().unwrap_or_else(|| "auto".into()) };
+    let is_relay = resolved.starts_with("relay://");
+
+    let session = if is_relay {
+        if policy == "direct" {
+            tracing::info!("[grpc] policy=direct: skipping relay lane to {contact_id}");
+            return false;
+        }
+        let (relay_addr, token) = match resolved.strip_prefix("relay://").and_then(|r| r.split_once('/')) {
+            Some((a, t)) => (a, t),
+            None => {
+                tracing::warn!("[grpc] invalid relay address: {resolved}");
+                return false;
+            }
+        };
+        crate::peer_manager::establish_relay_session(contact_id, relay_addr, token, state).await
+    } else {
+        if policy == "relay" {
+            tracing::info!("[grpc] policy=relay: skipping direct lane to {contact_id}");
+            return false;
+        }
+        let identity = match state.lock().hybrid_signing_key() {
+            Some(id) => id,
+            None => {
+                tracing::warn!("[grpc] no identity: cannot establish session to {contact_id}");
+                return false;
+            }
+        };
+        crate::peer_manager::establish_tcp_session(contact_id, &resolved, &identity).await
+    };
+    match session {
+        Ok((s, peer_hybrid_pk)) => {
+            // Trust-on-first-use: record the verified hybrid fingerprint, and
+            // refuse the session if a recorded identity has changed.
+            let fingerprint_ok = {
+                let mut st = state.lock();
+                let ok = st.record_verified_identity(contact_id, &hex::encode(&peer_hybrid_pk));
+                if !ok {
+                    tracing::warn!(
+                        "[grpc] refusing session to {contact_id}: peer identity changed since first contact"
+                    );
+                }
+                ok
+            };
+            if !fingerprint_ok {
+                return false;
+            }
+            transport.lock().await.insert_session(contact_id, s);
+            true
+        }
+        Err(e) => {
+            tracing::warn!("[grpc] could not establish session to {contact_id}: {e}");
+            false
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // AccountServiceImpl
@@ -96,6 +201,15 @@ impl AccountService for AccountServiceImpl {
         });
         s.set_phrase(&phrase);
         s.try_save();
+
+        // If a relay is configured, register our inbound token (token depends on
+        // the just-created public key).
+        if crate::relay_hub::relay_enabled() {
+            tokio::spawn(crate::relay_hub::spawn_inbound_relay_listener(self.0.clone()));
+        }
+        // Start DHT discovery (if configured) and publish our endpoint.
+        tokio::spawn(crate::peer_discovery::ensure_dht(self.0.clone()));
+
         Ok(Response::new(RecoveryPhraseReply { phrase }))
     }
 
@@ -148,9 +262,18 @@ impl AccountService for AccountServiceImpl {
         }
 
         let (pk, hpk, name) = {
-            let id = s.identity.as_ref().unwrap();
+            let id = s.identity.as_ref()
+                .ok_or_else(|| Status::internal("identity not initialised after restore"))?;
             (id.public_key.clone(), id.hybrid_public_key.clone(), id.display_name.clone())
         };
+
+        // If a relay is configured, register our inbound token for this identity.
+        if crate::relay_hub::relay_enabled() {
+            tokio::spawn(crate::relay_hub::spawn_inbound_relay_listener(self.0.clone()));
+        }
+        // Start DHT discovery (if configured) and publish our endpoint.
+        tokio::spawn(crate::peer_discovery::ensure_dht(self.0.clone()));
+
         Ok(Response::new(IdentityReply {
             has_identity:      true,
             public_key:        pk,
@@ -182,6 +305,8 @@ impl FriendService for FriendServiceImpl {
             name:         c.name.clone(),
             last_seen_ts: c.last_seen_ts,
             online:       c.online,
+            blocked:      c.blocked,
+            typing:       s.is_typing(&c.id),
         }).collect();
         Ok(Response::new(ContactList { contacts }))
     }
@@ -201,6 +326,9 @@ impl FriendService for FriendServiceImpl {
             name:         r.name.clone(),
             last_seen_ts: 0,
             online:       false,
+            blocked:      false,
+            address:      None,
+            hybrid_public_key: None,
         };
         let mut s = self.0.lock();
         // Prevent duplicates.
@@ -214,7 +342,108 @@ impl FriendService for FriendServiceImpl {
             name:         r.name,
             last_seen_ts: 0,
             online:       false,
+            blocked:      false,
+            typing:       false,
         }))
+    }
+
+    async fn rename_contact(
+        &self, req: Request<RenameContactRequest>,
+    ) -> Result<Response<ContactReply>, Status> {
+        let r = req.into_inner();
+        if r.name.trim().is_empty() {
+            return Err(Status::invalid_argument("name required"));
+        }
+        let mut s = self.0.lock();
+        let contact = s.contacts.iter_mut().find(|c| c.id == r.contact_id)
+            .ok_or_else(|| Status::not_found("contact not found"))?;
+        contact.name = r.name.clone();
+        let reply = ContactReply {
+            id:           contact.id.clone(),
+            name:         contact.name.clone(),
+            last_seen_ts: contact.last_seen_ts,
+            online:       contact.online,
+            blocked:      contact.blocked,
+            typing:       false,
+        };
+        s.try_save();
+        Ok(Response::new(reply))
+    }
+
+    async fn remove_contact(
+        &self, req: Request<RemoveContactRequest>,
+    ) -> Result<Response<Empty>, Status> {
+        let contact_id = req.into_inner().contact_id;
+        let mut s = self.0.lock();
+        let before = s.contacts.len();
+        s.contacts.retain(|c| c.id != contact_id);
+        // Remove the conversation history too.
+        s.messages.remove(&contact_id);
+        s.transfers.retain(|t| t.contact_name != contact_id);
+        if s.contacts.len() == before {
+            return Err(Status::not_found("contact not found"));
+        }
+        s.try_save();
+        Ok(Response::new(Empty {}))
+    }
+
+    async fn block_contact(
+        &self, req: Request<BlockContactRequest>,
+    ) -> Result<Response<ContactReply>, Status> {
+        self.set_blocked(req.into_inner().contact_id, true)
+    }
+
+    async fn unblock_contact(
+        &self, req: Request<BlockContactRequest>,
+    ) -> Result<Response<ContactReply>, Status> {
+        self.set_blocked(req.into_inner().contact_id, false)
+    }
+
+    async fn get_safety_number(
+        &self, req: Request<SafetyNumberRequest>,
+    ) -> Result<Response<SafetyNumberReply>, Status> {
+        let contact_id = req.into_inner().contact_id;
+        let (our_pk, peer_pk) = {
+            let s = self.0.lock();
+            let our = s.identity.as_ref().map(|i| i.hybrid_public_key.clone()).unwrap_or_default();
+            let peer = s.contacts.iter().find(|c| c.id == contact_id)
+                .and_then(|c| c.hybrid_public_key.clone())
+                .unwrap_or_default();
+            (our, peer)
+        };
+        if our_pk.is_empty() || peer_pk.is_empty() {
+            return Ok(Response::new(SafetyNumberReply {
+                safety_number: String::new(),
+                verified: false,
+            }));
+        }
+        let number = crate::safety::safety_number(&our_pk, &peer_pk)
+            .ok_or_else(|| Status::internal("invalid identity material"))?;
+        Ok(Response::new(SafetyNumberReply {
+            safety_number: number,
+            verified: true,
+        }))
+    }
+}
+
+impl FriendServiceImpl {
+    /// Set or clear the blocked flag on a contact and persist.
+    #[allow(clippy::result_large_err)]
+    fn set_blocked(&self, contact_id: String, blocked: bool) -> Result<Response<ContactReply>, Status> {
+        let mut s = self.0.lock();
+        let contact = s.contacts.iter_mut().find(|c| c.id == contact_id)
+            .ok_or_else(|| Status::not_found("contact not found"))?;
+        contact.blocked = blocked;
+        let reply = ContactReply {
+            id:           contact.id.clone(),
+            name:         contact.name.clone(),
+            last_seen_ts: contact.last_seen_ts,
+            online:       contact.online,
+            blocked:      contact.blocked,
+            typing:       false,
+        };
+        s.try_save();
+        Ok(Response::new(reply))
     }
 }
 
@@ -237,6 +466,13 @@ fn stored_to_reply(m: &StoredMessage) -> MessageReply {
         file_mime:        m.file_mime.clone(),
         timestamp_ts:     m.timestamp_ts,
         status:           m.status.clone(),
+        group_id:         m.group_id.clone().unwrap_or_default(),
+        sender_pk:        m.sender_pk.clone(),
+        reply_to:         m.reply_to.clone().unwrap_or_default(),
+        reactions:        m.reactions.iter().map(|(e, s)| Reaction {
+            emoji:  e.clone(),
+            sender: s.clone(),
+        }).collect(),
     }
 }
 
@@ -252,6 +488,20 @@ impl MessageService for MessageServiceImpl {
             .unwrap_or_default();
         Ok(Response::new(MessageList { messages }))
     }
+    async fn search_messages(
+         &self, req: Request<SearchMessagesRequest>,
+     ) -> Result<Response<MessageList>, Status> {
+         let r = req.into_inner();
+         let q = r.query.to_lowercase();
+         let s = self.0.lock();
+         let messages = s.messages.get(&r.contact_id)
+             .map(|v| v.iter()
+                 .filter(|m| m.content_preview().to_lowercase().contains(&q))
+                 .map(stored_to_reply)
+                 .collect())
+             .unwrap_or_default();
+         Ok(Response::new(MessageList { messages }))
+     }
 
     async fn send_text(
         &self, req: Request<SendTextRequest>,
@@ -260,13 +510,179 @@ impl MessageService for MessageServiceImpl {
         if r.text.trim().is_empty() {
             return Err(Status::invalid_argument("message text required"));
         }
-        let mut s = self.0.lock();
-        let id = s.next_id();
-        let msg = StoredMessage::new_text(id, r.contact_id.clone(), true, r.text);
-        let reply = stored_to_reply(&msg);
-        s.messages.entry(r.contact_id).or_default().push(msg);
-        s.try_save();
+
+        let contact_id = r.contact_id.clone();
+        let reply_to = if r.reply_to.is_empty() { None } else { Some(r.reply_to.clone()) };
+
+        // 1. Resolve the contact's direct address (short state lock).
+        let address = {
+            let s = self.0.lock();
+            s.contacts.iter().find(|c| c.id == contact_id)
+                .and_then(|c| c.address.clone())
+        };
+
+        // 2. Establish a lane session (direct TCP or relay) if we know the
+        //    address and none exists. The async connect + handshake runs on the
+        //    transport mutex, never while holding the global state lock.
+        let transport = self.0.lock().transport.clone();
+        ensure_contact_session(&self.0, &contact_id, address.as_deref()).await;
+
+        // 3. Store the message locally (pending until actually dispatched).
+        let reply;
+        let msg_id;
+        let payload;
+        {
+            let mut s = self.0.lock();
+            let id = s.next_id();
+            let mut msg = StoredMessage::new_text(id.clone(), contact_id.clone(), true, r.text.clone());
+            msg.status = "pending".into();
+            msg.reply_to = reply_to.clone();
+            reply = stored_to_reply(&msg);
+            s.messages.entry(contact_id.clone()).or_default().push(msg);
+            s.try_save();
+            let sender_pk = s.identity.as_ref().map(|i| i.public_key.clone()).unwrap_or_default();
+            msg_id = id;
+            payload = crate::wire::WireMsg::Text {
+                sender: sender_pk,
+                msg_id: msg_id.clone(),
+                text: r.text.clone(),
+                ts: now_secs(),
+                group_id: None,
+                reply_to,
+            }
+            .encode()
+            .map_err(|_| Status::internal("failed to encode message"))?;
+        }
+
+        // 4. Queue the message for delivery over the lane.
+        {
+            let mut pm = transport.lock().await;
+            if pm.has_session(&contact_id) {
+                let _ = pm.send_message(&contact_id, msg_id, bytes::Bytes::from(payload));
+            } else {
+                tracing::debug!("[grpc] send_text: queued locally only (no session) for {contact_id}");
+            }
+        }
+
+        tracing::info!("[grpc] send_text to {contact_id}: queued for lane delivery");
         Ok(Response::new(reply))
+    }
+
+    async fn send_typing(
+        &self, req: Request<SendTypingRequest>,
+    ) -> Result<Response<Empty>, Status> {
+        let r = req.into_inner();
+        let contact_id = r.contact_id.clone();
+        let address = {
+            let s = self.0.lock();
+            s.contacts.iter().find(|c| c.id == contact_id)
+                .and_then(|c| c.address.clone())
+        };
+        let transport = self.0.lock().transport.clone();
+        ensure_contact_session(&self.0, &contact_id, address.as_deref()).await;
+
+        let sender_pk = self.0.lock().identity.as_ref().map(|i| i.public_key.clone()).unwrap_or_default();
+        let payload = crate::wire::WireMsg::Typing { sender: sender_pk, is_typing: r.is_typing }
+            .encode()
+            .map_err(|_| Status::internal("failed to encode typing"))?;
+        let mut pm = transport.lock().await;
+        if pm.has_session(&contact_id) {
+            let _ = pm.send_message(&contact_id, String::new(), bytes::Bytes::from(payload));
+        }
+        Ok(Response::new(Empty {}))
+    }
+
+    async fn toggle_reaction(
+        &self, req: Request<ReactionRequest>,
+    ) -> Result<Response<Empty>, Status> {
+        let r = req.into_inner();
+        let contact_id = r.contact_id.clone();
+        let address = {
+            let s = self.0.lock();
+            s.contacts.iter().find(|c| c.id == contact_id)
+                .and_then(|c| c.address.clone())
+        };
+        let transport = self.0.lock().transport.clone();
+        ensure_contact_session(&self.0, &contact_id, address.as_deref()).await;
+
+        let sender_pk = self.0.lock().identity.as_ref().map(|i| i.public_key.clone()).unwrap_or_default();
+        // Apply locally (toggle), then notify the peer.
+        {
+            let mut s = self.0.lock();
+            s.toggle_reaction(&sender_pk, &r.target_msg_id, &r.emoji);
+        }
+        let payload = crate::wire::WireMsg::Reaction {
+            sender: sender_pk,
+            target_msg_id: r.target_msg_id.clone(),
+            emoji: r.emoji,
+        }
+        .encode()
+        .map_err(|_| Status::internal("failed to encode reaction"))?;
+        let mut pm = transport.lock().await;
+        if pm.has_session(&contact_id) {
+            let _ = pm.send_message(&contact_id, String::new(), bytes::Bytes::from(payload));
+        }
+        Ok(Response::new(Empty {}))
+    }
+}
+
+// ---------------------------------------------------------------------------
+// UpdateServiceImpl (manual, opt-in — never runs in the background)
+// ---------------------------------------------------------------------------
+
+pub struct UpdateServiceImpl;
+
+#[tonic::async_trait]
+impl UpdateService for UpdateServiceImpl {
+    async fn check_for_updates(
+        &self, _: Request<Empty>,
+    ) -> Result<Response<UpdateReply>, Status> {
+        use crate::update::{UpdateCheckResult, CURRENT_VERSION};
+        match crate::update::check_for_updates().await {
+            UpdateCheckResult::UpToDate => Ok(Response::new(UpdateReply {
+                current_version: CURRENT_VERSION.to_string(),
+                has_update: false,
+                new_version: String::new(),
+                release_notes: String::new(),
+                download_url: String::new(),
+                error: String::new(),
+            })),
+            UpdateCheckResult::UpdateAvailable(info) => Ok(Response::new(UpdateReply {
+                current_version: CURRENT_VERSION.to_string(),
+                has_update: true,
+                new_version: info.version,
+                release_notes: info.release_notes,
+                download_url: info.download_url,
+                error: String::new(),
+            })),
+            UpdateCheckResult::Error(e) => Ok(Response::new(UpdateReply {
+                current_version: CURRENT_VERSION.to_string(),
+                has_update: false,
+                new_version: String::new(),
+                release_notes: String::new(),
+                download_url: String::new(),
+                error: e,
+            })),
+        }
+    }
+
+    async fn apply_update(
+        &self, _: Request<Empty>,
+    ) -> Result<Response<Empty>, Status> {
+        match crate::update::check_for_updates().await {
+            crate::update::UpdateCheckResult::UpdateAvailable(info) => {
+                let path = crate::update::download_update(&info)
+                    .await
+                    .map_err(|e| Status::internal(format!("download failed: {e}")))?;
+                crate::update::install_update(&path)
+                    .map_err(|e| Status::internal(format!("install failed: {e}")))?;
+                Ok(Response::new(Empty {}))
+            }
+            crate::update::UpdateCheckResult::UpToDate => {
+                Err(Status::failed_precondition("already up to date"))
+            }
+            crate::update::UpdateCheckResult::Error(e) => Err(Status::unavailable(e)),
+        }
     }
 }
 
@@ -300,41 +716,126 @@ impl TransferService for TransferServiceImpl {
         if r.contact_id.is_empty() {
             return Err(Status::invalid_argument("contact_id required"));
         }
-        let size_bytes = if r.file_size > 0 {
-            r.file_size
-        } else {
-            std::fs::metadata(&r.file_path).map(|m| m.len()).unwrap_or(0)
+
+        // Read the file into memory (bounded). Larger files will stream from
+        // disk in a future iteration; this covers the common transfer size.
+        let data = std::fs::read(&r.file_path)
+            .map_err(|e| Status::not_found(format!("cannot read '{}': {e}", r.file_path)))?;
+        if data.len() > 200 * 1024 * 1024 {
+            return Err(Status::resource_exhausted(
+                "files over 200 MB need chunked disk streaming (coming soon)",
+            ));
+        }
+        let size_bytes = data.len() as u64;
+
+        let contact_id = r.contact_id.clone();
+        let file_name = r.file_name.clone();
+        let mime = r.mime_type.clone();
+
+        // 1. Resolve the contact's direct address (short state lock).
+        let address = {
+            let s = self.0.lock();
+            s.contacts.iter().find(|c| c.id == contact_id)
+                .and_then(|c| c.address.clone())
         };
-        let mut s = self.0.lock();
-        let id = s.next_id();
-        let msg = crate::state::StoredMessage {
-            id: id.clone(),
-            contact_id: r.contact_id.clone(),
-            outbound: true,
-            content_type: "file".into(),
-            text: String::new(),
-            file_name: r.file_name.clone(),
-            file_size: size_bytes,
-            file_xferd: size_bytes,
-            file_mime: r.mime_type.clone(),
-            timestamp_ts: now_secs(),
-            status: "sent".into(),
-        };
-        let tid = s.next_id();
-        s.transfers.push(crate::state::Transfer {
-            id: tid,
-            contact_name: r.contact_id.clone(),
-            file_name: r.file_name,
-            size_bytes,
-            xferd_bytes: size_bytes,
-            outbound: true,
-            lanes_active: 1,
-            bps: 0,
-        });
-        let reply = stored_to_reply(&msg);
-        s.messages.entry(r.contact_id).or_default().push(msg);
-        s.try_save();
+
+        // 2. Establish a lane session (direct TCP or relay) if we know the address
+        //    and none exists.
+        let transport = self.0.lock().transport.clone();
+        ensure_contact_session(&self.0, &contact_id, address.as_deref()).await;
+
+        // 3. Store the message + transfer record locally.
+        let reply;
+        let msg_id;
+        let sender_pk;
+        {
+            let mut s = self.0.lock();
+            let id = s.next_id();
+            let msg = crate::state::StoredMessage {
+                id: id.clone(),
+                contact_id: contact_id.clone(),
+                outbound: true,
+                content_type: "file".into(),
+                text: String::new(),
+                file_name: file_name.clone(),
+                file_size: size_bytes,
+                file_xferd: 0,
+                file_mime: mime.clone(),
+                timestamp_ts: now_secs(),
+                status: "pending".into(),
+                group_id: None,
+                sender_pk: String::new(),
+                reply_to: None,
+                reactions: Vec::new(),
+            };
+            reply = stored_to_reply(&msg);
+            s.messages.entry(contact_id.clone()).or_default().push(msg);
+            let tid = s.next_id();
+            s.transfers.push(crate::state::Transfer {
+                id: tid,
+                contact_name: contact_id.clone(),
+                file_name: file_name.clone(),
+                size_bytes,
+                xferd_bytes: 0,
+                outbound: true,
+                lanes_active: 1,
+                bps: 0,
+            });
+            s.try_save();
+            sender_pk = s.identity.as_ref().map(|i| i.public_key.clone()).unwrap_or_default();
+            msg_id = id;
+        }
+
+        // 4. Split into wire chunks and enqueue for lane delivery.
+        const CHUNK: usize = 30 * 1024;
+        let total = data.len().div_ceil(CHUNK).max(1) as u32;
+        {
+            let mut pm = transport.lock().await;
+            if pm.has_session(&contact_id) {
+                for (i, part) in data.chunks(CHUNK).enumerate() {
+                    let wire = crate::wire::WireMsg::File {
+                        sender: sender_pk.clone(),
+                        msg_id: msg_id.clone(),
+                        file_name: file_name.clone(),
+                        file_size: size_bytes,
+                        mime: mime.clone(),
+                        ts: now_secs(),
+                        seq: i as u32,
+                        total_chunks: total,
+                        data: part.to_vec(),
+                    };
+                    match wire.encode() {
+                        Ok(payload) => { let _ = pm.send_message(&contact_id, msg_id.clone(), bytes::Bytes::from(payload)); }
+                        Err(_) => break,
+                    }
+                }
+                tracing::info!("[grpc] send_file to {contact_id}: {file_name} ({size_bytes} B, {total} chunks) queued");
+            } else {
+                tracing::debug!("[grpc] send_file: queued locally only (no session) for {contact_id}");
+            }
+        }
+
         Ok(Response::new(reply))
+    }
+
+    async fn cancel_transfer(&self, req: Request<CancelTransferRequest>) -> Result<Response<Empty>, Status> {
+        let tid = req.into_inner().transfer_id;
+        let mut s = self.0.lock();
+        s.transfers.retain(|t| t.id != tid);
+        tracing::info!("[grpc] cancelled transfer {tid}");
+        Ok(Response::new(Empty {}))
+    }
+
+    async fn pause_transfer(&self, req: Request<CancelTransferRequest>) -> Result<Response<Empty>, Status> {
+        let tid = req.into_inner().transfer_id;
+        tracing::info!("[grpc] pause transfer {tid} — stub");
+        Ok(Response::new(Empty {}))
+    }
+
+    async fn resume_transfer(&self, req: Request<CancelTransferRequest>) -> Result<Response<Empty>, Status> {
+        let tid = req.into_inner().transfer_id;
+        tracing::info!("[grpc] resume transfer {tid} — stub");
+        Ok(Response::new(Empty {}))
     }
 }
 
@@ -428,7 +929,7 @@ async fn apply_relay_enabled(state: State, enable: bool) {
                 state.lock().relay_engine = Some(engine);
             }
             Err(e) => {
-                eprintln!("[relay] failed to start: {e}");
+                tracing::error!("[relay] failed to start: {e}");
             }
         }
     } else {
@@ -579,6 +1080,75 @@ impl CallService for CallServiceImpl {
 }
 
 // ---------------------------------------------------------------------------
+// TelemetryServiceImpl
+// ---------------------------------------------------------------------------
+
+pub struct TelemetryServiceImpl(pub State);
+
+fn event_to_msg(event: &transferd_telemetry::TelemetryEvent) -> TelemetryEventMsg {
+    use transferd_telemetry::TelemetryEvent;
+    use transferd_api::proto::telemetry_event_msg::Event;
+    TelemetryEventMsg {
+        event: Some(match event {
+            TelemetryEvent::SystemHealth(e) => Event::SystemHealth(SystemHealthMsg {
+                ts:              e.ts,
+                cpu_pct:         e.cpu_pct,
+                mem_rss_kb:      e.mem_rss_kb,
+                uptime_secs:     e.uptime_secs,
+                active_sessions: e.active_sessions,
+            }),
+            TelemetryEvent::AteLane(e) => Event::AteLane(AteLaneMsg {
+                ts:            e.ts,
+                session_hash:  e.session_id_hash.to_vec(),
+                gsn:           e.gsn,
+                selected_lane: e.selected_lane,
+                rtt_ms:        e.rtt_ms,
+                bandwidth_bps: e.bandwidth_bps,
+                active_chunks: e.active_chunks,
+                total_lanes:   e.total_lanes,
+            }),
+        }),
+    }
+}
+
+#[tonic::async_trait]
+impl TelemetryService for TelemetryServiceImpl {
+    type StreamTelemetryStream = BoxStream<TelemetryEventMsg>;
+
+    async fn stream_telemetry(
+        &self, _: Request<Empty>,
+    ) -> Result<Response<Self::StreamTelemetryStream>, Status> {
+        let telemetry = {
+            let s = self.0.lock();
+            s.telemetry.clone()
+        };
+        let Some(col) = telemetry else {
+            return Err(Status::unavailable("telemetry collector not started"));
+        };
+        let rx = col.subscribe();
+        let stream = BroadcastStream::new(rx).filter_map(|r| match r {
+            Ok(ev) => Some(Ok(event_to_msg(&ev))),
+            Err(_) => None,
+        });
+        Ok(Response::new(Box::pin(stream)))
+    }
+
+    async fn get_snapshot(
+        &self, _: Request<Empty>,
+    ) -> Result<Response<TelemetrySnapshot>, Status> {
+        let telemetry = {
+            let s = self.0.lock();
+            s.telemetry.clone()
+        };
+        let Some(col) = telemetry else {
+            return Ok(Response::new(TelemetrySnapshot { events: vec![] }));
+        };
+        let events = col.replay().await.iter().map(event_to_msg).collect();
+        Ok(Response::new(TelemetrySnapshot { events }))
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Unit tests
 // ---------------------------------------------------------------------------
 
@@ -685,7 +1255,275 @@ mod tests {
     }
 }
 
-/// Attach all six TransferDaemon gRPC services to a tonic `Server::builder`.
+// ---------------------------------------------------------------------------
+// GroupServiceImpl
+// ---------------------------------------------------------------------------
+
+pub struct GroupServiceImpl(pub State);
+
+fn group_role_to_proto(role: u8) -> transferd_api::GroupRole {
+    match role {
+        crate::state::group_role::OWNER => transferd_api::GroupRole::Owner,
+        crate::state::group_role::ADMIN => transferd_api::GroupRole::Admin,
+        _ => transferd_api::GroupRole::Member,
+    }
+}
+
+fn group_to_reply(g: &crate::state::Group) -> transferd_api::GroupReply {
+    transferd_api::GroupReply {
+        group_id:   g.id.clone(),
+        name:       g.name.clone(),
+        owner:      g.owner.clone(),
+        members: g.members.iter().map(|m| transferd_api::GroupMember {
+            public_key: m.public_key.clone(),
+            role: group_role_to_proto(m.role).into(),
+        }).collect(),
+        created_at: g.created_at,
+    }
+}
+
+#[tonic::async_trait]
+impl GroupService for GroupServiceImpl {
+    async fn create_group(
+        &self, req: Request<transferd_api::CreateGroupRequest>,
+    ) -> Result<Response<transferd_api::GroupReply>, Status> {
+        let r = req.into_inner();
+        if r.name.trim().is_empty() {
+            return Err(Status::invalid_argument("group name required"));
+        }
+        let mut s = self.0.lock();
+        let my_pk = s.identity.as_ref().map(|i| i.public_key.clone())
+            .ok_or_else(|| Status::failed_precondition("no identity"))?;
+        let gid = s.next_id();
+        let mut members = vec![crate::state::GroupMember {
+            public_key: my_pk.clone(),
+            role: crate::state::group_role::OWNER,
+        }];
+        for mid in &r.member_ids {
+            if mid == &my_pk { continue; }
+            if !members.iter().any(|m| &m.public_key == mid) {
+                members.push(crate::state::GroupMember {
+                    public_key: mid.clone(),
+                    role: crate::state::group_role::MEMBER,
+                });
+            }
+        }
+        let group = crate::state::Group {
+            id: gid,
+            name: r.name,
+            owner: my_pk,
+            members,
+            created_at: now_secs(),
+        };
+        s.groups.insert(group.id.clone(), group.clone());
+        s.try_save();
+        Ok(Response::new(group_to_reply(&group)))
+    }
+
+    async fn get_groups(&self, _: Request<Empty>) -> Result<Response<transferd_api::GroupList>, Status> {
+        let s = self.0.lock();
+        Ok(Response::new(transferd_api::GroupList {
+            groups: s.groups.values().map(group_to_reply).collect(),
+        }))
+    }
+
+    async fn get_group(
+        &self, req: Request<transferd_api::GetGroupRequest>,
+    ) -> Result<Response<transferd_api::GroupReply>, Status> {
+        let gid = req.into_inner().group_id;
+        let s = self.0.lock();
+        let g = s.groups.get(&gid).ok_or_else(|| Status::not_found("group not found"))?;
+        Ok(Response::new(group_to_reply(g)))
+    }
+
+    async fn rename_group(
+        &self, req: Request<transferd_api::RenameGroupRequest>,
+    ) -> Result<Response<transferd_api::GroupReply>, Status> {
+        let r = req.into_inner();
+        if r.name.trim().is_empty() {
+            return Err(Status::invalid_argument("group name required"));
+        }
+        let mut s = self.0.lock();
+        let reply = {
+            let g = s.groups.get_mut(&r.group_id)
+                .ok_or_else(|| Status::not_found("group not found"))?;
+            g.name = r.name;
+            group_to_reply(g)
+        };
+        s.try_save();
+        Ok(Response::new(reply))
+    }
+
+    async fn add_members(
+        &self, req: Request<transferd_api::GroupMembersRequest>,
+    ) -> Result<Response<transferd_api::GroupReply>, Status> {
+        let r = req.into_inner();
+        let mut s = self.0.lock();
+        let reply = {
+            let g = s.groups.get_mut(&r.group_id)
+                .ok_or_else(|| Status::not_found("group not found"))?;
+            for mid in r.member_ids {
+                if !g.members.iter().any(|m| m.public_key == mid) {
+                    g.members.push(crate::state::GroupMember {
+                        public_key: mid,
+                        role: crate::state::group_role::MEMBER,
+                    });
+                }
+            }
+            group_to_reply(g)
+        };
+        s.try_save();
+        Ok(Response::new(reply))
+    }
+
+    async fn remove_members(
+        &self, req: Request<transferd_api::GroupMembersRequest>,
+    ) -> Result<Response<transferd_api::GroupReply>, Status> {
+        let r = req.into_inner();
+        let mut s = self.0.lock();
+        let reply = {
+            let g = s.groups.get_mut(&r.group_id)
+                .ok_or_else(|| Status::not_found("group not found"))?;
+            g.members.retain(|m| !r.member_ids.contains(&m.public_key));
+            group_to_reply(g)
+        };
+        s.try_save();
+        Ok(Response::new(reply))
+    }
+
+    async fn set_member_role(
+        &self, req: Request<transferd_api::SetMemberRoleRequest>,
+    ) -> Result<Response<transferd_api::GroupReply>, Status> {
+        let r = req.into_inner();
+        let mut s = self.0.lock();
+        let reply = {
+            let g = s.groups.get_mut(&r.group_id)
+                .ok_or_else(|| Status::not_found("group not found"))?;
+            let member = g.members.iter_mut().find(|m| m.public_key == r.member_id)
+                .ok_or_else(|| Status::not_found("member not in group"))?;
+            member.role = match r.role {
+                x if x == transferd_api::GroupRole::Owner as i32 => crate::state::group_role::OWNER,
+                x if x == transferd_api::GroupRole::Admin as i32 => crate::state::group_role::ADMIN,
+                _ => crate::state::group_role::MEMBER,
+            };
+            group_to_reply(g)
+        };
+        s.try_save();
+        Ok(Response::new(reply))
+    }
+
+    async fn leave_group(
+        &self, req: Request<transferd_api::GetGroupRequest>,
+    ) -> Result<Response<Empty>, Status> {
+        let gid = req.into_inner().group_id;
+        let mut s = self.0.lock();
+        let my_pk = s.identity.as_ref().map(|i| i.public_key.clone())
+            .ok_or_else(|| Status::failed_precondition("no identity"))?;
+        {
+            let g = s.groups.get_mut(&gid)
+                .ok_or_else(|| Status::not_found("group not found"))?;
+            g.members.retain(|m| m.public_key != my_pk);
+        }
+        s.try_save();
+        Ok(Response::new(Empty {}))
+    }
+
+    async fn delete_group(
+        &self, req: Request<transferd_api::GetGroupRequest>,
+    ) -> Result<Response<Empty>, Status> {
+        let gid = req.into_inner().group_id;
+        let mut s = self.0.lock();
+        let my_pk = s.identity.as_ref().map(|i| i.public_key.clone())
+            .ok_or_else(|| Status::failed_precondition("no identity"))?;
+        // Only the owner can delete a group.
+        let owner = s.groups.get(&gid).map(|g| g.owner.clone())
+            .ok_or_else(|| Status::not_found("group not found"))?;
+        if owner != my_pk {
+            return Err(Status::permission_denied("only the owner can delete the group"));
+        }
+        s.groups.remove(&gid);
+        s.messages.remove(&gid);
+        s.try_save();
+        Ok(Response::new(Empty {}))
+    }
+
+    async fn send_group_text(
+        &self, req: Request<transferd_api::SendGroupTextRequest>,
+    ) -> Result<Response<MessageReply>, Status> {
+        let r = req.into_inner();
+        if r.text.trim().is_empty() {
+            return Err(Status::invalid_argument("message text required"));
+        }
+
+        // Store locally under the group id and capture member list.
+        let (reply, my_pk, members, payload, local_msg_id) = {
+            let mut s = self.0.lock();
+            let my_pk = s.identity.as_ref().map(|i| i.public_key.clone())
+                .ok_or_else(|| Status::failed_precondition("no identity"))?;
+            let g = s.groups.get(&r.group_id)
+                .ok_or_else(|| Status::not_found("group not found"))?;
+            let members = g.members.iter().map(|m| m.public_key.clone()).collect::<Vec<_>>();
+
+            let id = s.next_id();
+            let local_msg_id = id.clone();
+            let mut msg = crate::state::StoredMessage::new_text(
+                id, r.group_id.clone(), true, r.text.clone(),
+            );
+            msg.status = "pending".into();
+            msg.group_id = Some(r.group_id.clone());
+            msg.sender_pk = my_pk.clone();
+            let reply = stored_to_reply(&msg);
+            s.messages.entry(r.group_id.clone()).or_default().push(msg);
+            s.try_save();
+
+            let payload = crate::wire::WireMsg::Text {
+                sender: my_pk.clone(),
+                msg_id: local_msg_id.clone(),
+                text: r.text.clone(),
+                ts: now_secs(),
+                group_id: Some(r.group_id.clone()),
+                reply_to: None,
+            }
+            .encode()
+            .map_err(|_| Status::internal("failed to encode message"))?;
+
+            (reply, my_pk, members, payload, local_msg_id)
+        };
+
+        // Fan out to each other member (best-effort; explicit address or DHT discovery).
+        let transport = self.0.lock().transport.clone();
+        for member in members {
+            if member == my_pk { continue; }
+            let addr = {
+                let s = self.0.lock();
+                s.contacts.iter().find(|c| c.id == member).and_then(|c| c.address.clone())
+            };
+            ensure_contact_session(&self.0, &member, addr.as_deref()).await;
+            let mut pm = transport.lock().await;
+            if pm.has_session(&member) {
+                let _ = pm.send_message(&member, local_msg_id.clone(), bytes::Bytes::from(payload.clone()));
+            }
+        }
+
+        Ok(Response::new(reply))
+    }
+
+    async fn get_group_messages(
+        &self, req: Request<transferd_api::GetGroupRequest>,
+    ) -> Result<Response<MessageList>, Status> {
+        let gid = req.into_inner().group_id;
+        let s = self.0.lock();
+        let messages = s.messages.get(&gid)
+            .map(|v| v.iter().map(stored_to_reply).collect())
+            .unwrap_or_default();
+        Ok(Response::new(MessageList { messages }))
+    }
+}
+
+/// Attach all seven TransferDaemon gRPC services to a tonic `Server::builder`.
+///
+/// When the daemon has an `auth_token` configured, every request must present
+/// `Authorization: Bearer <token>` or it is rejected with `UNAUTHENTICATED`.
 pub fn add_all_services(
     mut builder: tonic::transport::Server,
     state: State,
@@ -693,13 +1531,51 @@ pub fn add_all_services(
     use transferd_api::{
         AccountServiceServer, FriendServiceServer, MessageServiceServer,
         TransferServiceServer, SettingsServiceServer, CallServiceServer,
+        TelemetryServiceServer, GroupServiceServer, ConnectionServiceServer,
     };
+
+    // Build a cloneable interceptor that validates the bearer token.
+    let token = state.lock().auth_token.clone();
+    // `Status` is large (176 bytes); required by the tonic interceptor type.
+    #[allow(clippy::result_large_err)]
+    let interceptor = move |request: tonic::Request<()>| {
+        let authorized = token
+            .as_ref()
+            .map(|expected| {
+                request
+                    .metadata()
+                    .get("authorization")
+                    .and_then(|v| v.to_str().ok())
+                    .map(|v| v == format!("Bearer {expected}"))
+                    .unwrap_or(false)
+            })
+            .unwrap_or(true); // no token configured → allow
+        if authorized {
+            Ok(request)
+        } else {
+            Err(tonic::Status::unauthenticated("missing or invalid auth token"))
+        }
+    };
+
     let call_svc = CallServiceImpl::new(state.clone());
     builder
-        .add_service(AccountServiceServer::new(AccountServiceImpl(state.clone())))
-        .add_service(FriendServiceServer::new(FriendServiceImpl(state.clone())))
-        .add_service(MessageServiceServer::new(MessageServiceImpl(state.clone())))
-        .add_service(TransferServiceServer::new(TransferServiceImpl(state.clone())))
-        .add_service(SettingsServiceServer::new(SettingsServiceImpl(state)))
-        .add_service(CallServiceServer::new(call_svc))
+        .add_service(AccountServiceServer::with_interceptor(
+            AccountServiceImpl(state.clone()), interceptor.clone()))
+        .add_service(FriendServiceServer::with_interceptor(
+            FriendServiceImpl(state.clone()), interceptor.clone()))
+        .add_service(MessageServiceServer::with_interceptor(
+            MessageServiceImpl(state.clone()), interceptor.clone()))
+        .add_service(TransferServiceServer::with_interceptor(
+            TransferServiceImpl(state.clone()), interceptor.clone()))
+        .add_service(SettingsServiceServer::with_interceptor(
+            SettingsServiceImpl(state.clone()), interceptor.clone()))
+        .add_service(CallServiceServer::with_interceptor(call_svc, interceptor.clone()))
+        .add_service(GroupServiceServer::with_interceptor(
+            GroupServiceImpl(state.clone()), interceptor.clone()))
+        .add_service(ConnectionServiceServer::with_interceptor(
+            crate::connections::ConnectionServiceImpl(state.clone()), interceptor.clone()))
+        .add_service(UpdateServiceServer::with_interceptor(
+            UpdateServiceImpl, interceptor.clone()))
+        .add_service(TelemetryServiceServer::with_interceptor(
+            TelemetryServiceImpl(state), interceptor))
 }

@@ -3,6 +3,9 @@ name = "transferd-tui-video"
 version = "0.1.0"
 edition = "2021"
 
+[lints]
+workspace = true
+
 [dependencies]
 image   = { workspace = true }
 base64  = { workspace = true }
@@ -13,3 +16,4 @@ crossterm = "0.27"
 
 tokio            = { workspace = true }
 transferd-webrtc = { path = "../transferd-webrtc" }
+

@@ -13,3 +13,14 @@ impl Gsn {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct SessionId(pub [u8; 16]);
+
+impl SessionId {
+    /// Create a random session ID (for testing).
+    #[cfg(test)]
+    pub fn random() -> Self {
+        use rand::Rng;
+        let mut bytes = [0u8; 16];
+        rand::thread_rng().fill(&mut bytes);
+        SessionId(bytes)
+    }
+}

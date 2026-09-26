@@ -3,8 +3,9 @@
 use serde::{Deserialize, Serialize};
 
 /// Current lifecycle state of a call.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Default)]
 pub enum CallState {
+    #[default]
     Idle,
     /// We placed the call; awaiting remote acceptance.
     Outgoing { call_id: String, conv_id: String },
@@ -15,9 +16,6 @@ pub enum CallState {
     Ended,
 }
 
-impl Default for CallState {
-    fn default() -> Self { Self::Idle }
-}
 
 impl CallState {
     pub fn call_id(&self) -> Option<&str> {

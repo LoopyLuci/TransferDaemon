@@ -1,7 +1,10 @@
+pub mod auth_handshake;
 pub mod common;
 pub mod epochs;
 pub mod handshake;
 pub mod identity;
+pub mod keystore;
+pub mod ratchet;
 
 #[cfg(target_arch = "x86_64")]
 pub mod fused_x86;
@@ -23,3 +26,4 @@ pub use fused_portable::{DecryptError, DmiDecryptor, DmiEncryptor, EncryptResult
 
 pub use handshake::SessionKey;
 pub use identity::{HybridSigningKey, HybridVerifyingKey, HybridSignature, HYBRID_PK_LEN, HYBRID_SIG_LEN};
+pub use keystore::{KeyStore, KeyStoreBackend, KeyStoreError, RamKeyStore, create_key_store};

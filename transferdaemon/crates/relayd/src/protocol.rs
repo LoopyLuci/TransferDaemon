@@ -71,6 +71,8 @@ pub struct ForwardMsg {
 pub struct KeepaliveMsg {
     pub session_token: [u8; 32],
     pub pow_nonce: u64,
+    /// Monotonically increasing sequence number; used for replay detection.
+    pub seq: u32,
 }
 
 // ---------------------------------------------------------------------------
@@ -114,6 +116,7 @@ pub enum ErrorCode {
     TokenAlreadyExists = 3,
     PayloadTooLarge   = 4,
     RateLimited       = 5,
+    SeqReplay         = 6,
     InternalError     = 0xFFFF,
 }
 
@@ -127,7 +130,6 @@ pub struct AckMsg {
 // Framing helpers
 // ---------------------------------------------------------------------------
 
-/// Maximum UDP datagram payload the relay accepts (64 KiB minus overhead).
 pub const MAX_PAYLOAD: usize = 63 * 1024;
 
 /// Serialises a tagged message into a byte vector ready for `send_to`.
@@ -145,16 +147,3 @@ pub fn split(buf: &[u8]) -> Option<(Tag, &[u8])> {
     Some((Tag::from_byte(tag_byte)?, rest))
 }
 
-// ---------------------------------------------------------------------------
-// Session token derivation (also used by clients)
-// ---------------------------------------------------------------------------
-
-/// Derives the 32-byte session token from a `SessionKey` and a relay ID.
-///
-/// The relay cannot reverse this without the `SessionKey`.
-pub fn derive_token(session_key: &[u8; 32], relay_id: &[u8]) -> [u8; 32] {
-    let mut input = Vec::with_capacity(32 + relay_id.len());
-    input.extend_from_slice(session_key);
-    input.extend_from_slice(relay_id);
-    blake3::derive_key("TransferDaemon-v1-relay-token", &input)
-}

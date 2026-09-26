@@ -21,6 +21,28 @@ fn mock_video() -> Arc<MockMediaCapture> {
     Arc::new(MockMediaCapture::new_with_video())
 }
 
+/// A remote SDP offer that works for both the simulated session (which ignores
+/// the payload) and the real WebRTC backend (which requires a JSON-encoded,
+/// structurally valid `RTCSessionDescription` for `set_remote_description`).
+fn mock_remote_offer() -> String {
+    let sdp = "v=0\r\n\
+               o=- 0 0 IN IP4 127.0.0.1\r\n\
+               s=-\r\n\
+               t=0 0\r\n\
+               a=group:BUNDLE 0\r\n\
+               m=audio 9 UDP/TLS/RTP/SAVPF 111\r\n\
+               c=IN IP4 127.0.0.1\r\n\
+               a=ice-ufrag:ufrag\r\n\
+               a=ice-pwd:transferd-pwd\r\n\
+               a=fingerprint:sha-256 00:11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff:00:11:22:33:44:55:66:77:88:99:aa:bb:cc:dd:ee:ff\r\n\
+               a=setup:actpass\r\n\
+               a=mid:0\r\n\
+               a=sendrecv\r\n\
+               a=rtcp-mux\r\n\
+               a=rtpmap:111 opus/48000/2\r\n";
+    serde_json::json!({ "type": "offer", "sdp": sdp }).to_string()
+}
+
 // ---------------------------------------------------------------------------
 // State machine tests
 // ---------------------------------------------------------------------------
@@ -190,7 +212,7 @@ async fn test_manager_idle_by_default() {
 #[tokio::test]
 async fn test_manager_start_call() {
     let mgr = CallManager::new();
-    let call_id = mgr.start_call("conv-1".into(), false, mock_audio()).await;
+    let call_id = mgr.start_call("conv-1".into(), false, mock_audio()).await.unwrap();
     assert!(!call_id.is_empty());
     assert!(matches!(mgr.state().await, CallState::Outgoing { .. }));
 }
@@ -198,7 +220,7 @@ async fn test_manager_start_call() {
 #[tokio::test]
 async fn test_manager_end_call_returns_to_idle() {
     let mgr = CallManager::new();
-    mgr.start_call("conv-1".into(), false, mock_audio()).await;
+    let _ = mgr.start_call("conv-1".into(), false, mock_audio()).await;
     mgr.end_call().await;
     // After ending, no session remains.
     assert!(matches!(mgr.state().await, CallState::Idle));
@@ -211,9 +233,9 @@ async fn test_manager_accept_call_is_active() {
         "call-xyz".into(),
         "conv-5".into(),
         false,
-        "v=0\r\ns=offer\r\n".into(),
+        mock_remote_offer(),
         mock_audio(),
-    ).await;
+    ).await.expect("accept_call failed");
     assert!(mgr.is_active().await);
 }
 

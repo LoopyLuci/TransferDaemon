@@ -94,8 +94,7 @@ fn trigger_java(class_short: &str, method: &str, sig: &str) {
     };
     let app = app_lock.lock().unwrap();
     unsafe {
-        let na = app.native_activity();
-        let vm_ptr = (*na.as_ptr()).vm as *mut jni::sys::JavaVM;
+        let vm_ptr = app.vm_as_ptr() as *mut jni::sys::JavaVM;
         let vm = match jni::JavaVM::from_raw(vm_ptr) {
             Ok(v) => v,
             Err(e) => {
@@ -135,7 +134,7 @@ fn trigger_java(class_short: &str, method: &str, sig: &str) {
 /// Converts I420 YUV to RGBA and pushes a `VideoFrame` to the active call session.
 #[no_mangle]
 pub extern "system" fn Java_com_transferdaemon_app_CameraHelper_deliverFrame(
-    mut env: JNIEnv,
+    env: JNIEnv,
     _class: JClass,
     yuv_array: JByteArray,
     width: jint,
@@ -158,7 +157,7 @@ pub extern "system" fn Java_com_transferdaemon_app_CameraHelper_deliverFrame(
 /// Converts interleaved PCM‑16 LE to 480‑sample f32 chunks and sends them.
 #[no_mangle]
 pub extern "system" fn Java_com_transferdaemon_app_AudioHelper_deliverAudio(
-    mut env: JNIEnv,
+    env: JNIEnv,
     _class: JClass,
     pcm_array: JByteArray,
 ) {

@@ -13,11 +13,16 @@ crate-type = ["cdylib", "staticlib"]
 default = []
 desktop = []
 
+[lints]
+workspace = true
+
 [dependencies]
 tokio        = { workspace = true }
 tonic        = "0.11"
 thiserror    = { workspace = true }
 async-trait  = { workspace = true }
+tracing      = { workspace = true }
+tracing-subscriber = { workspace = true }
 transferd-api    = { path = "../transferd-api" }
 transferd_lib    = { package = "transferd", path = "../transferd" }
 transferd-ui-shared = { path = "../transferd-ui-shared" }
@@ -40,3 +45,4 @@ egui = { workspace = true }
 
 # winit must be explicit so we can import EventLoopBuilderExtAndroid.
 winit = { version = "0.29", features = ["android-native-activity"] }
+

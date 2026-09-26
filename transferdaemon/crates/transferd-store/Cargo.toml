@@ -3,6 +3,9 @@ name = "transferd-store"
 version = "0.1.0"
 edition = "2021"
 
+[lints]
+workspace = true
+
 [dependencies]
 bincode   = { workspace = true }
 serde     = { workspace = true }
@@ -17,3 +20,4 @@ dirs      = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"
+

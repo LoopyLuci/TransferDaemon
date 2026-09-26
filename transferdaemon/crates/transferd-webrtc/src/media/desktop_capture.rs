@@ -105,14 +105,14 @@ fn capture_audio(tok_tx: mpsc::Sender<AudioSamples>, stopped: Arc<AtomicBool>) {
     let config = match device.default_input_config() {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("transferd-webrtc: no audio input config: {e}");
+            tracing::error!("transferd-webrtc: no audio input config: {e}");
             silence_loop(tok_tx, stopped);
             return;
         }
     };
 
     let (raw_tx, raw_rx) = std_mpsc::sync_channel::<Vec<f32>>(64);
-    let err_fn = |e| eprintln!("transferd-webrtc: audio stream error: {e}");
+    let err_fn = |e| tracing::error!("transferd-webrtc: audio stream error: {e}");
     let cfg: cpal::StreamConfig = config.config();
 
     let stream_result = match config.sample_format() {
@@ -159,7 +159,7 @@ fn capture_audio(tok_tx: mpsc::Sender<AudioSamples>, stopped: Arc<AtomicBool>) {
         }
         // I32, F64, etc. — best-effort silence fallback.
         _ => {
-            eprintln!("transferd-webrtc: unsupported audio sample format");
+            tracing::warn!("transferd-webrtc: unsupported audio sample format");
             silence_loop(tok_tx, stopped);
             return;
         }
@@ -168,14 +168,14 @@ fn capture_audio(tok_tx: mpsc::Sender<AudioSamples>, stopped: Arc<AtomicBool>) {
     let stream = match stream_result {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("transferd-webrtc: build_input_stream failed: {e}");
+            tracing::error!("transferd-webrtc: build_input_stream failed: {e}");
             silence_loop(tok_tx, stopped);
             return;
         }
     };
 
     if let Err(e) = stream.play() {
-        eprintln!("transferd-webrtc: stream.play() failed: {e}");
+        tracing::error!("transferd-webrtc: stream.play() failed: {e}");
         silence_loop(tok_tx, stopped);
         return;
     }
@@ -220,13 +220,13 @@ fn capture_video(tok_tx: mpsc::Sender<VideoFrame>, stopped: Arc<AtomicBool>) -> 
     let mut camera = match Camera::new(CameraIndex::Index(0), format) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("transferd-webrtc: camera unavailable: {e}");
+            tracing::error!("transferd-webrtc: camera unavailable: {e}");
             return false;
         }
     };
 
     if let Err(e) = camera.open_stream() {
-        eprintln!("transferd-webrtc: camera open_stream failed: {e}");
+        tracing::error!("transferd-webrtc: camera open_stream failed: {e}");
         return false;
     }
 
@@ -241,7 +241,7 @@ fn capture_video(tok_tx: mpsc::Sender<VideoFrame>, stopped: Arc<AtomicBool>) -> 
                     };
                     if tok_tx.blocking_send(frame).is_err() { break; }
                 }
-                Err(e) => eprintln!("transferd-webrtc: frame decode error: {e}"),
+                Err(e) => tracing::error!("transferd-webrtc: frame decode error: {e}"),
             },
             Err(_) => {
                 // Camera hiccup — brief pause, keep trying.

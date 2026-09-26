@@ -193,11 +193,11 @@ if ($env:SKIP_INSTALL -ne "1" -and $Adb) {
         & $Adb install -r $ApkOut 2>&1
         if ($LASTEXITCODE -eq 0) {
             Write-Log "► Install succeeded. Launching…"
-            & $Adb shell am start -n "com.transferdaemon.app/android.app.NativeActivity" 2>&1
-            Write-Log "► Waiting 5 s for startup then capturing logcat…"
-            Start-Sleep -Seconds 5
+            & $Adb shell am start -n "com.transferdaemon.app/.PermissionsActivity" 2>&1
+            Write-Log "► Waiting 12 s for startup then capturing logcat…"
+            Start-Sleep -Seconds 12
             $deviceLog = Join-Path $LogDir "device_logcat_0.txt"
-            & $Adb logcat -d -s "TransferDaemon" "AndroidRuntime" "NativeActivity" 2>&1 | Out-File $deviceLog -Encoding UTF8
+            & $Adb logcat -d -s "TransferDaemon" "AndroidRuntime" "NativeActivity" "libtransferd_mobile" "DEBUG" "FATAL" 2>&1 | Out-File $deviceLog -Encoding UTF8
             Write-Log "► Logcat saved: $deviceLog"
             Get-Content $deviceLog | Select-Object -Last 30 | ForEach-Object { Write-Log "    $_" }
         } else {

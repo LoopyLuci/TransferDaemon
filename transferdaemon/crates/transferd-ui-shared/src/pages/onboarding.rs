@@ -1,10 +1,15 @@
 //! Onboarding page — create or restore a TransferDaemon identity.
+//!
+//! Redesigned with the new design system for a modern, accessible experience.
 
 use crate::app::{AppState, Page};
-use egui::{Color32, Context, RichText, Ui};
+use crate::animations::Fade;
+use crate::design::{self, DesignTokens};
+use crate::platform_hooks;
+use egui::{Context, RichText, Ui, Vec2};
 
 // Minimum tap target size — comfortable on mobile, fine on desktop.
-const BTN: [f32; 2] = [260.0, 52.0];
+const BTN: [f32; 2] = [280.0, 52.0];
 
 #[derive(Default, PartialEq)]
 enum Step {
@@ -22,66 +27,176 @@ pub struct OnboardingPage {
     phrase_input: String,
     recovery_phrase: String,
     error: Option<String>,
+    /// True on the first frame of a step that has a text field — triggers focus + IME.
+    focus_requested: bool,
+    /// Set to the expiry instant when the user taps "Copy"; drives the "Copied!" label.
+    copy_feedback_until: Option<std::time::Instant>,
+    /// Animation state for page transitions.
+    #[allow(dead_code)]
+    fade: Fade,
 }
 
 impl OnboardingPage {
     pub fn show(&mut self, ui: &mut Ui, _ctx: &Context, state: &mut AppState) {
+        let tokens = DesignTokens::current();
+
         ui.vertical_centered(|ui| {
-            ui.add_space(48.0);
+            ui.add_space(tokens.spacing.xl);
+
+            // Logo / brand area
+            ui.label(
+                RichText::new("🔒")
+                    .size(48.0)
+                    .color(tokens.palette.accent),
+            );
+            ui.add_space(tokens.spacing.sm);
+
             match self.step {
-                Step::Welcome    => self.show_welcome(ui),
-                Step::CreateName => self.show_create_name(ui, state),
-                Step::ShowPhrase => self.show_phrase(ui, state),
-                Step::Restore    => self.show_restore(ui, state),
+                Step::Welcome    => self.show_welcome(ui, &tokens),
+                Step::CreateName => self.show_create_name(ui, state, &tokens),
+                Step::ShowPhrase => self.show_phrase(ui, state, &tokens),
+                Step::Restore    => self.show_restore(ui, state, &tokens),
             }
         });
     }
 
-    fn show_welcome(&mut self, ui: &mut Ui) {
-        ui.label(RichText::new("TransferDaemon").size(32.0).strong().color(Color32::WHITE));
-        ui.add_space(8.0);
-        ui.label(RichText::new("Sovereign. Zero-knowledge. Universal transfer.")
-            .size(15.0).color(Color32::from_gray(180)));
-        ui.add_space(48.0);
+    fn show_welcome(&mut self, ui: &mut Ui, tokens: &DesignTokens) {
+        ui.label(
+            RichText::new("TransferDaemon")
+                .size(36.0)
+                .strong()
+                .color(tokens.palette.text_primary),
+        );
+        ui.add_space(tokens.spacing.xs);
+        ui.label(
+            RichText::new("Sovereign. Zero-knowledge. Universal transfer.")
+                .size(16.0)
+                .color(tokens.palette.text_secondary),
+        );
+        ui.add_space(tokens.spacing.xl * 1.5);
 
-        if ui.add_sized(BTN, egui::Button::new(
-            RichText::new("Create new identity").size(16.0),
-        ).fill(Color32::from_rgb(0, 122, 255))).clicked() {
+        // Primary action
+        if ui
+            .add_sized(
+                BTN,
+                egui::Button::new(
+                    RichText::new("Create new identity")
+                        .size(16.0)
+                        .color(tokens.palette.text_inverse),
+                )
+                .fill(tokens.palette.accent)
+                .rounding(tokens.spacing.button_rounding),
+            )
+            .clicked()
+        {
             self.step = Step::CreateName;
+            self.focus_requested = true;
         }
-        ui.add_space(12.0);
-        if ui.add_sized(BTN, egui::Button::new(
-            RichText::new("Restore from phrase").size(16.0),
-        ).fill(Color32::from_rgb(44, 44, 46))).clicked() {
+        ui.add_space(tokens.spacing.sm);
+
+        // Secondary action
+        if ui
+            .add_sized(
+                BTN,
+                egui::Button::new(
+                    RichText::new("Restore from phrase")
+                        .size(16.0)
+                        .color(tokens.palette.text_primary),
+                )
+                .fill(tokens.palette.surface)
+                .rounding(tokens.spacing.button_rounding),
+            )
+            .clicked()
+        {
             self.step = Step::Restore;
+            self.focus_requested = true;
         }
+
+        ui.add_space(tokens.spacing.xl);
+
+        // Security badge
+        egui::Frame::none()
+            .fill(tokens.palette.bg_tertiary)
+            .rounding(tokens.spacing.card_rounding)
+            .inner_margin(Vec2::new(tokens.spacing.md, tokens.spacing.sm))
+            .show(ui, |ui| {
+                ui.set_max_width(BTN[0]);
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("🛡").size(14.0));
+                    ui.label(
+                        RichText::new("End-to-end encrypted • No servers • No tracking")
+                            .size(11.0)
+                            .color(tokens.palette.text_tertiary),
+                    );
+                });
+            });
     }
 
-    fn show_create_name(&mut self, ui: &mut Ui, state: &mut AppState) {
-        ui.label(RichText::new("Choose a display name").size(22.0).strong().color(Color32::WHITE));
-        ui.add_space(8.0);
-        ui.label(RichText::new("This is only shown to people you choose to share it with.")
-            .size(13.0).color(Color32::from_gray(160)));
-        ui.add_space(24.0);
+    fn show_create_name(&mut self, ui: &mut Ui, state: &mut AppState, tokens: &DesignTokens) {
+        ui.label(
+            RichText::new("Choose a display name")
+                .size(24.0)
+                .strong()
+                .color(tokens.palette.text_primary),
+        );
+        ui.add_space(tokens.spacing.xs);
+        ui.label(
+            RichText::new("This is only shown to people you choose to share it with.")
+                .size(14.0)
+                .color(tokens.palette.text_secondary),
+        );
+        ui.add_space(tokens.spacing.lg);
 
-        ui.add(
-            egui::TextEdit::singleline(&mut self.display_name)
+        // Input field with proper styling
+        let input_frame = design::input_frame(tokens);
+        input_frame.show(ui, |ui| {
+            let te = egui::TextEdit::singleline(&mut self.display_name)
                 .hint_text("Display name…")
                 .font(egui::FontId::proportional(16.0))
-                .desired_width(280.0)
-,
-        );
+                .desired_width(300.0)
+                .margin(Vec2::new(8.0, 8.0));
+            let response = ui.add(te);
+
+            // On the first frame of this step, grab focus so the Android IME appears.
+            if self.focus_requested {
+                response.request_focus();
+                self.focus_requested = false;
+                platform_hooks::request_show_keyboard();
+                ui.ctx().request_repaint();
+            }
+        });
 
         if let Some(e) = &self.error {
-            ui.add_space(8.0);
-            ui.label(RichText::new(e).color(Color32::RED));
+            ui.add_space(tokens.spacing.xs);
+            egui::Frame::none()
+                .fill(tokens.palette.error_subtle)
+                .rounding(tokens.spacing.button_rounding)
+                .inner_margin(Vec2::new(tokens.spacing.sm, tokens.spacing.xs))
+                .show(ui, |ui| {
+                    ui.label(
+                        RichText::new(format!("⚠ {e}"))
+                            .color(tokens.palette.error)
+                            .size(13.0),
+                    );
+                });
         }
-        ui.add_space(24.0);
+
+        ui.add_space(tokens.spacing.lg);
 
         let can_continue = !self.display_name.trim().is_empty();
         ui.add_enabled_ui(can_continue, |ui| {
-            if ui.add_sized(BTN, egui::Button::new("Continue")
-                .fill(Color32::from_rgb(0, 122, 255))).clicked()
+            if ui
+                .add_sized(
+                    BTN,
+                    egui::Button::new(
+                        RichText::new("Continue")
+                            .size(16.0)
+                            .color(tokens.palette.text_inverse),
+                    )
+                    .fill(tokens.palette.accent)
+                    .rounding(tokens.spacing.button_rounding),
+                )
+                .clicked()
             {
                 let name = self.display_name.trim().to_owned();
                 let rt = tokio::runtime::Handle::current();
@@ -96,77 +211,211 @@ impl OnboardingPage {
                 }
             }
         });
-        ui.add_space(12.0);
-        if ui.add_sized([BTN[0], 40.0], egui::Button::new("← Back")
-            .fill(Color32::from_rgb(44, 44, 46))).clicked()
+        ui.add_space(tokens.spacing.sm);
+
+        if ui
+            .add_sized(
+                [BTN[0], 40.0],
+                egui::Button::new(
+                    RichText::new("← Back")
+                        .size(14.0)
+                        .color(tokens.palette.text_secondary),
+                )
+                .fill(tokens.palette.surface)
+                .rounding(tokens.spacing.button_rounding),
+            )
+            .clicked()
         {
             self.step = Step::Welcome;
         }
     }
 
-    fn show_phrase(&mut self, ui: &mut Ui, state: &mut AppState) {
-        ui.label(RichText::new("Your recovery phrase").size(22.0).strong().color(Color32::WHITE));
-        ui.add_space(8.0);
+    fn show_phrase(&mut self, ui: &mut Ui, state: &mut AppState, tokens: &DesignTokens) {
         ui.label(
-            RichText::new("Write these 12 words down in order.\nAnyone with this phrase can restore your identity.")
-                .size(13.0).color(Color32::from_rgb(255, 214, 10)),
+            RichText::new("Your recovery phrase")
+                .size(24.0)
+                .strong()
+                .color(tokens.palette.text_primary),
         );
-        ui.add_space(24.0);
+        ui.add_space(tokens.spacing.xs);
+
+        // Warning card
+        egui::Frame::none()
+            .fill(tokens.palette.warning_subtle)
+            .rounding(tokens.spacing.card_rounding)
+            .inner_margin(Vec2::new(tokens.spacing.md, tokens.spacing.sm))
+            .show(ui, |ui| {
+                ui.set_max_width(BTN[0]);
+                ui.label(
+                    RichText::new("⚠ Write these 12 words down in order. Anyone with this phrase can restore your identity.")
+                        .size(13.0)
+                        .color(tokens.palette.warning),
+                );
+            });
+
+        ui.add_space(tokens.spacing.lg);
 
         // Scrollable on small screens.
         egui::ScrollArea::vertical()
             .max_height(250.0)
             .show(ui, |ui| {
                 let words: Vec<&str> = self.recovery_phrase.split_whitespace().collect();
-                egui::Grid::new("phrase_grid").num_columns(3).spacing([16.0, 10.0]).show(ui, |ui| {
-                    for (i, word) in words.iter().enumerate() {
-                        ui.label(
-                            RichText::new(format!("{}. {}", i + 1, word))
-                                .size(15.0).monospace().color(Color32::WHITE),
-                        );
-                        if (i + 1) % 3 == 0 { ui.end_row(); }
-                    }
-                });
+                egui::Grid::new("phrase_grid")
+                    .num_columns(3)
+                    .spacing([16.0, 10.0])
+                    .show(ui, |ui| {
+                        for (i, word) in words.iter().enumerate() {
+                            // Word number
+                            ui.label(
+                                RichText::new(format!("{}.", i + 1))
+                                    .size(13.0)
+                                    .color(tokens.palette.text_tertiary),
+                            );
+                            // Word
+                            egui::Frame::none()
+                                .fill(tokens.palette.bg_tertiary)
+                                .rounding(6.0)
+                                .inner_margin(Vec2::new(8.0, 4.0))
+                                .show(ui, |ui| {
+                                    ui.label(
+                                        RichText::new(*word)
+                                            .size(15.0)
+                                            .monospace()
+                                            .color(tokens.palette.text_primary),
+                                    );
+                                });
+                            if (i + 1) % 3 == 0 {
+                                ui.end_row();
+                            }
+                        }
+                    });
             });
 
-        ui.add_space(32.0);
+        ui.add_space(tokens.spacing.lg);
 
-        if ui.add_sized(BTN, egui::Button::new("I've written it down — Continue")
-            .fill(Color32::from_rgb(0, 122, 255))).clicked()
+        // Copy button — writes all 12 words to clipboard in one tap.
+        let copied = self
+            .copy_feedback_until
+            .map(|t| t > std::time::Instant::now())
+            .unwrap_or(false);
+        if copied {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(100));
+        }
+        let copy_label = if copied {
+            "✓ Copied!"
+        } else {
+            "Copy recovery phrase"
+        };
+        let copy_color = if copied {
+            tokens.palette.success
+        } else {
+            tokens.palette.surface
+        };
+        if ui
+            .add_sized(
+                [BTN[0], 44.0],
+                egui::Button::new(RichText::new(copy_label).size(15.0).color(tokens.palette.text_primary))
+                    .fill(copy_color)
+                    .rounding(tokens.spacing.button_rounding),
+            )
+            .clicked()
+        {
+            ui.output_mut(|o| o.copied_text = self.recovery_phrase.clone());
+            self.copy_feedback_until =
+                Some(std::time::Instant::now() + std::time::Duration::from_secs(2));
+        }
+
+        ui.add_space(tokens.spacing.sm);
+
+        if ui
+            .add_sized(
+                BTN,
+                egui::Button::new(
+                    RichText::new("I've written it down — Continue")
+                        .size(16.0)
+                        .color(tokens.palette.text_inverse),
+                )
+                .fill(tokens.palette.accent)
+                .rounding(tokens.spacing.button_rounding),
+            )
+            .clicked()
         {
             state.page = Page::Home;
         }
     }
 
-    fn show_restore(&mut self, ui: &mut Ui, state: &mut AppState) {
-        ui.label(RichText::new("Restore identity").size(22.0).strong().color(Color32::WHITE));
-        ui.add_space(8.0);
-        ui.label(RichText::new("Enter your 12-word recovery phrase, separated by spaces.")
-            .size(13.0).color(Color32::from_gray(160)));
-        ui.add_space(24.0);
-
-        ui.add(
-            egui::TextEdit::multiline(&mut self.phrase_input)
-                .hint_text("word1 word2 word3 …")
-                .font(egui::FontId::monospace(14.0))
-                .desired_rows(4)
-                .desired_width(300.0)
-,
+    fn show_restore(&mut self, ui: &mut Ui, state: &mut AppState, tokens: &DesignTokens) {
+        ui.label(
+            RichText::new("Restore identity")
+                .size(24.0)
+                .strong()
+                .color(tokens.palette.text_primary),
         );
+        ui.add_space(tokens.spacing.xs);
+        ui.label(
+            RichText::new("Enter your 12-word recovery phrase, separated by spaces.")
+                .size(14.0)
+                .color(tokens.palette.text_secondary),
+        );
+        ui.add_space(tokens.spacing.lg);
+
+        let input_frame = design::input_frame(tokens);
+        input_frame.show(ui, |ui| {
+            let te_response = ui.add(
+                egui::TextEdit::multiline(&mut self.phrase_input)
+                    .hint_text("word1 word2 word3 …")
+                    .font(egui::FontId::monospace(14.0))
+                    .desired_rows(4)
+                    .desired_width(320.0)
+                    .margin(Vec2::new(8.0, 8.0)),
+            );
+            if self.focus_requested {
+                te_response.request_focus();
+                self.focus_requested = false;
+                platform_hooks::request_show_keyboard();
+                ui.ctx().request_repaint();
+            }
+        });
 
         if let Some(e) = &self.error {
-            ui.add_space(8.0);
-            ui.label(RichText::new(e).color(Color32::RED));
+            ui.add_space(tokens.spacing.xs);
+            egui::Frame::none()
+                .fill(tokens.palette.error_subtle)
+                .rounding(tokens.spacing.button_rounding)
+                .inner_margin(Vec2::new(tokens.spacing.sm, tokens.spacing.xs))
+                .show(ui, |ui| {
+                    ui.label(
+                        RichText::new(format!("⚠ {e}"))
+                            .color(tokens.palette.error)
+                            .size(13.0),
+                    );
+                });
         }
-        ui.add_space(24.0);
+
+        ui.add_space(tokens.spacing.lg);
 
         let can_restore = self.phrase_input.split_whitespace().count() >= 12;
         ui.add_enabled_ui(can_restore, |ui| {
-            if ui.add_sized(BTN, egui::Button::new("Restore identity")
-                .fill(Color32::from_rgb(0, 122, 255))).clicked()
+            if ui
+                .add_sized(
+                    BTN,
+                    egui::Button::new(
+                        RichText::new("Restore identity")
+                            .size(16.0)
+                            .color(tokens.palette.text_inverse),
+                    )
+                    .fill(tokens.palette.accent)
+                    .rounding(tokens.spacing.button_rounding),
+                )
+                .clicked()
             {
                 let rt = tokio::runtime::Handle::current();
-                match rt.block_on(state.daemon.restore_identity(self.phrase_input.trim().to_owned())) {
+                match rt.block_on(
+                    state
+                        .daemon
+                        .restore_identity(self.phrase_input.trim().to_owned()),
+                ) {
                     Ok(id) => {
                         state.identity = Some(id);
                         state.page = Page::Home;
@@ -175,9 +424,20 @@ impl OnboardingPage {
                 }
             }
         });
-        ui.add_space(12.0);
-        if ui.add_sized([BTN[0], 40.0], egui::Button::new("← Back")
-            .fill(Color32::from_rgb(44, 44, 46))).clicked()
+        ui.add_space(tokens.spacing.sm);
+
+        if ui
+            .add_sized(
+                [BTN[0], 40.0],
+                egui::Button::new(
+                    RichText::new("← Back")
+                        .size(14.0)
+                        .color(tokens.palette.text_secondary),
+                )
+                .fill(tokens.palette.surface)
+                .rounding(tokens.spacing.button_rounding),
+            )
+            .clicked()
         {
             self.step = Step::Welcome;
             self.error = None;

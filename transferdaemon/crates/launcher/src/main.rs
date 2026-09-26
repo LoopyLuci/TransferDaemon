@@ -118,8 +118,12 @@ async fn main() {
     // ── Step 2: launch the UI ────────────────────────────────────────────────
     log::info!("launching UI: {}", ui_bin.display());
 
-    let status = std::process::Command::new(&ui_bin)
-        .env("TRANSFERD_ADDR", &addr)
+    let mut cmd = std::process::Command::new(&ui_bin);
+    cmd.env("TRANSFERD_ADDR", &addr);
+    if let Some(token) = transferd_api::auth::resolve_token() {
+        cmd.env("TRANSFERD_TOKEN", token);
+    }
+    let status = cmd
         .stdin(Stdio::null())
         .status()
         .unwrap_or_else(|e| {

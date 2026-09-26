@@ -3,6 +3,9 @@ name = "transferd-core"
 version = "0.1.0"
 edition = "2021"
 
+[lints]
+workspace = true
+
 [dependencies]
 bytes = { workspace = true }
 async-trait = { workspace = true }
@@ -14,3 +17,18 @@ thiserror = { workspace = true }
 futures = { workspace = true }
 ring-channel = { path = "../ring-channel" }
 transferd-crypto = { path = "../transferd-crypto" }
+relayd = { path = "../relayd" }
+arti-client = { version = "0.22", optional = true }
+
+[dev-dependencies]
+rand = { workspace = true }
+criterion = { workspace = true }
+
+[[bench]]
+name = "transport"
+harness = false
+
+[features]
+default = []
+tor-transport = ["arti-client"]
+

@@ -45,7 +45,7 @@ impl TokenBucket {
         } else {
             bandwidth_kbps as f64 * 1000.0 / 8.0
         };
-        let mut g = self.inner.lock().unwrap();
+        let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         g.rate_bps = rate_bps;
         g.capacity = rate_bps.min(1e12);
         g.tokens = g.tokens.min(g.capacity);
@@ -53,7 +53,7 @@ impl TokenBucket {
 
     /// Try to consume `bytes` tokens. Returns `true` if permitted, `false` if throttled.
     pub fn try_consume(&self, bytes: usize) -> bool {
-        let mut g = self.inner.lock().unwrap();
+        let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         let now = Instant::now();
         let elapsed = now.duration_since(g.last_refill).as_secs_f64();
         g.last_refill = now;
@@ -66,3 +66,6 @@ impl TokenBucket {
         }
     }
 }
+
+
+

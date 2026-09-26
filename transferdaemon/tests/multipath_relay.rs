@@ -33,6 +33,21 @@ use transferd_core::types::{Gsn, SessionId};
 async fn run_relay_server(socket: UdpSocket, relay: Arc<Mutex<Relay>>) {
     let socket = Arc::new(socket);
     let mut buf = vec![0u8; 65536];
+
+    async fn send_challenge(relay: &Arc<Mutex<Relay>>, socket: &Arc<UdpSocket>, src: SocketAddr) {
+        let (challenge, expires_at, difficulty) = {
+            let mut r = relay.lock().await;
+            let c = r.current_challenge();
+            (c.bytes, c.expires_at, c.difficulty)
+        };
+        let frame = encode(
+            Tag::Challenge,
+            &relayd::protocol::ChallengeMsg { challenge, expires_at, difficulty },
+        )
+        .unwrap_or_default();
+        let _ = socket.send_to(&frame, src).await;
+    }
+
     loop {
         let Ok((len, src)) = socket.recv_from(&mut buf).await else { return };
         let frame = &buf[..len];
@@ -42,13 +57,14 @@ async fn run_relay_server(socket: UdpSocket, relay: Arc<Mutex<Relay>>) {
         let relay = relay.clone();
 
         match tag {
+            Tag::Challenge => {
+                // Bootstrap: give the client the current PoW challenge.
+                send_challenge(&relay, &socket, src).await;
+            }
             Tag::Register => {
                 if let Ok(msg) = bincode::deserialize::<RegisterMsg>(body) {
                     let _ = relay.lock().await.register(&msg, src);
-                    // Send a minimal Ack so the RelayLane registration drain works.
-                    let ack = encode(Tag::Ack, &relayd::protocol::AckMsg { sender_seq: 0 })
-                        .unwrap_or_default();
-                    let _ = socket.send_to(&ack, src).await;
+                    send_challenge(&relay, &socket, src).await;
                 }
             }
             Tag::Forward => {
@@ -73,7 +89,7 @@ async fn run_relay_server(socket: UdpSocket, relay: Arc<Mutex<Relay>>) {
                     }
                 }
             }
-            Tag::Keepalive | Tag::Challenge | Tag::Error | Tag::Ack => {}
+            Tag::Keepalive | Tag::Error | Tag::Ack => {}
         }
     }
 }
@@ -111,10 +127,11 @@ async fn test_relay_lane_single_chunk() {
     let mut receiver = RelayLane::new(
         1,
         relay_addr,
-        Some(receiver_token), // registers this token
-        sender_token,          // forward target (unused on recv side)
+        receiver_token, // registers this token
+        sender_token,   // forward target (unused on recv side)
         &session_key,
-        0, // difficulty=0
+        &session_key,
+        true, // register
     )
     .await
     .unwrap();
@@ -122,10 +139,11 @@ async fn test_relay_lane_single_chunk() {
     let sender = RelayLane::new(
         0,
         relay_addr,
-        None,            // sender doesn't register
+        sender_token,    // our marker token (not registered)
         receiver_token,  // forward to receiver
         &session_key,
-        0,
+        &session_key,
+        false, // don't register
     )
     .await
     .unwrap();
@@ -160,12 +178,13 @@ async fn test_relay_lane_multi_chunk_reassembly() {
 
     let session_key = [0xABu8; 32];
     let receiver_token = derive_token(&session_key, b"rx-multi");
+    let sender_token = derive_token(&session_key, b"sender-multi");
 
-    let mut receiver = RelayLane::new(1, relay_addr, Some(receiver_token), [0u8; 32], &session_key, 0)
+    let mut receiver = RelayLane::new(1, relay_addr, receiver_token, [0u8; 32], &session_key, &session_key, true)
         .await
         .unwrap();
 
-    let sender = RelayLane::new(0, relay_addr, None, receiver_token, &session_key, 0)
+    let sender = RelayLane::new(0, relay_addr, sender_token, receiver_token, &session_key, &session_key, false)
         .await
         .unwrap();
 
@@ -208,12 +227,13 @@ async fn test_multipath_qos_critical_redundancy() {
 
     let session_key = [0xCDu8; 32];
     let receiver_token = derive_token(&session_key, b"rx-qos");
+    let sender_token = derive_token(&session_key, b"sender-qos");
 
-    let mut receiver = RelayLane::new(1, relay_addr, Some(receiver_token), [0u8; 32], &session_key, 0)
+    let mut receiver = RelayLane::new(1, relay_addr, receiver_token, [0u8; 32], &session_key, &session_key, true)
         .await
         .unwrap();
 
-    let relay_sender = RelayLane::new(0, relay_addr, None, receiver_token, &session_key, 0)
+    let relay_sender = RelayLane::new(0, relay_addr, sender_token, receiver_token, &session_key, &session_key, false)
         .await
         .unwrap();
 

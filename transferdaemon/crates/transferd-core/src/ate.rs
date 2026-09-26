@@ -7,9 +7,6 @@ use std::sync::atomic::Ordering;
 /// never exceeds `reorder_guard_limit`, preventing receiver-buffer deadlock.
 pub struct Ate {
     pub lane_count: usize,
-    /// Estimated completion times per lane — populated by the tick loop (Phase 4).
-    #[allow(dead_code)]
-    completion_times: Vec<f64>,
     reorder_guard_limit: u64,
 }
 
@@ -17,7 +14,6 @@ impl Ate {
     pub fn new(lane_count: usize, gap_limit: u64) -> Self {
         Self {
             lane_count,
-            completion_times: vec![f64::MAX; lane_count],
             reorder_guard_limit: gap_limit,
         }
     }

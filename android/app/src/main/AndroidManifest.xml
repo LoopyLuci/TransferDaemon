@@ -23,7 +23,10 @@
 
         <!--
             Gate activity: requests CAMERA + RECORD_AUDIO at runtime, then
-            launches NativeActivity.  This is the true LAUNCHER entry point.
+            launches CustomNativeActivity.  This is the true LAUNCHER entry point.
+            Separating permissions from NativeActivity prevents FocusEvent ANRs
+            caused by the permission dialog overlay triggering surface recreation
+            during GPU initialization.
         -->
         <activity
             android:name=".PermissionsActivity"
@@ -34,17 +37,36 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- Share-intent entry: "Share to TransferDaemon" from any app. -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="*/*" />
+            </intent-filter>
         </activity>
 
         <!--
-            NativeActivity loads libtransferd_mobile.so and calls android_main().
-            android_main starts the gRPC daemon + runs the eframe UI loop.
-            Not exported as a launcher — PermissionsActivity starts it.
+            CustomNativeActivity loads libtransferd_mobile.so and runs the Rust app.
+            It overrides onCreateInputConnection() to return TYPE_CLASS_TEXT so
+            GBoard shows reliably. Not exported as LAUNCHER — PermissionsActivity
+            starts it after permissions are handled.
         -->
         <activity
-            android:name="android.app.NativeActivity"
+            android:name=".CustomNativeActivity"
             android:exported="false"
             android:label="@string/app_name"
+            android:screenOrientation="fullSensor"
+            android:windowSoftInputMode="adjustPan"
             android:configChanges="orientation|screenSize|keyboardHidden|density">
 
             <!-- Name of the .so to load (without "lib" prefix and ".so" suffix). -->

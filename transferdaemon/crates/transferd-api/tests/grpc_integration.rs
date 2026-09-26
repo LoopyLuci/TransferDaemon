@@ -14,14 +14,17 @@ use transferd_api::{
     AccountService, AccountServiceServer,
     FriendService, FriendServiceServer,
     MessageService, MessageServiceServer,
+    SendTypingRequest, ReactionRequest,
     TransferService, TransferServiceServer,
     SettingsService, SettingsServiceServer,
-    AddContactRequest, ContactList, ContactReply, CreateIdentityRequest, Empty,
+    AddContactRequest, ContactList, ContactReply,
+    RenameContactRequest, RemoveContactRequest, BlockContactRequest,
+    SafetyNumberRequest, SafetyNumberReply,
+    CreateIdentityRequest, Empty,
     GetMessagesRequest, GetSettingRequest, IdentityReply, MessageList, MessageReply,
     PublicKeyReply, RecoveryPhraseReply, RestoreIdentityRequest, SendFileRequest,
     SendTextRequest, SetSettingRequest, SettingReply, TransferList, TransferReply,
-    AccountServiceClient, FriendServiceClient, MessageServiceClient,
-    TransferServiceClient, SettingsServiceClient,
+    SearchMessagesRequest,
 };
 
 fn now_ts() -> u64 {
@@ -140,9 +143,64 @@ impl FriendService for TestFriendService {
             name: r.name,
             last_seen_ts: 0,
             online: false,
+            blocked: false,
+            typing: false,
         };
         self.0.lock().unwrap().contacts.push(contact.clone());
         Ok(Response::new(contact))
+    }
+
+    async fn rename_contact(
+        &self, req: Request<RenameContactRequest>,
+    ) -> Result<Response<ContactReply>, Status> {
+        let r = req.into_inner();
+        let mut s = self.0.lock().unwrap();
+        let c = s.contacts.iter_mut().find(|c| c.id == r.contact_id)
+            .ok_or_else(|| Status::not_found("contact not found"))?;
+        c.name = r.name;
+        Ok(Response::new(c.clone()))
+    }
+
+    async fn remove_contact(
+        &self, req: Request<RemoveContactRequest>,
+    ) -> Result<Response<Empty>, Status> {
+        let id = req.into_inner().contact_id;
+        let mut s = self.0.lock().unwrap();
+        s.contacts.retain(|c| c.id != id);
+        Ok(Response::new(Empty {}))
+    }
+
+    async fn block_contact(
+        &self, req: Request<BlockContactRequest>,
+    ) -> Result<Response<ContactReply>, Status> {
+        self.set_blocked(req.into_inner().contact_id, true)
+    }
+
+    async fn unblock_contact(
+        &self, req: Request<BlockContactRequest>,
+    ) -> Result<Response<ContactReply>, Status> {
+        self.set_blocked(req.into_inner().contact_id, false)
+    }
+
+    async fn get_safety_number(
+        &self, req: Request<SafetyNumberRequest>,
+    ) -> Result<Response<SafetyNumberReply>, Status> {
+        let _ = req.into_inner();
+        Ok(Response::new(SafetyNumberReply {
+            safety_number: String::new(),
+            verified: false,
+        }))
+    }
+}
+
+impl TestFriendService {
+    #[allow(clippy::result_large_err)]
+    fn set_blocked(&self, contact_id: String, blocked: bool) -> Result<Response<ContactReply>, Status> {
+        let mut s = self.0.lock().unwrap();
+        let c = s.contacts.iter_mut().find(|c| c.id == contact_id)
+            .ok_or_else(|| Status::not_found("contact not found"))?;
+        c.blocked = blocked;
+        Ok(Response::new(c.clone()))
     }
 }
 
@@ -163,6 +221,21 @@ impl MessageService for TestMessageService {
         Ok(Response::new(MessageList { messages: msgs }))
     }
 
+    async fn search_messages(
+         &self, req: Request<SearchMessagesRequest>,
+     ) -> Result<Response<MessageList>, Status> {
+         let r = req.into_inner();
+         let q = r.query.to_lowercase();
+         let s = self.0.lock().unwrap();
+         let msgs = s.messages.get(&r.contact_id)
+             .map(|v| v.iter()
+                 .filter(|m| m.text.to_lowercase().contains(&q) || m.content_type.to_lowercase().contains(&q))
+                 .cloned()
+                 .collect())
+             .unwrap_or_default();
+         Ok(Response::new(MessageList { messages: msgs }))
+     }
+
     async fn send_text(
         &self, req: Request<SendTextRequest>,
     ) -> Result<Response<MessageReply>, Status> {
@@ -182,13 +255,25 @@ impl MessageService for TestMessageService {
         s.messages.entry(r.contact_id).or_default().push(msg.clone());
         Ok(Response::new(msg))
     }
+
+    async fn send_typing(
+        &self, _req: Request<SendTypingRequest>,
+    ) -> Result<Response<Empty>, Status> {
+        Ok(Response::new(Empty {}))
+    }
+
+    async fn toggle_reaction(
+        &self, _req: Request<ReactionRequest>,
+    ) -> Result<Response<Empty>, Status> {
+        Ok(Response::new(Empty {}))
+    }
 }
 
 // ---------------------------------------------------------------------------
 // TransferService impl
 // ---------------------------------------------------------------------------
 
-struct TestTransferService(SharedState);
+struct TestTransferService;
 
 #[tonic::async_trait]
 impl TransferService for TestTransferService {
@@ -209,6 +294,18 @@ impl TransferService for TestTransferService {
 
     async fn send_file(&self, _: Request<SendFileRequest>) -> Result<Response<MessageReply>, Status> {
         Err(Status::unimplemented("send_file not implemented in test stub"))
+    }
+
+    async fn cancel_transfer(&self, _: Request<transferd_api::CancelTransferRequest>) -> Result<Response<Empty>, Status> {
+        Ok(Response::new(Empty {}))
+    }
+
+    async fn pause_transfer(&self, _: Request<transferd_api::CancelTransferRequest>) -> Result<Response<Empty>, Status> {
+        Ok(Response::new(Empty {}))
+    }
+
+    async fn resume_transfer(&self, _: Request<transferd_api::CancelTransferRequest>) -> Result<Response<Empty>, Status> {
+        Ok(Response::new(Empty {}))
     }
 }
 
@@ -254,7 +351,7 @@ async fn start_test_server() -> SocketAddr {
             .add_service(AccountServiceServer::new(TestAccountService(state.clone())))
             .add_service(FriendServiceServer::new(TestFriendService(state.clone())))
             .add_service(MessageServiceServer::new(TestMessageService(state.clone())))
-            .add_service(TransferServiceServer::new(TestTransferService(state.clone())))
+            .add_service(TransferServiceServer::new(TestTransferService))
             .add_service(SettingsServiceServer::new(TestSettingsService(state.clone())))
             .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener))
             .await
@@ -351,6 +448,7 @@ async fn test_message_send_and_receive() {
     let sent = mc.send_text(SendTextRequest {
         contact_id: contact_id.into(),
         text: "Hello from test".into(),
+        reply_to: String::new(),
     }).await.unwrap().into_inner();
     assert!(sent.outbound);
     assert_eq!(sent.status, "sent");

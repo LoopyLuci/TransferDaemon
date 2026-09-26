@@ -2,6 +2,18 @@
 
 pub mod grpc;
 pub mod state;
+pub mod update;
+pub mod backup;
+pub mod peer_manager;
+pub mod handshake_manager;
+pub mod message_crypto;
+pub mod mesh;
+pub mod wire;
+pub mod transport;
+pub mod relay_hub;
+pub mod peer_discovery;
+pub mod connections;
+pub mod safety;
 
 use std::sync::Arc;
 use parking_lot::Mutex;
@@ -25,7 +37,7 @@ pub fn new_state_persistent() -> Arc<Mutex<DaemonState>> {
             DaemonState::with_store(path, transferd_store::StoreParams::production()),
         )),
         Err(e) => {
-            eprintln!("transferd: could not determine store path ({e}); running without persistence");
+            tracing::warn!("transferd: could not determine store path ({e}); running without persistence");
             Arc::new(Mutex::new(DaemonState::default()))
         }
     }

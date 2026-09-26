@@ -7,6 +7,9 @@ edition = "2021"
 name = "transferd_relay"
 path = "src/lib.rs"
 
+[lints]
+workspace = true
+
 [dependencies]
 tokio     = { workspace = true }
 serde     = { workspace = true }
@@ -14,6 +17,8 @@ bincode   = { workspace = true }
 blake3    = { workspace = true }
 thiserror = { workspace = true }
 relayd    = { path = "../relayd" }
+rand      = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
+

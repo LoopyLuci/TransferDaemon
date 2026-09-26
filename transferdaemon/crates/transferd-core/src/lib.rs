@@ -7,3 +7,4 @@ pub mod control_channel;
 pub mod retransmit;
 pub mod lanes;
 pub mod plugin;
+pub mod telemetry;

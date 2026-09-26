@@ -4,7 +4,7 @@
 //!   1. `probe_daemon`   — fast gRPC health-check (returns true/false, no error).
 //!   2. `wait_for_daemon` — retries until the daemon answers or the timeout fires.
 //!   3. `find_binary`    — locates a named binary next to the launcher, in
-//!                          platform-specific install dirs, or on `$PATH`.
+//!      platform-specific install dirs, or on `$PATH`.
 //!   4. `spawn_daemon`   — launches `transferd` as a detached background process.
 
 use std::path::PathBuf;

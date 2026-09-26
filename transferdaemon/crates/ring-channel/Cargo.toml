@@ -3,11 +3,16 @@ name = "ring-channel"
 version = "0.1.0"
 edition = "2021"
 
+[lints]
+workspace = true
+
 [dependencies]
 bytes = { workspace = true }
 tokio = { workspace = true }
 libc = { workspace = true }
 thiserror = { workspace = true }
+tracing = { workspace = true }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 nix = { workspace = true, features = ["mman"] }
+

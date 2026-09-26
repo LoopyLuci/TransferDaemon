@@ -79,10 +79,9 @@ async fn test_dht_publish_and_lookup() {
 // ---------------------------------------------------------------------------
 
 use relayd::protocol::{
-    self as proto, AckMsg, ChallengeMsg, DeliveredMsg, ErrorMsg, ForwardMsg,
-    KeepaliveMsg, RegisterMsg, Tag,
+    self as proto, ChallengeMsg, DeliveredMsg, ForwardMsg,
+    RegisterMsg, Tag,
 };
-use relayd::pow::PowChallenge;
 
 /// Send a REGISTER message and wait for a CHALLENGE response.
 /// Returns the challenge (needed for subsequent RPCs).
@@ -136,7 +135,7 @@ async fn client_forward(
 #[tokio::test]
 async fn test_relay_friends_only_rejects_stranger() {
     let alice_token = [0xAAu8; 32];
-    let bob_token   = [0xBBu8; 32]; // NOT on Alice's allow-list
+    let _bob_token  = [0xBBu8; 32]; // NOT on Alice's allow-list
 
     let settings = RelaySettings {
         enabled: true,
@@ -216,7 +215,7 @@ async fn test_e2e_relay_alice_carol_bob() {
 
     // Bob binds a UDP socket — this is his "inbox" behind the relay.
     let bob_socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
-    let bob_addr = bob_socket.local_addr().unwrap();
+    let _bob_addr = bob_socket.local_addr().unwrap();
 
     // Alice's UDP socket.
     let alice_socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
@@ -250,7 +249,7 @@ async fn test_e2e_relay_alice_carol_bob() {
         .expect("recv failed");
     assert_eq!(src, carol_addr, "delivery must come from Carol's relay");
 
-    let (tag, body) = proto::split(&buf[..n]).expect("bad delivery frame");
+    let (_tag, body) = proto::split(&buf[..n]).expect("bad delivery frame");
     // Carol wraps delivered payloads in a Challenge frame for now (engine sends DeliveredMsg
     // tagged as Challenge — this is a known limitation, see engine.rs TODO).
     // Deserialize as DeliveredMsg regardless of tag.

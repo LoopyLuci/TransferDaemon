@@ -7,6 +7,9 @@ edition = "2021"
 name = "transferd-tui"
 path = "src/main.rs"
 
+[lints]
+workspace = true
+
 [dependencies]
 ratatui   = "0.27"
 crossterm = "0.27"
@@ -19,8 +22,11 @@ bip39       = { workspace = true }
 ed25519-dalek = { workspace = true }
 hex         = { workspace = true }
 tonic       = { workspace = true }
+tracing     = { workspace = true }
 transferd-api      = { path = "../transferd-api" }
 transferd-tui-video = { path = "../transferd-tui-video" }
 transferd-webrtc    = { path = "../transferd-webrtc", features = ["desktop-capture"] }
 image  = { workspace = true }
 qrcode = "0.14"
+base64 = { workspace = true }
+

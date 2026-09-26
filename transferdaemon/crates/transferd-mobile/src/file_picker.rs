@@ -15,7 +15,7 @@ pub static PENDING_PATH: Mutex<Option<String>> = Mutex::new(None);
 
 /// Take the pending path (if any) and return it, clearing the slot.
 pub fn take() -> Option<String> {
-    PENDING_PATH.lock().unwrap().take()
+    PENDING_PATH.lock().unwrap_or_else(|e| e.into_inner()).take()
 }
 
 // ---------------------------------------------------------------------------
@@ -46,35 +46,23 @@ pub mod android {
 
     /// Launch `FilePickerActivity` via the NativeActivity's JVM.
     /// Called from the `on_attach` closure set in `platform/mod.rs`.
+    /// The Activity context was stored by PermissionsActivity.setContext() before
+    /// NativeActivity started, so we call the no-arg Java overload.
     pub fn launch(app: &android_activity::AndroidApp) {
-        // Safety: `native_activity()` returns a valid pointer for the duration
-        // of the NativeActivity's lifetime, which encompasses this call.
         unsafe {
-            let na = app.native_activity();
-            let vm = (*na.as_ptr()).vm as *mut jni::sys::JavaVM;
-            let env_ptr = (*na.as_ptr()).env as *mut jni::sys::JNIEnv;
-
-            let vm = jni::JavaVM::from_raw(vm).expect("JavaVM from_raw");
+            let vm_ptr = app.vm_as_ptr() as *mut jni::sys::JavaVM;
+            let vm = match jni::JavaVM::from_raw(vm_ptr) {
+                Ok(v) => v,
+                Err(_) => return,
+            };
             let mut env = vm.get_env().unwrap_or_else(|_| {
                 vm.attach_current_thread_permanently().expect("attach JNI thread")
             });
-            let _ = env_ptr; // kept to surface the type for clarity
-
-            let activity_obj = jni::objects::JObject::from_raw(
-                (*na.as_ptr()).clazz as jni::sys::jobject,
-            );
-
-            // Intent intent = new Intent(this, FilePickerActivity.class);
-            // startActivity(intent);
-            // We call a static helper method to avoid constructing Intent in JNI.
-            let helper = env.find_class("com/transferdaemon/app/FilePickerActivity")
-                .expect("FilePickerActivity not found");
-            env.call_static_method(
-                helper,
-                "launch",
-                "(Landroid/app/Activity;)V",
-                &[jni::objects::JValueGen::Object(&activity_obj)],
-            ).expect("FilePickerActivity.launch failed");
+            let helper = match env.find_class("com/transferdaemon/app/FilePickerActivity") {
+                Ok(c) => c,
+                Err(_) => return,
+            };
+            let _ = env.call_static_method(helper, "launch", "()V", &[]);
         }
     }
 }

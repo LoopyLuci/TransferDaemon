@@ -67,6 +67,7 @@ pub fn leading_zeros(difficulty: u32, challenge: &[u8; 16], token: &[u8; 32], no
 ///
 /// Iterates nonces from `start` until the difficulty is satisfied.
 /// Returns `None` if `max_iter` is exceeded (caller should retry with a new challenge).
+#[cfg(test)]
 pub fn solve(
     challenge: &[u8; 16],
     token: &[u8; 32],
@@ -74,12 +75,8 @@ pub fn solve(
     start: u64,
     max_iter: u64,
 ) -> Option<u64> {
-    for nonce in start..start.saturating_add(max_iter) {
-        if leading_zeros(difficulty, challenge, token, nonce) {
-            return Some(nonce);
-        }
-    }
-    None
+    (start..start.saturating_add(max_iter))
+        .find(|&nonce| leading_zeros(difficulty, challenge, token, nonce))
 }
 
 #[cfg(test)]

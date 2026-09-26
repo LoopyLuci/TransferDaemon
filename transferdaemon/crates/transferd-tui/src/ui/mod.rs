@@ -4,6 +4,7 @@ mod contacts;
 mod onboarding;
 mod popups;
 mod settings;
+mod telemetry;
 mod transfers;
 
 use crate::app::{App, Modal, Screen, Tab};
@@ -45,6 +46,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
         Line::from(vec![Span::raw(" Contacts "), Span::styled("F2", Style::default().fg(Color::DarkGray))]),
         Line::from(vec![Span::raw(" Transfers "), Span::styled("F3", Style::default().fg(Color::DarkGray))]),
         Line::from(vec![Span::raw(" Settings "), Span::styled("F4", Style::default().fg(Color::DarkGray))]),
+        Line::from(vec![Span::raw(" Telemetry "), Span::styled("F5", Style::default().fg(Color::DarkGray))]),
     ];
     let tabs = Tabs::new(tab_titles)
         .block(Block::default().borders(Borders::ALL).title(" TransferDaemon "))
@@ -59,6 +61,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
         Tab::Contacts  => contacts::render(f, app, chunks[1]),
         Tab::Transfers => transfers::render(f, app, chunks[1]),
         Tab::Settings  => settings::render(f, app, chunks[1]),
+        Tab::Telemetry => telemetry::render(f, app, chunks[1]),
     }
 
     // ── Status bar ───────────────────────────────────────────────────────────
@@ -74,9 +77,9 @@ pub fn render(f: &mut Frame, app: &mut App) {
     let status_line = Line::from(vec![
         Span::styled(format!(" {} ", daemon_label), Style::default().fg(daemon_color)),
         Span::raw("│"),
-        Span::styled(format!(" {} ", &app.status), Style::default().fg(Color::Gray)),
+        Span::styled(format!(" {} ", app.status), Style::default().fg(Color::Gray)),
         Span::raw(&call_label),
-        Span::styled("  Ctrl+Q quit", Style::default().fg(Color::DarkGray)),
+        Span::styled("  Ctrl+Q quit  F5 telemetry", Style::default().fg(Color::DarkGray)),
     ]);
     f.render_widget(Paragraph::new(status_line), chunks[2]);
 
@@ -97,8 +100,7 @@ pub fn render(f: &mut Frame, app: &mut App) {
     }
 
     // ── Call overlay ─────────────────────────────────────────────────────────
-    if app.call_state.is_some() {
-        // call_overlay::render needs &mut CallState for the video overlay.
-        call_overlay::render(f, app.call_state.as_mut().unwrap());
+    if let Some(cs) = &mut app.call_state {
+        call_overlay::render(f, cs);
     }
 }

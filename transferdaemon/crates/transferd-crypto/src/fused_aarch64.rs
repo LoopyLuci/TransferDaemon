@@ -12,6 +12,8 @@ pub use crate::common::{DecryptError, EncryptResult};
 
 pub struct DmiEncryptor {
     cipher: Aes256Gcm,
+    /// Retained only so the key is zeroized on drop (never read otherwise).
+    #[allow(dead_code)]
     key_bytes: Zeroizing<[u8; 32]>,
     hasher: Hasher,
 }

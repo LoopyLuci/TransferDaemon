@@ -12,6 +12,23 @@ pub struct Contact {
     pub name: String,
     pub last_seen_ts: Option<u64>,
     pub online: bool,
+    #[serde(default)]
+    pub blocked: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct GroupMember {
+    pub public_key: String,
+    pub role: u8,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Group {
+    pub id: String,
+    pub name: String,
+    pub owner: String,
+    pub members: Vec<GroupMember>,
+    pub created_at: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

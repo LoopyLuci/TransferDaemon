@@ -25,7 +25,7 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
             Span::styled("○ ", Style::default().fg(Color::DarkGray))
         };
         let last_seen = match c.last_seen_ts {
-            Some(ts) if c.online => Span::styled(" (online)", Style::default().fg(Color::Green)),
+            Some(_ts) if c.online => Span::styled(" (online)", Style::default().fg(Color::Green)),
             Some(ts) => {
                 let secs = now_ts().saturating_sub(ts);
                 let ago = if secs < 60 { format!("{}s ago", secs) }
@@ -61,6 +61,7 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
     let help = Paragraph::new(Line::from(vec![
         Span::styled(" [A] Add  ", Style::default().fg(Color::Cyan)),
         Span::styled("[D] Delete  ", Style::default().fg(Color::Red)),
+        Span::styled("[B] Block/Unblock  ", Style::default().fg(Color::Yellow)),
         Span::styled("[Q] Show QR  ", Style::default().fg(Color::Yellow)),
         Span::styled("[Enter] Open chat  ", Style::default().fg(Color::Green)),
     ])).block(Block::default().borders(Borders::ALL));

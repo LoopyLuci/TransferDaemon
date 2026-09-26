@@ -97,6 +97,7 @@ impl HybridVerifyingKey {
 // ── HybridSignature ───────────────────────────────────────────────────────────
 
 /// Combined signature: `ed25519_sig (64 B) ‖ ml_dsa_87_sig (4627 B)`.
+#[derive(Clone)]
 pub struct HybridSignature {
     pub ed_sig: ed25519_dalek::Signature,
     pub ml_sig: Vec<u8>,
@@ -136,7 +137,9 @@ impl HybridSigningKey {
     /// Derive a deterministic hybrid signing key from the 64-byte BIP-39 seed.
     pub fn from_bip39_seed(seed: &[u8; 64]) -> Self {
         // Ed25519: first 32 bytes of the BIP-39 seed (existing classical key derivation).
-        let ed = Ed25519SigningKey::from_bytes(seed[..32].try_into().unwrap());
+        let ed = Ed25519SigningKey::from_bytes(
+            seed[..32].try_into().expect("seed is exactly 64 bytes, first 32 always valid"),
+        );
 
         // ML-DSA-87: BLAKE3-derived 32-byte ξ seed with domain separation.
         let xi_raw: [u8; 32] = blake3::derive_key(MLDSA_SEED_CONTEXT, seed);
@@ -184,6 +187,49 @@ impl Drop for HybridSigningKey {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    proptest::proptest! {
+        #[test]
+        fn prop_sign_verify_roundtrip(ref msg in proptest::collection::vec(0u8..255, 0..256)) {
+            let seed = random_seed();
+            let sk = HybridSigningKey::from_bip39_seed(&seed);
+            let vk = sk.verifying_key();
+            let sig = sk.sign(msg);
+            assert!(vk.verify(msg, &sig));
+        }
+
+        #[test]
+        fn prop_wrong_key_fails(
+            ref msg in proptest::collection::vec(0u8..255, 0..128),
+        ) {
+            let seed1 = random_seed();
+            let seed2 = random_seed();
+            let sk1 = HybridSigningKey::from_bip39_seed(&seed1);
+            let vk2 = HybridSigningKey::from_bip39_seed(&seed2).verifying_key();
+            let sig = sk1.sign(msg);
+            assert!(!vk2.verify(msg, &sig));
+        }
+
+        #[test]
+        fn prop_key_serialization_roundtrip(
+            seed_parts in proptest::collection::vec(0u8..255, 64..65),
+        ) {
+            let mut seed = [0u8; 64];
+            seed.copy_from_slice(&seed_parts[..64]);
+            let sk = HybridSigningKey::from_bip39_seed(&seed);
+            let vk = sk.verifying_key();
+            let bytes = vk.to_bytes();
+            let vk2 = HybridVerifyingKey::from_bytes(&bytes).unwrap();
+            assert_eq!(vk2.to_bytes(), bytes);
+        }
+    }
+
+    fn random_seed() -> [u8; 64] {
+        let mut seed = [0u8; 64];
+use rand::RngCore;
+        rand::rngs::OsRng.fill_bytes(&mut seed);
+        seed
+    }
 
     fn seed_a() -> [u8; 64] {
         let mut s = [0u8; 64];

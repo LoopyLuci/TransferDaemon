@@ -66,3 +66,4 @@ impl RelayAnnounce {
         self.expires_at <= now
     }
 }
+

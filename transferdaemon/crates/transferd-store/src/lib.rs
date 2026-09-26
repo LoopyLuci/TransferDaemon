@@ -103,6 +103,17 @@ pub struct PersistedContact {
     pub name:         String,
     pub last_seen_ts: u64,
     pub online:       bool,
+    /// Whether this contact is blocked.
+    #[serde(default)]
+    pub blocked:      bool,
+    /// Network address for this contact (e.g., "127.0.0.1:50051" or relay token).
+    #[serde(default)]
+    pub address:      Option<String>,
+    /// Hex-encoded 2624-byte hybrid public key verified on the peer's FIRST
+    /// authenticated session (trust-on-first-use). Subsequent sessions must
+    /// present the same identity or they are rejected.
+    #[serde(default)]
+    pub hybrid_public_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -118,6 +129,44 @@ pub struct PersistedMessage {
     pub file_mime:    String,
     pub timestamp_ts: u64,
     pub status:       String,
+    /// Group-thread messages carry the group id + actual author.
+    #[serde(default)]
+    pub group_id:  Option<String>,
+    #[serde(default)]
+    pub sender_pk: String,
+    /// Id of the message this one quotes (reply).
+    #[serde(default)]
+    pub reply_to: Option<String>,
+    /// Aggregated emoji reactions: `(emoji, reactor_public_key)`.
+    #[serde(default)]
+    pub reactions: Vec<(String, String)>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PersistedGroupMember {
+    pub public_key: String,
+    pub role:       u8,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PersistedGroup {
+    pub id:         String,
+    pub name:       String,
+    pub owner:      String,
+    pub members:    Vec<PersistedGroupMember>,
+    pub created_at: u64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct PersistedTransfer {
+    pub id:           String,
+    pub contact_name: String,
+    pub file_name:    String,
+    pub size_bytes:   u64,
+    pub xferd_bytes:  u64,
+    pub outbound:     bool,
+    pub lanes_active: u32,
+    pub bps:          u64,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -135,6 +184,12 @@ pub struct PersistedUserData {
     pub contacts:              Vec<PersistedContact>,
     /// contact_id → messages
     pub messages:              HashMap<String, Vec<PersistedMessage>>,
+    /// group_id → group
+    #[serde(default)]
+    pub groups:                HashMap<String, PersistedGroup>,
+    /// File transfers
+    #[serde(default)]
+    pub transfers:             Vec<PersistedTransfer>,
     pub settings:              HashMap<String, String>,
     pub next_id:               u64,
     pub created_at:            u64,
@@ -207,27 +262,58 @@ pub fn default_store_path() -> Result<PathBuf, StoreError> {
 /// produces the same key.  If it does not exist, a fresh random salt is
 /// generated and embedded in the new file.
 pub fn save(path: &Path, phrase: &str, data: &PersistedUserData, params: &StoreParams) -> Result<(), StoreError> {
-    // Reuse existing salt if the file already exists (keeps key stable).
-    let salt: [u8; SALT_LEN] = if path.exists() {
-        let existing = fs::read(path)?;
-        if existing.len() >= HDR_LEN && &existing[..4] == MAGIC {
-            existing[4..4 + SALT_LEN].try_into().unwrap_or_else(|_| fresh_salt())
+    let creds = StoreCredentials::derive(path, phrase, params)?;
+    save_with_key(path, &creds, data)
+}
+
+/// Credentials derived once and reused across saves: a stable salt plus the
+/// AES-256 key derived from the recovery phrase with Argon2id.
+///
+/// Deriving Argon2id with production params costs hundreds of milliseconds.
+/// Callers that save frequently (the daemon) should derive once and reuse.
+#[derive(Debug)]
+pub struct StoreCredentials {
+    pub salt: [u8; SALT_LEN],
+    key: Zeroizing<[u8; KEY_LEN]>,
+}
+
+impl StoreCredentials {
+    /// Derive (or reuse) the salt and derive the AES key from `phrase`.
+    ///
+    /// The salt is read from an existing store file if present so the same
+    /// phrase keeps producing the same key across restarts.
+    pub fn derive(path: &Path, phrase: &str, params: &StoreParams) -> Result<Self, StoreError> {
+        let salt: [u8; SALT_LEN] = if path.exists() {
+            let existing = fs::read(path)?;
+            if existing.len() >= HDR_LEN && &existing[..4] == MAGIC {
+                existing[4..4 + SALT_LEN].try_into().unwrap_or_else(|_| fresh_salt())
+            } else {
+                fresh_salt()
+            }
         } else {
             fresh_salt()
-        }
-    } else {
-        fresh_salt()
-    };
+        };
+        let key = derive_key(phrase, &salt, params)?;
+        Ok(Self { salt, key })
+    }
 
-    let key = derive_key(phrase, &salt, params)?;
-    let plaintext  = bincode::serialize(data)
+    /// The derived AES-256 key (zeroized on drop).
+    pub fn key(&self) -> &[u8; KEY_LEN] { &self.key }
+}
+
+/// Encrypt `data` with already-derived credentials and write to `path`.
+///
+/// Unlike [`save`], this never re-runs Argon2 — suitable for the daemon's
+/// write-through persistence hot path.
+pub fn save_with_key(path: &Path, creds: &StoreCredentials, data: &PersistedUserData) -> Result<(), StoreError> {
+    let plaintext = bincode::serialize(data)
         .map_err(|e| StoreError::Serialisation(e.to_string()))?;
-    let (ciphertext, nonce) = encrypt(&key, &plaintext)?;
+    let (ciphertext, nonce) = encrypt(creds.key(), &plaintext)?;
 
     // Build the file: MAGIC || SALT || NONCE || CIPHERTEXT
     let mut file = Vec::with_capacity(HDR_LEN + ciphertext.len());
     file.extend_from_slice(MAGIC);
-    file.extend_from_slice(&salt);
+    file.extend_from_slice(&creds.salt);
     file.extend_from_slice(&nonce);
     file.extend_from_slice(&ciphertext);
 
@@ -252,8 +338,10 @@ pub fn load(path: &Path, phrase: &str, params: &StoreParams) -> Result<Persisted
         return Err(StoreError::InvalidFile);
     }
 
-    let salt:  [u8; SALT_LEN]  = raw[4..4 + SALT_LEN].try_into().unwrap();
-    let nonce: [u8; NONCE_LEN] = raw[4 + SALT_LEN..HDR_LEN].try_into().unwrap();
+    // Lengths are guaranteed by the `HDR_LEN` check above; these slices are
+    // exactly SALT_LEN and NONCE_LEN bytes.
+    let salt:  [u8; SALT_LEN]  = raw[4..4 + SALT_LEN].try_into().expect("salt length verified");
+    let nonce: [u8; NONCE_LEN] = raw[4 + SALT_LEN..HDR_LEN].try_into().expect("nonce length verified");
     let ciphertext = &raw[HDR_LEN..];
 
     let key       = derive_key(phrase, &salt, params)?;
@@ -305,6 +393,9 @@ mod tests {
                 name:         "Bob".into(),
                 last_seen_ts: 1_000,
                 online:       false,
+                blocked:      false,
+                address:      None,
+                hybrid_public_key: None,
             }],
             messages: {
                 let mut m = HashMap::new();
@@ -318,6 +409,8 @@ mod tests {
                 }]);
                 m
             },
+            groups: HashMap::new(),
+            transfers: vec![],
             settings: {
                 let mut s = HashMap::new();
                 s.insert("theme".into(), "dark".into());

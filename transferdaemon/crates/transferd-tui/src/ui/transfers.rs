@@ -4,7 +4,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Gauge, List, ListItem, ListState, Paragraph},
+    widgets::{Block, Borders, Gauge, Paragraph},
     Frame,
 };
 
@@ -87,8 +87,9 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
         // Row 2: stats
         let eta = t.eta_secs().map(|s| format!("  ETA {}s", s)).unwrap_or_default();
         let bps_label = if t.bps > 0 { format!("  {}/s", fmt_bytes(t.bps)) } else { String::new() };
-        let stats = format!("  {} / {}{}{}",
-            fmt_bytes(t.transferred_bytes), fmt_bytes(t.size_bytes), bps_label, eta);
+        let lanes_label = if t.lanes_active > 0 { format!("  {} lane{}", t.lanes_active, if t.lanes_active == 1 { "" } else { "s" }) } else { String::new() };
+        let stats = format!("  {} / {}{}{}{}",
+            fmt_bytes(t.transferred_bytes), fmt_bytes(t.size_bytes), bps_label, lanes_label, eta);
         f.render_widget(
             Paragraph::new(Span::styled(stats, Style::default().fg(Color::Gray))),
             sub[2],

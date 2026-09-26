@@ -1,8 +1,11 @@
 //! Settings page — identity info, QR code, theme, about.
+//!
+//! Redesigned with the new design system for a modern, accessible experience.
 
 use crate::app::AppState;
+use crate::design::{self, DesignTokens, Theme};
 use crate::widgets::qr_widget::QrWidget;
-use egui::{Color32, Context, RichText, Ui};
+use egui::{Context, RichText, Ui, Vec2};
 
 #[derive(Default)]
 pub struct SettingsPage {
@@ -12,6 +15,14 @@ pub struct SettingsPage {
     show_phrase: bool,
     phrase_confirmed: bool,
     relay_enabled: bool,
+    /// App-lock PIN entry (new PIN + confirm).
+    pin_input: String,
+    pin_input2: String,
+    /// Pending app-lock action: `Some(Some(hash))` sets the PIN,
+    /// `Some(None)` clears it. Drained by the home page.
+    pending_pin: Option<Option<String>>,
+    /// Last manual update-check result.
+    update_status: Option<crate::types::UpdateStatus>,
     relay_status: String,
     relay_bandwidth_input: String,
     relay_settings_loaded: bool,
@@ -19,196 +30,619 @@ pub struct SettingsPage {
 
 impl SettingsPage {
     pub fn show(&mut self, ui: &mut Ui, ctx: &Context, state: &AppState) {
+        let tokens = DesignTokens::current();
+
         egui::ScrollArea::vertical().show(ui, |ui| {
-            ui.add_space(16.0);
-            section_header(ui, "Identity");
+            ui.add_space(tokens.spacing.md);
+
+            // ── Identity Section ──────────────────────────────────────────────
+            self.section_header(ui, "Identity", &tokens);
 
             if let Some(id) = &state.identity {
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new("Display name:").color(Color32::from_gray(160)));
-                    ui.label(RichText::new(&id.display_name).strong().color(Color32::WHITE));
-                });
-                ui.add_space(4.0);
-
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new("Public key:").color(Color32::from_gray(160)));
-                    let display = if self.show_full_key { id.public_key.clone() } else { truncate_key(&id.public_key) };
-                    ui.label(RichText::new(&display).monospace().color(Color32::from_gray(200)));
-                    if ui.small_button(if self.show_full_key { "Collapse" } else { "Expand" }).clicked() {
-                        self.show_full_key = !self.show_full_key;
-                    }
-                    if ui.small_button("Copy").clicked() {
-                        ui.output_mut(|o| o.copied_text = id.public_key.clone());
-                    }
-                });
-
-                if self.show_full_key {
-                    ui.add_space(4.0);
-                    ui.add(egui::TextEdit::singleline(&mut id.public_key.clone())
-                        .font(egui::FontId::monospace(11.0))
-                        .desired_width(ui.available_width())
-                        .interactive(false));
-                    ui.label(RichText::new(format!("{} hex chars (Ed25519 public key)", id.public_key.len()))
-                        .size(11.0).color(Color32::from_gray(100)));
-                }
-
-                ui.add_space(8.0);
-                if ui.button(if self.show_qr { "Hide QR code" } else { "Show QR code" }).clicked() {
-                    self.show_qr = !self.show_qr;
-                }
-                if self.show_qr {
-                    ui.add_space(8.0);
-                    ui.centered_and_justified(|ui| {
-                        self.qr.show(ui, ctx, &id.public_key, 200.0);
+                design::card_frame(&tokens).show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new("Display name:")
+                                .color(tokens.palette.text_secondary),
+                        );
+                        ui.label(
+                            RichText::new(&id.display_name)
+                                .strong()
+                                .color(tokens.palette.text_primary),
+                        );
                     });
-                    ui.add_space(4.0);
-                    ui.label(RichText::new("Share this QR code so others can add you as a contact.")
-                        .size(12.0).color(Color32::from_gray(150)));
-                }
+                    ui.add_space(tokens.spacing.xs);
 
-                ui.add_space(12.0);
-                ui.separator();
-                ui.add_space(8.0);
-                section_header(ui, "Recovery Phrase");
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new("Public key:")
+                                .color(tokens.palette.text_secondary),
+                        );
+                        let display = if self.show_full_key {
+                            id.public_key.clone()
+                        } else {
+                            truncate_key(&id.public_key)
+                        };
+                        ui.label(
+                            RichText::new(&display)
+                                .monospace()
+                                .color(tokens.palette.text_primary),
+                        );
+                        if ui
+                            .small_button(if self.show_full_key {
+                                "Collapse"
+                            } else {
+                                "Expand"
+                            })
+                            .clicked()
+                        {
+                            self.show_full_key = !self.show_full_key;
+                        }
+                        if ui.small_button("Copy").clicked() {
+                            ui.output_mut(|o| o.copied_text = id.public_key.clone());
+                        }
+                    });
 
-                if state.recovery_phrase.is_some() {
+                    if self.show_full_key {
+                        ui.add_space(tokens.spacing.xs);
+                        design::input_frame(&tokens).show(ui, |ui| {
+                            ui.add(
+                                egui::TextEdit::singleline(&mut id.public_key.clone())
+                                    .font(egui::FontId::monospace(11.0))
+                                    .desired_width(ui.available_width())
+                                    .interactive(false)
+                                    .margin(Vec2::new(8.0, 6.0)),
+                            );
+                        });
+                        ui.label(
+                            RichText::new(format!(
+                                "{} hex chars (Ed25519 public key)",
+                                id.public_key.len()
+                            ))
+                            .size(11.0)
+                            .color(tokens.palette.text_disabled),
+                        );
+                    }
+
+                    ui.add_space(tokens.spacing.sm);
+                    if ui
+                        .add_sized(
+                            [ui.available_width(), 36.0],
+                            egui::Button::new(
+                                RichText::new(if self.show_qr {
+                                    "Hide QR code"
+                                } else {
+                                    "Show QR code"
+                                })
+                                .color(tokens.palette.text_primary),
+                            )
+                            .fill(tokens.palette.surface)
+                            .rounding(tokens.spacing.button_rounding),
+                        )
+                        .clicked()
+                    {
+                        self.show_qr = !self.show_qr;
+                    }
+                    if self.show_qr {
+                        ui.add_space(tokens.spacing.sm);
+                        ui.centered_and_justified(|ui| {
+                            self.qr.show(ui, ctx, &id.public_key, 200.0);
+                        });
+                        ui.add_space(tokens.spacing.xs);
+                        ui.label(
+                            RichText::new("Share this QR code so others can add you as a contact.")
+                                .size(12.0)
+                                .color(tokens.palette.text_disabled),
+                        );
+                    }
+                });
+            } else {
+                ui.label(
+                    RichText::new("No identity set up.")
+                        .color(tokens.palette.text_secondary),
+                );
+            }
+
+            ui.add_space(tokens.spacing.lg);
+            ui.separator();
+            ui.add_space(tokens.spacing.sm);
+
+            // ── Recovery Phrase Section ────────────────────────────────────────
+            self.section_header(ui, "Recovery Phrase", &tokens);
+
+            if state.recovery_phrase.is_some() {
+                design::card_frame(&tokens).show(ui, |ui| {
                     if !self.show_phrase {
-                        ui.label(RichText::new("Your 12-word recovery phrase is available this session.")
-                            .color(Color32::from_gray(160)).size(13.0));
-                        ui.add_space(6.0);
-                        if ui.add(egui::Button::new(
-                            RichText::new("⚠ Reveal Recovery Phrase").color(Color32::from_rgb(255, 214, 10))
-                        ).fill(Color32::from_rgb(44, 44, 46))).clicked() {
+                        ui.label(
+                            RichText::new("Your 12-word recovery phrase is available this session.")
+                                .color(tokens.palette.text_secondary)
+                                .size(13.0),
+                        );
+                        ui.add_space(tokens.spacing.sm);
+                        if ui
+                            .add(
+                                egui::Button::new(
+                                    RichText::new("⚠ Reveal Recovery Phrase")
+                                        .color(tokens.palette.warning),
+                                )
+                                .fill(tokens.palette.surface)
+                                .rounding(tokens.spacing.button_rounding),
+                            )
+                            .clicked()
+                        {
                             self.phrase_confirmed = false;
                             self.show_phrase = true;
                         }
                     } else {
-                        ui.label(RichText::new("Write these words down. Anyone with this phrase can access your identity.")
-                            .color(Color32::from_rgb(255, 69, 58)).size(13.0));
-                        ui.add_space(8.0);
+                        // Warning card
+                        egui::Frame::none()
+                            .fill(tokens.palette.error_subtle)
+                            .rounding(tokens.spacing.card_rounding)
+                            .inner_margin(Vec2::new(tokens.spacing.sm, tokens.spacing.xs))
+                            .show(ui, |ui| {
+                                ui.label(
+                                    RichText::new("⚠ Write these words down. Anyone with this phrase can access your identity.")
+                                        .color(tokens.palette.error)
+                                        .size(13.0),
+                                );
+                            });
+                        ui.add_space(tokens.spacing.sm);
+
                         if let Some(phrase) = &state.recovery_phrase {
                             let words: Vec<&str> = phrase.split_whitespace().collect();
-                            egui::Grid::new("settings_phrase_grid").num_columns(3).spacing([16.0, 6.0]).show(ui, |ui| {
-                                for (i, word) in words.iter().enumerate() {
-                                    ui.label(RichText::new(format!("{}. {}", i + 1, word))
-                                        .size(14.0).monospace().color(Color32::WHITE));
-                                    if (i + 1) % 3 == 0 { ui.end_row(); }
-                                }
-                            });
-                            ui.add_space(8.0);
+                            egui::Grid::new("settings_phrase_grid")
+                                .num_columns(3)
+                                .spacing([16.0, 6.0])
+                                .show(ui, |ui| {
+                                    for (i, word) in words.iter().enumerate() {
+                                        egui::Frame::none()
+                                            .fill(tokens.palette.bg_tertiary)
+                                            .rounding(4.0)
+                                            .inner_margin(Vec2::new(6.0, 3.0))
+                                            .show(ui, |ui| {
+                                                ui.label(
+                                                    RichText::new(format!("{}. {}", i + 1, word))
+                                                        .size(14.0)
+                                                        .monospace()
+                                                        .color(tokens.palette.text_primary),
+                                                );
+                                            });
+                                        if (i + 1) % 3 == 0 {
+                                            ui.end_row();
+                                        }
+                                    }
+                                });
+                            ui.add_space(tokens.spacing.sm);
                             if ui.small_button("Copy phrase").clicked() {
                                 ui.output_mut(|o| o.copied_text = phrase.clone());
                             }
                         }
-                        ui.add_space(8.0);
-                        if ui.small_button("Hide phrase").clicked() { self.show_phrase = false; }
+                        ui.add_space(tokens.spacing.sm);
+                        if ui.small_button("Hide phrase").clicked() {
+                            self.show_phrase = false;
+                        }
                     }
-                } else {
-                    ui.label(RichText::new(
+                });
+            } else {
+                ui.label(
+                    RichText::new(
                         "Recovery phrase is only available in the session when it was created.\n\
                          Restart the app and create a new identity to generate a new phrase.",
-                    ).size(13.0).color(Color32::from_gray(120)));
-                }
-            } else {
-                ui.label(RichText::new("No identity set up.").color(Color32::from_gray(140)));
+                    )
+                    .size(13.0)
+                    .color(tokens.palette.text_disabled),
+                );
             }
 
-            ui.add_space(24.0);
+            ui.add_space(tokens.spacing.lg);
             ui.separator();
-            section_header(ui, "Network");
-            ui.horizontal(|ui| {
-                ui.label(RichText::new("Relay lanes:").color(Color32::from_gray(160)));
-                ui.label(RichText::new("1 active").color(Color32::from_rgb(48, 209, 88)));
-            });
-            ui.horizontal(|ui| {
-                ui.label(RichText::new("Daemon:").color(Color32::from_gray(160)));
-                if state.daemon_is_live {
-                    ui.label(RichText::new("gRPC (live)").color(Color32::from_rgb(48, 209, 88)).size(12.0));
-                } else {
-                    ui.label(RichText::new("Mock (offline)").color(Color32::from_rgb(255, 214, 10)).size(12.0));
-                }
+            ui.add_space(tokens.spacing.sm);
+
+            // ── Network Section ────────────────────────────────────────────────
+            self.section_header(ui, "Network", &tokens);
+
+            design::card_frame(&tokens).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new("Relay lanes:")
+                            .color(tokens.palette.text_secondary),
+                    );
+                    ui.label(
+                        RichText::new("1 active")
+                            .color(tokens.palette.success),
+                    );
+                });
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new("Daemon:")
+                            .color(tokens.palette.text_secondary),
+                    );
+                    if state.daemon_is_live {
+                        ui.label(
+                            RichText::new("gRPC (live)")
+                                .color(tokens.palette.success)
+                                .size(12.0),
+                        );
+                    } else {
+                        ui.label(
+                            RichText::new("Mock (offline)")
+                                .color(tokens.palette.warning)
+                                .size(12.0),
+                        );
+                    }
+                });
             });
 
             // Load relay settings once on first render.
             if !self.relay_settings_loaded {
                 self.relay_settings_loaded = true;
                 let rt = tokio::runtime::Handle::current();
-                self.relay_enabled = rt.block_on(state.daemon.get_setting("relay.enabled"))
+                self.relay_enabled = rt
+                    .block_on(state.daemon.get_setting("relay.enabled"))
                     .map(|v| v == "true" || v == "1")
                     .unwrap_or(true);
-                self.relay_bandwidth_input = rt.block_on(state.daemon.get_setting("relay.bandwidth_kbps"))
+                self.relay_bandwidth_input = rt
+                    .block_on(state.daemon.get_setting("relay.bandwidth_kbps"))
                     .unwrap_or_else(|| "10000".into());
-                self.relay_status = rt.block_on(state.daemon.get_setting("relay.status"))
+                self.relay_status = rt
+                    .block_on(state.daemon.get_setting("relay.status"))
                     .unwrap_or_else(|| "stopped".into());
             }
 
-            ui.add_space(24.0);
+            ui.add_space(tokens.spacing.sm);
+
+            // ── Relay Mesh Section ─────────────────────────────────────────────
+            self.section_header(ui, "Relay Mesh", &tokens);
+
+            design::card_frame(&tokens).show(ui, |ui| {
+                ui.label(
+                    RichText::new(
+                        "Embedded anonymous relay — lets other TransferDaemon peers route through this node.",
+                    )
+                    .size(12.0)
+                    .color(tokens.palette.text_disabled),
+                );
+                ui.add_space(tokens.spacing.xs);
+
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new("Enable relay:")
+                            .color(tokens.palette.text_secondary),
+                    );
+                    let mut toggled = self.relay_enabled;
+                    if ui.checkbox(&mut toggled, "").changed() {
+                        self.relay_enabled = toggled;
+                        let rt = tokio::runtime::Handle::current();
+                        let val = if toggled { "true" } else { "false" };
+                        let _ = rt.block_on(
+                            state.daemon.set_setting("relay.enabled", val),
+                        );
+                        self.relay_settings_loaded = false;
+                        ctx.request_repaint();
+                    }
+                });
+
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new("Bandwidth cap (kbps):")
+                            .color(tokens.palette.text_secondary),
+                    );
+                    let input_frame = design::input_frame(&tokens);
+                    input_frame.show(ui, |ui| {
+                        let response = ui.add(
+                            egui::TextEdit::singleline(&mut self.relay_bandwidth_input)
+                                .desired_width(80.0)
+                                .margin(Vec2::new(8.0, 6.0)),
+                        );
+                        if response.lost_focus() {
+                            let rt = tokio::runtime::Handle::current();
+                            let _ = rt.block_on(state.daemon.set_setting(
+                                "relay.bandwidth_kbps",
+                                &self.relay_bandwidth_input,
+                            ));
+                        }
+                    });
+                });
+
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new("Status:")
+                            .color(tokens.palette.text_secondary),
+                    );
+                    let (color, label) = if self.relay_status.starts_with("running") {
+                        (tokens.palette.success, self.relay_status.as_str())
+                    } else {
+                        (tokens.palette.error, "stopped")
+                    };
+                    ui.label(
+                        RichText::new(label).color(color).size(12.0),
+                    );
+                    if ui.small_button("Refresh").clicked() {
+                        let rt = tokio::runtime::Handle::current();
+                        self.relay_status = rt
+                            .block_on(state.daemon.get_setting("relay.status"))
+                            .unwrap_or_else(|| "stopped".into());
+                    }
+                });
+            });
+
+            ui.add_space(tokens.spacing.lg);
             ui.separator();
-            section_header(ui, "Relay Mesh");
-            ui.label(RichText::new(
-                "Embedded anonymous relay — lets other TransferDaemon peers route through this node."
-            ).size(12.0).color(Color32::from_gray(130)));
-            ui.add_space(6.0);
+            ui.add_space(tokens.spacing.sm);
 
-            ui.horizontal(|ui| {
-                ui.label(RichText::new("Enable relay:").color(Color32::from_gray(160)));
-                let mut toggled = self.relay_enabled;
-                if ui.checkbox(&mut toggled, "").changed() {
-                    self.relay_enabled = toggled;
-                    let rt = tokio::runtime::Handle::current();
-                    let val = if toggled { "true" } else { "false" };
-                    let _ = rt.block_on(state.daemon.set_setting("relay.enabled", val));
-                    // Refresh status after a brief delay would require polling; for now
-                    // force a re-load on next repaint.
-                    self.relay_settings_loaded = false;
-                    ctx.request_repaint();
-                }
+            // ── Theme Section ──────────────────────────────────────────────────
+            self.section_header(ui, "Appearance", &tokens);
+
+            design::card_frame(&tokens).show(ui, |ui| {
+                ui.label(
+                    RichText::new("Theme")
+                        .size(14.0)
+                        .color(tokens.palette.text_primary),
+                );
+                ui.add_space(tokens.spacing.xs);
+
+                let current_theme = state.theme;
+                ui.horizontal(|ui| {
+                    for (theme, label) in [
+                        (Theme::Oled, "OLED"),
+                        (Theme::Dark, "Dark"),
+                        (Theme::Light, "Light"),
+                        (Theme::HighContrast, "High Contrast"),
+                    ] {
+                        let is_active = current_theme == theme;
+                        let bg = if is_active {
+                            tokens.palette.accent
+                        } else {
+                            tokens.palette.surface
+                        };
+                        let text_color = if is_active {
+                            tokens.palette.text_inverse
+                        } else {
+                            tokens.palette.text_primary
+                        };
+                        if ui
+                            .add_sized(
+                                [80.0, 32.0],
+                                egui::Button::new(
+                                    RichText::new(label)
+                                        .size(11.0)
+                                        .color(text_color),
+                                )
+                                .fill(bg)
+                                .rounding(8.0),
+                            )
+                            .clicked()
+                        {
+                            // Theme change is handled by the app
+                            ctx.data_mut(|d| {
+                                d.insert_persisted(egui::Id::new("pending_theme"), theme as usize);
+                            });
+                        }
+                    }
+                });
             });
 
-            ui.horizontal(|ui| {
-                ui.label(RichText::new("Bandwidth cap (kbps):").color(Color32::from_gray(160)));
-                let response = ui.add(egui::TextEdit::singleline(&mut self.relay_bandwidth_input).desired_width(80.0));
-                if response.lost_focus() {
-                    let rt = tokio::runtime::Handle::current();
-                    let _ = rt.block_on(state.daemon.set_setting("relay.bandwidth_kbps", &self.relay_bandwidth_input));
-                }
+            ui.add_space(tokens.spacing.lg);
+            ui.separator();
+            ui.add_space(tokens.spacing.sm);
+
+            // ── About Section ──────────────────────────────────────────────────
+            self.section_header(ui, "About", &tokens);
+
+            design::card_frame(&tokens).show(ui, |ui| {
+                ui.label(
+                    RichText::new("TransferDaemon")
+                        .strong()
+                        .color(tokens.palette.text_primary),
+                );
+                ui.label(
+                    RichText::new("Version 1.0.0")
+                        .color(tokens.palette.text_secondary),
+                );
+                ui.add_space(tokens.spacing.xs);
+                ui.label(
+                    RichText::new(
+                        "Sovereign, zero-knowledge, universal data transfer.\n\
+                         No third-party services. No telemetry. No compromise.",
+                    )
+                    .size(13.0)
+                    .color(tokens.palette.text_disabled),
+                );
             });
 
-            ui.horizontal(|ui| {
-                ui.label(RichText::new("Status:").color(Color32::from_gray(160)));
-                let (color, label) = if self.relay_status.starts_with("running") {
-                    (Color32::from_rgb(48, 209, 88), self.relay_status.as_str())
+            ui.add_space(tokens.spacing.sm);
+
+            // ── App lock (privacy) ─────────────────────────────────────────────
+            self.section_header(ui, "App lock", &tokens);
+            design::card_frame(&tokens).show(ui, |ui| {
+                if state.pin_hash.is_some() {
+                    ui.label(
+                        RichText::new("A PIN lock is active — the app requests it on launch.")
+                            .size(13.0)
+                            .color(tokens.palette.text_secondary),
+                    );
+                    ui.add_space(tokens.spacing.xs);
+                    if ui
+                        .add_sized(
+                            [160.0, 34.0],
+                            egui::Button::new(
+                                RichText::new("Remove PIN lock")
+                                    .color(tokens.palette.text_primary),
+                            )
+                            .fill(tokens.palette.surface)
+                            .rounding(tokens.spacing.button_rounding),
+                        )
+                        .clicked()
+                    {
+                        self.pending_pin = Some(None);
+                    }
                 } else {
-                    (Color32::from_rgb(255, 69, 58), "stopped")
-                };
-                ui.label(RichText::new(label).color(color).size(12.0));
-                if ui.small_button("Refresh").clicked() {
-                    let rt = tokio::runtime::Handle::current();
-                    self.relay_status = rt.block_on(state.daemon.get_setting("relay.status"))
-                        .unwrap_or_else(|| "stopped".into());
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new("New PIN:")
+                                .size(13.0)
+                                .color(tokens.palette.text_secondary),
+                        );
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.pin_input)
+                                .password(true)
+                                .desired_width(140.0),
+                        );
+                    });
+                    ui.add_space(tokens.spacing.xxs);
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new("Confirm:")
+                                .size(13.0)
+                                .color(tokens.palette.text_secondary),
+                        );
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.pin_input2)
+                                .password(true)
+                                .desired_width(140.0),
+                        );
+                    });
+                    ui.add_space(tokens.spacing.xxs);
+                    let can_set = !self.pin_input.is_empty()
+                        && self.pin_input.len() >= 4
+                        && self.pin_input == self.pin_input2;
+                    ui.add_enabled_ui(can_set, |ui| {
+                        if ui
+                            .add_sized(
+                                [160.0, 34.0],
+                                egui::Button::new(
+                                    RichText::new("Set PIN lock")
+                                        .color(tokens.palette.text_inverse),
+                                )
+                                .fill(tokens.palette.accent)
+                                .rounding(tokens.spacing.button_rounding),
+                            )
+                            .clicked()
+                        {
+                            let hash = blake3::hash(self.pin_input.as_bytes()).to_hex().to_string();
+                            self.pending_pin = Some(Some(hash));
+                            self.pin_input.clear();
+                            self.pin_input2.clear();
+                        }
+                    });
+                    if !can_set && !self.pin_input.is_empty() {
+                        ui.label(
+                            RichText::new("PIN must be 4+ digits and match the confirmation.")
+                                .size(11.0)
+                                .color(tokens.palette.text_disabled),
+                        );
+                    }
                 }
             });
 
-            ui.add_space(24.0);
-            ui.separator();
-            section_header(ui, "About");
-            ui.label(RichText::new("TransferDaemon").strong().color(Color32::WHITE));
-            ui.label(RichText::new("Version 1.0.0").color(Color32::from_gray(160)));
-            ui.add_space(4.0);
-            ui.label(RichText::new(
-                "Sovereign, zero-knowledge, universal data transfer.\n\
-                 No third-party services. No telemetry. No compromise.",
-            ).size(13.0).color(Color32::from_gray(150)));
+            ui.add_space(tokens.spacing.sm);
+
+            // ── Updates (manual, opt-in) ───────────────────────────────────────
+            self.section_header(ui, "Updates", &tokens);
+            design::card_frame(&tokens).show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new("Check for updates manually — TransferDaemon never phones home automatically.")
+                            .size(12.0)
+                            .color(tokens.palette.text_disabled),
+                    );
+                });
+                ui.add_space(tokens.spacing.xs);
+                if ui
+                        .add_sized(
+                            [180.0, 34.0],
+                            egui::Button::new(
+                                RichText::new("Check for updates")
+                                    .color(tokens.palette.text_inverse),
+                            )
+                            .fill(tokens.palette.accent)
+                            .rounding(tokens.spacing.button_rounding),
+                        )
+                        .clicked()
+                    {
+                        let rt = tokio::runtime::Handle::current();
+                        let status = rt.block_on(state.daemon.check_for_updates());
+                        self.update_status = Some(status);
+                    }
+                if let Some(u) = &self.update_status {
+                    ui.add_space(tokens.spacing.xs);
+                    if !u.current_version.is_empty() {
+                        ui.label(
+                            RichText::new(format!("Current version: {}", u.current_version))
+                                .size(12.0)
+                                .color(tokens.palette.text_secondary),
+                        );
+                    }
+                    if u.has_update {
+                        ui.label(
+                            RichText::new(format!("Update available: {}", u.new_version))
+                                .size(13.0)
+                                .strong()
+                                .color(tokens.palette.accent),
+                        );
+                        if !u.release_notes.is_empty() {
+                            ui.add_space(tokens.spacing.xxs);
+                            ui.label(
+                                RichText::new(&u.release_notes)
+                                    .size(11.0)
+                                    .color(tokens.palette.text_disabled),
+                            );
+                        }
+                        ui.add_space(tokens.spacing.xs);
+                        if ui
+                            .add_sized(
+                                [180.0, 34.0],
+                                egui::Button::new(
+                                    RichText::new("Download & install")
+                                        .color(tokens.palette.text_inverse),
+                                )
+                                .fill(tokens.palette.accent)
+                                .rounding(tokens.spacing.button_rounding),
+                            )
+                            .clicked()
+                        {
+                            let rt = tokio::runtime::Handle::current();
+                            let _ = rt.block_on(state.daemon.apply_update());
+                        }
+                    } else if !u.error.is_empty() {
+                        ui.label(
+                            RichText::new(format!("Update check failed: {}", u.error))
+                                .size(12.0)
+                                .color(tokens.palette.error),
+                        );
+                    } else {
+                        ui.label(
+                            RichText::new("You're up to date.")
+                                .size(12.0)
+                                .color(tokens.palette.success),
+                        );
+                    }
+                }
+            });
+
+            ui.add_space(tokens.spacing.xl);
         });
+    }
+
+    /// Drain a pending app-lock action: `Some(Some(hash))` set, `Some(None)` clear.
+    pub fn take_pending_pin(&mut self) -> Option<Option<String>> {
+        self.pending_pin.take()
+    }
+
+    fn section_header(&self, ui: &mut Ui, title: &str, tokens: &DesignTokens) {
+        ui.label(
+            RichText::new(title.to_uppercase())
+                .size(12.0)
+                .strong()
+                .color(tokens.palette.text_disabled),
+        );
+        ui.add_space(tokens.spacing.xs);
     }
 }
 
-fn section_header(ui: &mut Ui, title: &str) {
-    ui.label(RichText::new(title.to_uppercase()).size(12.0).color(Color32::from_gray(120)));
-    ui.add_space(6.0);
-}
-
 fn truncate_key(key: &str) -> String {
-    if key.len() <= 16 { return key.to_owned(); }
-    format!("{}…{}", &key[..8], &key[key.len()-8..])
+    if key.len() <= 16 {
+        return key.to_owned();
+    }
+    format!("{}…{}", &key[..8], &key[key.len() - 8..])
 }

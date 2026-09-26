@@ -49,6 +49,7 @@ impl Producer {
     }
 
     /// Commits a grant, writing the full crypto metadata into the descriptor.
+    #[allow(clippy::too_many_arguments)]
     pub fn commit_grant(
         &mut self,
         grant: WriteGrant,

@@ -70,7 +70,6 @@ pub enum EngineError {
 /// three tasks exit cleanly before `stop()` returns.
 pub struct RelayEngine {
     relay: Arc<Mutex<Relay>>,
-    bucket: Arc<TokenBucket>,
     port: u16,
     shutdown_tx: broadcast::Sender<()>,
     /// DHT announcer — `None` if DHT failed to bind (non-fatal).
@@ -120,7 +119,6 @@ impl RelayEngine {
 
         let engine = Arc::new(RelayEngine {
             relay: relay.clone(),
-            bucket: bucket.clone(),
             port,
             shutdown_tx: shutdown_tx.clone(),
             dht,
@@ -159,7 +157,7 @@ impl RelayEngine {
                     tokio::select! {
                         _ = shutdown_rx.recv() => break,
                         _ = tokio::time::sleep(Duration::from_secs(10)) => {
-                            relay.lock().unwrap().prune_expired();
+                            relay.lock().unwrap_or_else(|e| e.into_inner()).prune_expired();
                         }
                     }
                 }
@@ -175,7 +173,7 @@ impl RelayEngine {
                     tokio::select! {
                         _ = shutdown_rx.recv() => break,
                         _ = tokio::time::sleep(Duration::from_secs(55)) => {
-                            relay.lock().unwrap().rotate_challenge();
+                            relay.lock().unwrap_or_else(|e| e.into_inner()).rotate_challenge();
                         }
                     }
                 }
@@ -192,7 +190,7 @@ impl RelayEngine {
 
     /// Returns a snapshot of the current engine status.
     pub fn status(&self) -> RelayStatus {
-        let active_sessions = self.relay.lock().unwrap().active_count();
+        let active_sessions = self.relay.lock().unwrap_or_else(|e| e.into_inner()).active_count();
         RelayStatus {
             active_sessions,
             port: self.port,
@@ -227,7 +225,7 @@ async fn handle_datagram(
 
             // All relay state mutations complete before any await.
             let outcome: Result<ChallengeMsg, (ErrorCode, u32, String)> = {
-                let mut r = relay.lock().unwrap();
+                let mut r = relay.lock().unwrap_or_else(|e| e.into_inner());
                 if r.active_count() >= max_sessions {
                     Err((ErrorCode::RateLimited, 0, "session limit reached".into()))
                 } else {
@@ -265,7 +263,7 @@ async fn handle_datagram(
             }
             // Resolve forward destination before any await.
             let result: Result<(SocketAddr, u16, Vec<u8>), (ErrorCode, String)> = {
-                match relay.lock().unwrap().forward(&msg) {
+                match relay.lock().unwrap_or_else(|e| e.into_inner()).forward(&msg) {
                     Ok(dst) => Ok((dst, msg.sender_seq, msg.ciphertext)),
                     Err(e) => Err((e.code(), e.to_string())),
                 }
@@ -273,8 +271,13 @@ async fn handle_datagram(
 
             match result {
                 Ok((dst, sender_seq, ciphertext)) => {
+                    // Add timing jitter to prevent timing analysis
+                    // Per CONTEXT.md design decision #5: "Timing is jittered at the relay"
+                    let jitter_ms = rand::random::<u64>() % 10; // 0-9ms random delay
+                    tokio::time::sleep(Duration::from_millis(jitter_ms)).await;
+
                     let delivered = DeliveredMsg { sender_seq, ciphertext };
-                    if let Ok(frame) = protocol::encode(Tag::Challenge, &delivered) {
+                    if let Ok(frame) = protocol::encode(Tag::Ack, &delivered) {
                         let _ = socket.send_to(&frame, dst).await;
                     }
                     let ack = AckMsg { sender_seq };
@@ -290,7 +293,7 @@ async fn handle_datagram(
 
         Tag::Keepalive => {
             let Ok(msg) = bincode::deserialize::<KeepaliveMsg>(body) else { return };
-            let result = relay.lock().unwrap().keepalive(&msg)
+            let result = relay.lock().unwrap_or_else(|e| e.into_inner()).keepalive(&msg)
                 .map_err(|e| (e.code(), e.to_string())); // guard dropped here
             if let Err((code, detail)) = result {
                 send_error(socket, src, code, 0, &detail).await;
@@ -314,3 +317,6 @@ async fn send_error(
         let _ = socket.send_to(&frame, dst).await;
     }
 }
+
+
+

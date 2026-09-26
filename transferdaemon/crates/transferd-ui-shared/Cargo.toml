@@ -3,6 +3,9 @@ name = "transferd-ui-shared"
 version = "0.1.0"
 edition = "2021"
 
+[lints]
+workspace = true
+
 [dependencies]
 eframe      = { workspace = true }
 egui        = { workspace = true }
@@ -16,11 +19,25 @@ bip39       = { workspace = true }
 ed25519-dalek = { workspace = true }
 hex         = { workspace = true }
 tonic       = { workspace = true }
+tracing     = { workspace = true }
+aes-gcm     = { workspace = true }
+blake3      = { workspace = true }
 
 rusqlite   = { version = "0.31", features = ["bundled"] }
 serde_json = "1"
 qrcode     = "0.14"
-image      = { version = "0.25", default-features = false, features = ["png"] }
+image      = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+dirs       = { workspace = true }
 
 transferd-api    = { path = "../transferd-api" }
 transferd-webrtc = { path = "../transferd-webrtc" }
+
+# Desktop notifications - notify-rust supports Linux (D-Bus) and macOS (Foundation).
+[target.'cfg(not(target_os = "windows"))'.dependencies]
+notify-rust = { workspace = true }
+
+# Native file dialogs (QR-import etc.) are desktop-only. rfd has no Android or
+# iOS backend, so gate it to non-mobile targets to keep the mobile builds clean.
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+rfd = "0.14"
+

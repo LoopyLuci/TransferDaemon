@@ -1,6 +1,6 @@
 use crate::app::App;
 use ratatui::{
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
@@ -43,6 +43,17 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
             Style::default().fg(Color::Gray))));
     }
 
+    if app.identity.is_some() {
+        lines.push(Line::from(""));
+        lines.push(Line::from(vec![
+            Span::styled("  [Q]  ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            Span::styled("Show Public Key QR", Style::default().fg(Color::Cyan)),
+        ]));
+        lines.push(Line::from(vec![
+            Span::styled("  [C]  ", Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)),
+            Span::styled("Copy Public Key to Clipboard", Style::default().fg(Color::Cyan)),
+        ]));
+    }
     lines.push(Line::from(""));
     if app.recovery_phrase.is_some() {
         lines.push(Line::from(vec![

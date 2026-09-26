@@ -1,6 +1,6 @@
 use crate::daemon::DaemonApi;
 use crate::types::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::Instant;
 use transferd_tui_video::VideoCallOverlay;
@@ -16,11 +16,109 @@ pub enum Tab {
     Contacts,
     Transfers,
     Settings,
+    Telemetry,
 }
 
 impl Tab {
     pub fn index(self) -> usize {
-        match self { Self::Chats => 0, Self::Contacts => 1, Self::Transfers => 2, Self::Settings => 3 }
+        match self {
+            Self::Chats     => 0,
+            Self::Contacts  => 1,
+            Self::Transfers => 2,
+            Self::Settings  => 3,
+            Self::Telemetry => 4,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Telemetry state
+// ---------------------------------------------------------------------------
+
+pub struct TelemetryState {
+    pub cpu_pct:         f32,
+    pub mem_rss_kb:      u64,
+    pub uptime_secs:     u64,
+    pub active_sessions: u32,
+    /// Recent event summaries: (age_label, kind_tag, summary)
+    pub log: VecDeque<(String, &'static str, String)>,
+    /// Per-second ATE event timestamps for the sparkline.
+    pub ate_ts: VecDeque<u64>,
+    pub stream_rx: Option<tokio::sync::mpsc::UnboundedReceiver<transferd_api::TelemetryEventMsg>>,
+}
+
+impl Default for TelemetryState {
+    fn default() -> Self {
+        Self {
+            cpu_pct: 0.0,
+            mem_rss_kb: 0,
+            uptime_secs: 0,
+            active_sessions: 0,
+            log: VecDeque::with_capacity(200),
+            ate_ts: VecDeque::with_capacity(3_000),
+            stream_rx: None,
+        }
+    }
+}
+
+impl TelemetryState {
+    pub fn drain(&mut self) {
+        let mut collected = vec![];
+        if let Some(rx) = &mut self.stream_rx {
+            while let Ok(msg) = rx.try_recv() {
+                collected.push(msg);
+            }
+        }
+        for msg in collected {
+            use transferd_api::proto::telemetry_event_msg::Event;
+            let Some(ev) = msg.event else { continue };
+            match ev {
+                Event::SystemHealth(h) => {
+                    self.cpu_pct = h.cpu_pct;
+                    self.mem_rss_kb = h.mem_rss_kb;
+                    self.uptime_secs = h.uptime_secs;
+                    self.active_sessions = h.active_sessions;
+                    let summary = format!(
+                        "CPU {:.1}%  RSS {}MiB  up {}s  sessions {}",
+                        h.cpu_pct,
+                        h.mem_rss_kb / 1024,
+                        h.uptime_secs,
+                        h.active_sessions,
+                    );
+                    self.push_log("SYS", summary);
+                }
+                Event::AteLane(a) => {
+                    while self.ate_ts.len() >= 3_000 { self.ate_ts.pop_front(); }
+                    self.ate_ts.push_back(a.ts);
+                    let summary = format!(
+                        "lane {}  gsn {}  rtt {:.1}ms  bw {:.0}Kbps",
+                        a.selected_lane, a.gsn, a.rtt_ms, a.bandwidth_bps as f64 / 1_000.0,
+                    );
+                    self.push_log("ATE", summary);
+                }
+            }
+        }
+    }
+
+    fn push_log(&mut self, tag: &'static str, summary: String) {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+        if self.log.len() >= 200 { self.log.pop_front(); }
+        self.log.push_back((format!("{ts}"), tag, summary));
+    }
+
+    /// Compute per-second ATE event counts for the last `secs` seconds.
+    pub fn sparkline(&self, secs: usize) -> Vec<u32> {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+        let mut counts = vec![0u32; secs];
+        for &ts in &self.ate_ts {
+            let age = now.saturating_sub(ts) as usize;
+            if age < secs {
+                counts[secs - 1 - age] += 1;
+            }
+        }
+        counts
     }
 }
 
@@ -64,8 +162,6 @@ pub struct CallState {
     pub started_at: Instant,
     pub muted: bool,
     pub video_enabled: bool,
-    /// The running WebRTC session (simulated in mock mode).
-    pub session: Option<SimulatedCallSession>,
     /// Terminal video renderer; `None` for audio-only calls.
     pub video: Option<VideoCallOverlay>,
 }
@@ -77,6 +173,8 @@ pub struct CallState {
 pub struct App {
     pub daemon: Arc<dyn DaemonApi>,
     pub daemon_live: bool,
+    /// gRPC endpoint address for the telemetry stream (e.g. "http://127.0.0.1:50051").
+    pub daemon_addr: Option<String>,
 
     pub screen: Screen,
     pub tab: Tab,
@@ -98,17 +196,16 @@ pub struct App {
     pub modal: Option<Modal>,
     pub call_state: Option<CallState>,
 
-    /// Single-line text input buffer shared across input contexts.
     pub input: String,
-    /// Secondary input (e.g. name field in add-contact, confirm phrase).
-    pub input2: String,
 
     pub status: String,
     pub last_tick: Instant,
+
+    pub telemetry: TelemetryState,
 }
 
 impl App {
-    pub async fn new(daemon: Arc<dyn DaemonApi>, daemon_live: bool) -> Self {
+    pub async fn new(daemon: Arc<dyn DaemonApi>, daemon_live: bool, daemon_addr: Option<String>) -> Self {
         let identity = daemon.get_identity().await;
         let contacts = daemon.get_contacts().await;
         let transfers = daemon.get_transfers().await;
@@ -130,6 +227,7 @@ impl App {
         Self {
             daemon,
             daemon_live,
+            daemon_addr,
             screen,
             tab: Tab::Chats,
             chat_focus: ChatFocus::ContactList,
@@ -145,9 +243,9 @@ impl App {
             modal: None,
             call_state: None,
             input: String::new(),
-            input2: String::new(),
             status: String::new(),
             last_tick: Instant::now(),
+            telemetry: TelemetryState::default(),
         }
     }
 
@@ -206,6 +304,8 @@ impl App {
                 video.tick();
             }
         }
+        // Drain telemetry events.
+        self.telemetry.drain();
         self.last_tick = Instant::now();
     }
 
@@ -249,7 +349,6 @@ impl App {
             started_at: Instant::now(),
             muted: false,
             video_enabled: video,
-            session: None, // video_rx already consumed above
             video: video_overlay,
         });
 

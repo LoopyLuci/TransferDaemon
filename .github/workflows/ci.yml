@@ -1,0 +1,107 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  schedule:
+    - cron: '0 6 * * 1'  # weekly security audit
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+# The Cargo workspace lives in `transferdaemon/` (the repo root holds the
+# android/ + ios/ shells and tooling).
+defaults:
+  run:
+    working-directory: transferdaemon
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+      - run: cargo check --workspace --all-features
+
+  fmt:
+    runs-on: ubuntu-latest
+    continue-on-error: true  # repo-wide `cargo fmt` sweep not yet applied; informational until then
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          components: rustfmt
+      - run: cargo fmt --check
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+      - run: sudo apt-get install -y libgtk-3-dev libappindicator3-dev
+        continue-on-error: true
+      - run: cargo test --workspace --all-features
+
+  clippy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+          components: clippy
+      - run: cargo clippy --workspace --all-features -- -D warnings
+
+  build:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+      - run: cargo build --release --workspace
+      - uses: actions/upload-artifact@v4
+        with:
+          name: transferd-${{ matrix.os }}
+          path: target/release/transferd*
+
+  bench:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+      - run: cargo bench --workspace
+
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+      # Deterministic adversarial-input sweep over every untrusted parser.
+      # A panic anywhere returns a non-zero exit and fails the build.
+      - run: cargo run --release -p transferd-pentest -- fuzz 2000000
+
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+      - run: cargo install cargo-audit
+      - run: cargo audit

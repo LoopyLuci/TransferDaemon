@@ -57,6 +57,7 @@ impl SessionKey {
 // ---------------------------------------------------------------------------
 
 /// First flight: Initiator → Responder.
+#[derive(Clone)]
 pub struct InitiatorHello {
     pub x25519_pk: X25519PublicKey,
     /// ML-KEM-768 encapsulation key (1184 bytes on the wire).
@@ -64,10 +65,61 @@ pub struct InitiatorHello {
 }
 
 /// Second flight: Responder → Initiator.
+#[derive(Clone)]
 pub struct ResponderHello {
     pub x25519_pk: X25519PublicKey,
     /// ML-KEM-768 ciphertext produced by Encap(iek).
     pub kem_ct: MlCt768,
+}
+
+impl InitiatorHello {
+    /// Serialize to wire bytes: `[x25519_pk: 32][kem_ek: 1184]`.
+    pub fn to_wire(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(32 + 1184);
+        out.extend_from_slice(self.x25519_pk.as_bytes());
+        let ek = <MlEk768 as kem::KeyExport>::to_bytes(&self.kem_ek);
+        out.extend_from_slice(ek.as_ref());
+        out
+    }
+
+    /// Deserialize from [`Self::to_wire`] output (must be exactly 1216 bytes).
+    pub fn from_wire(data: &[u8]) -> Option<Self> {
+        if data.len() != 32 + 1184 {
+            return None;
+        }
+        let mut pk = [0u8; 32];
+        pk.copy_from_slice(&data[..32]);
+        let ek_key: kem::Key<MlEk768> = data[32..].try_into().ok()?;
+        let kem_ek = <MlEk768 as kem::TryKeyInit>::new(&ek_key).ok()?;
+        Some(Self {
+            x25519_pk: X25519PublicKey::from(pk),
+            kem_ek,
+        })
+    }
+}
+
+impl ResponderHello {
+    /// Serialize to wire bytes: `[x25519_pk: 32][kem_ct: 1088]`.
+    pub fn to_wire(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(32 + 1088);
+        out.extend_from_slice(self.x25519_pk.as_bytes());
+        out.extend_from_slice(self.kem_ct.as_ref());
+        out
+    }
+
+    /// Deserialize from [`Self::to_wire`] output (must be exactly 1120 bytes).
+    pub fn from_wire(data: &[u8]) -> Option<Self> {
+        if data.len() != 32 + 1088 {
+            return None;
+        }
+        let mut pk = [0u8; 32];
+        pk.copy_from_slice(&data[..32]);
+        let kem_ct: MlCt768 = data[32..].try_into().ok()?;
+        Some(Self {
+            x25519_pk: X25519PublicKey::from(pk),
+            kem_ct,
+        })
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -169,4 +221,68 @@ fn hybrid_kdf(x25519_ss: &[u8], kem_ss: &[u8]) -> SessionKey {
     input.extend_from_slice(x25519_ss);
     input.extend_from_slice(kem_ss);
     SessionKey(blake3::derive_key(KDF_CONTEXT, &input))
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn initiator_hello_wire_roundtrip() {
+        let init = Initiator::new();
+        let hello = init.hello();
+        let wire = hello.to_wire();
+        assert_eq!(wire.len(), 32 + 1184);
+        let back = InitiatorHello::from_wire(&wire).expect("must deserialize");
+        assert_eq!(back.to_wire(), wire);
+    }
+
+    #[test]
+    fn responder_hello_wire_roundtrip() {
+        let init = Initiator::new();
+        let hello = init.hello();
+        let responder = Responder::new();
+        let (resp, _key) = responder.respond(&hello);
+        let wire = resp.to_wire();
+        assert_eq!(wire.len(), 32 + 1088);
+        let back = ResponderHello::from_wire(&wire).expect("must deserialize");
+        assert_eq!(back.to_wire(), wire);
+    }
+
+    #[test]
+    fn wire_handshake_derives_identical_session_key() {
+        // Full handshake where every flight travels as serialized bytes.
+        let init = Initiator::new();
+        let init_hello = init.hello();
+        let hello_wire = init_hello.to_wire();
+        let hello_back = InitiatorHello::from_wire(&hello_wire).expect("initiator hello");
+
+        let responder = Responder::new();
+        let (resp, responder_key) = responder.respond(&hello_back);
+        let resp_wire = resp.to_wire();
+        let resp_back = ResponderHello::from_wire(&resp_wire).expect("responder hello");
+
+        let initiator_key = init.finalize(resp_back);
+        assert_eq!(initiator_key.as_bytes(), responder_key.as_bytes());
+        assert_ne!(initiator_key.as_bytes(), &[0u8; 32]);
+    }
+
+    #[test]
+    fn tampered_ciphertext_is_rejected() {
+        // A corrupted ciphertext must not yield the same key (KEM soundness).
+        let init = Initiator::new();
+        let hello = init.hello();
+        let responder = Responder::new();
+        let (resp, key) = responder.respond(&hello);
+        let mut bytes = resp.to_wire();
+        let idx = bytes.len() - 5;
+        bytes[idx] ^= 0xff;
+let tampered = ResponderHello::from_wire(&bytes).expect("parses");
+        let tampered_key = init.finalize(tampered);
+        assert_ne!(tampered_key.as_bytes(), key.as_bytes());
+    }
 }

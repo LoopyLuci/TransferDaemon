@@ -35,6 +35,21 @@ message PublicKeyReply         { string hex = 1; }
 service FriendService {
     rpc GetContacts (Empty)             returns (ContactList);
     rpc AddContact  (AddContactRequest) returns (ContactReply);
+    rpc RenameContact (RenameContactRequest) returns (ContactReply);
+    rpc RemoveContact (RemoveContactRequest) returns (Empty);
+    rpc BlockContact  (BlockContactRequest)  returns (ContactReply);
+    rpc UnblockContact (BlockContactRequest) returns (ContactReply);
+    rpc GetSafetyNumber (SafetyNumberRequest) returns (SafetyNumberReply);
+}
+
+message SafetyNumberRequest { string contact_id = 1; }
+
+message SafetyNumberReply {
+    // The Signal-style out-of-band fingerprint. Empty when the peer's identity
+    // has not yet been verified (no session established yet).
+    string safety_number = 1;
+    // Whether this is a verified fingerprint recorded at first contact.
+    bool   verified      = 2;
 }
 
 message ContactReply {
@@ -42,6 +57,9 @@ message ContactReply {
     string name         = 2;
     uint64 last_seen_ts = 3;
     bool   online       = 4;
+    bool   blocked      = 5;
+    // Whether the contact is currently typing (live indicator).
+    bool   typing       = 6;
 }
 
 message ContactList { repeated ContactReply contacts = 1; }
@@ -51,6 +69,117 @@ message AddContactRequest {
     string name       = 2;
 }
 
+message RenameContactRequest {
+    string contact_id = 1;
+    string name       = 2;
+}
+
+message RemoveContactRequest { string contact_id = 1; }
+message BlockContactRequest  { string contact_id = 1; }
+
+// ---------------------------------------------------------------------------
+// Groups
+// ---------------------------------------------------------------------------
+
+service GroupService {
+    rpc CreateGroup   (CreateGroupRequest)   returns (GroupReply);
+    rpc GetGroups     (Empty)                returns (GroupList);
+    rpc GetGroup      (GetGroupRequest)      returns (GroupReply);
+    rpc RenameGroup   (RenameGroupRequest)   returns (GroupReply);
+    rpc AddMembers    (GroupMembersRequest)  returns (GroupReply);
+    rpc RemoveMembers (GroupMembersRequest)  returns (GroupReply);
+    rpc SetMemberRole (SetMemberRoleRequest) returns (GroupReply);
+    rpc LeaveGroup    (GetGroupRequest)      returns (Empty);
+    rpc DeleteGroup   (GetGroupRequest)      returns (Empty);
+    rpc SendGroupText (SendGroupTextRequest) returns (MessageReply);
+    rpc GetGroupMessages (GetGroupRequest)   returns (MessageList);
+}
+
+enum GroupRole {
+    GROUP_ROLE_UNSPECIFIED = 0;
+    GROUP_ROLE_OWNER       = 1;
+    GROUP_ROLE_ADMIN       = 2;
+    GROUP_ROLE_MEMBER      = 3;
+}
+
+message GroupMember {
+    string     public_key = 1;
+    GroupRole  role       = 2;
+}
+
+message GroupReply {
+    string              group_id = 1;
+    string              name     = 2;
+    string              owner    = 3;
+    repeated GroupMember members = 4;
+    uint64              created_at = 5;
+}
+
+message GroupList { repeated GroupReply groups = 1; }
+
+message CreateGroupRequest {
+    string   name       = 1;
+    repeated string member_ids = 2;
+}
+
+message GetGroupRequest { string group_id = 1; }
+message RenameGroupRequest { string group_id = 1; string name = 2; }
+
+message GroupMembersRequest {
+    string          group_id   = 1;
+    repeated string member_ids = 2;
+}
+
+message SetMemberRoleRequest {
+    string    group_id  = 1;
+    string    member_id = 2;
+    GroupRole role      = 3;
+}
+
+message SendGroupTextRequest {
+    string group_id = 1;
+    string text     = 2;
+}
+
+// ---------------------------------------------------------------------------
+// Connections (transport control center)
+// ---------------------------------------------------------------------------
+
+service ConnectionService {
+    rpc ListConnections(Empty) returns (ConnectionList);
+    rpc SetConnectionPolicy(SetConnectionPolicyRequest) returns (Empty);
+    rpc StreamConnectionStatus(Empty) returns (stream ConnectionStatusMsg);
+}
+
+message Connection {
+    string id             = 1;
+    string name           = 2;
+    // "wifi" | "ethernet" | "usb" | "bluetooth" | "vpn" | "proxy" | "relay" | "direct"
+    string kind           = 3;
+    bool   enabled        = 4;
+    bool   online         = 5;
+    uint64 link_speed_bps = 6;
+    double rtt_ms         = 7;
+    uint64 bandwidth_bps  = 8;
+    // "auto" | "direct" | "relay" | "stripe"
+    string policy         = 9;
+}
+
+message ConnectionList { repeated Connection connections = 1; }
+
+message SetConnectionPolicyRequest {
+    string connection_id = 1;
+    string policy        = 2;
+}
+
+message ConnectionStatusMsg {
+    string connection_id = 1;
+    double rtt_ms        = 2;
+    uint64 bandwidth_bps = 3;
+    uint64 active_chunks = 4;
+    bool   online        = 5;
+}
+
 // ---------------------------------------------------------------------------
 // Messaging
 // ---------------------------------------------------------------------------
@@ -58,9 +187,27 @@ message AddContactRequest {
 service MessageService {
     rpc GetMessages (GetMessagesRequest) returns (MessageList);
     rpc SendText    (SendTextRequest)    returns (MessageReply);
+    rpc SearchMessages (SearchMessagesRequest) returns (MessageList);
+    rpc SendTyping  (SendTypingRequest)  returns (Empty);
+    rpc ToggleReaction (ReactionRequest) returns (Empty);
 }
 
 message GetMessagesRequest { string contact_id = 1; }
+message SearchMessagesRequest {
+    string contact_id = 1;
+    string query    = 2;
+}
+
+message SendTypingRequest {
+    string contact_id = 1;
+    bool   is_typing  = 2;
+}
+
+message ReactionRequest {
+    string contact_id   = 1; // the thread (contact or group)
+    string target_msg_id = 2;
+    string emoji         = 3;
+}
 
 message MessageReply {
     string id           = 1;
@@ -75,6 +222,18 @@ message MessageReply {
     string file_mime        = 9;
     uint64 timestamp_ts     = 10;
     string status           = 11; // "pending" | "sent" | "delivered" | "read" | "failed"
+    // group fields — set for messages in a group thread
+    string group_id  = 12;
+    string sender_pk = 13;
+    // reply: id of the message this one quotes (same thread)
+    string reply_to = 14;
+    // reactions: repeated emoji | reactor pairs, aggregated
+    repeated Reaction reactions = 15;
+}
+
+message Reaction {
+    string emoji  = 1;
+    string sender = 2;
 }
 
 message MessageList { repeated MessageReply messages = 1; }
@@ -82,6 +241,8 @@ message MessageList { repeated MessageReply messages = 1; }
 message SendTextRequest {
     string contact_id = 1;
     string text       = 2;
+    // id of the message being replied to (same thread), if any.
+    string reply_to   = 3;
 }
 
 // ---------------------------------------------------------------------------
@@ -89,8 +250,11 @@ message SendTextRequest {
 // ---------------------------------------------------------------------------
 
 service TransferService {
-    rpc GetTransfers (Empty)           returns (TransferList);
-    rpc SendFile     (SendFileRequest) returns (MessageReply);
+    rpc GetTransfers   (Empty)              returns (TransferList);
+    rpc SendFile       (SendFileRequest)    returns (MessageReply);
+    rpc CancelTransfer (CancelTransferRequest) returns (Empty);
+    rpc PauseTransfer  (CancelTransferRequest) returns (Empty);
+    rpc ResumeTransfer (CancelTransferRequest) returns (Empty);
 }
 
 message SendFileRequest {
@@ -111,6 +275,8 @@ message TransferReply {
     uint32 lanes_active     = 7;
     uint64 bps              = 8;
 }
+
+message CancelTransferRequest { string transfer_id = 1; }
 
 message TransferList { repeated TransferReply transfers = 1; }
 
@@ -178,4 +344,63 @@ message CallEvent {
     string payload    = 3; // SDP for invite/accepted; JSON for ice_candidate; empty otherwise
     string conv_id    = 4;
     bool   video      = 5;
+}
+
+// ---------------------------------------------------------------------------
+// Telemetry (Tier 1 instrumentation)
+// ---------------------------------------------------------------------------
+
+service TelemetryService {
+    // Live event stream — clients receive events as they are emitted.
+    rpc StreamTelemetry (Empty)              returns (stream TelemetryEventMsg);
+    // Ring-buffer snapshot — returns all events currently in memory.
+    rpc GetSnapshot     (Empty)              returns (TelemetrySnapshot);
+}
+
+message SystemHealthMsg {
+    uint64 ts              = 1;
+    float  cpu_pct         = 2;
+    uint64 mem_rss_kb      = 3;
+    uint64 uptime_secs     = 4;
+    uint32 active_sessions = 5;
+}
+
+message AteLaneMsg {
+    uint64 ts            = 1;
+    bytes  session_hash  = 2; // first 8 bytes of 16-byte session ID
+    uint64 gsn           = 3;
+    uint32 selected_lane = 4;
+    double rtt_ms        = 5;
+    uint64 bandwidth_bps = 6;
+    uint64 active_chunks = 7;
+    uint32 total_lanes   = 8;
+}
+
+message TelemetryEventMsg {
+    oneof event {
+        SystemHealthMsg system_health = 1;
+        AteLaneMsg      ate_lane      = 2;
+    }
+}
+
+message TelemetrySnapshot {
+    repeated TelemetryEventMsg events = 1;
+}
+
+// ---------------------------------------------------------------------------
+// Updates (manual, opt-in — no automatic external traffic)
+// ---------------------------------------------------------------------------
+
+service UpdateService {
+    rpc CheckForUpdates (Empty) returns (UpdateReply);
+    rpc ApplyUpdate    (Empty) returns (Empty);
+}
+
+message UpdateReply {
+    string current_version = 1;
+    bool   has_update      = 2;
+    string new_version     = 3;
+    string release_notes   = 4;
+    string download_url    = 5;
+    string error           = 6;
 }

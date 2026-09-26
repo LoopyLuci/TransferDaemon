@@ -21,13 +21,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let addr = std::env::var("TRANSFERD_ADDR")
         .unwrap_or_else(|_| "http://127.0.0.1:50051".into());
 
-    let (daemon, daemon_live): (Arc<dyn daemon::DaemonApi>, bool) =
+    let (daemon, daemon_live, live_addr): (Arc<dyn daemon::DaemonApi>, bool, Option<String>) =
         match GrpcDaemon::try_connect(&addr).await {
-            Some(g) => (Arc::new(g), true),
-            None    => (Arc::new(MockDaemon::new()), false),
+            Some(g) => (Arc::new(g), true, Some(addr.clone())),
+            None    => (Arc::new(MockDaemon::new()), false, None),
         };
 
-    let mut app = App::new(daemon, daemon_live).await;
+    let mut app = App::new(daemon, daemon_live, live_addr).await;
 
     // ── Terminal setup ───────────────────────────────────────────────────────
     enable_raw_mode()?;
@@ -73,7 +73,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             biased;
             Some(ev) = ev_rx.recv() => {
                 if let crossterm::event::Event::Key(key) = ev {
-                    if events::handle_key(&mut app, key).await {
+                    // Only handle Press (and Repeat for held keys like arrows).
+                    // Release events must be ignored: on Windows, crossterm emits
+                    // both Press and Release for every keystroke. Processing Release
+                    // causes the character that opened a modal (e.g. 'A') to also
+                    // be typed into the modal's first field, and causes modal-close
+                    // handlers (e.g. "any key closes QR") to fire immediately.
+                    use crossterm::event::KeyEventKind;
+                    if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat)
+                        && events::handle_key(&mut app, key).await {
                         break;
                     }
                 }

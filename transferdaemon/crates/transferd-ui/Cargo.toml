@@ -7,9 +7,15 @@ edition = "2021"
 name = "transferd-ui"
 path = "src/main.rs"
 
+[lints]
+workspace = true
+
 [dependencies]
-eframe    = { workspace = true }
-egui      = { workspace = true }
-tokio     = { workspace = true }
+eframe        = { workspace = true }
+egui          = { workspace = true }
+tokio         = { workspace = true }
+tracing       = { workspace = true }
+tray-icon     = { workspace = true }
 
 transferd-ui-shared = { path = "../transferd-ui-shared" }
+

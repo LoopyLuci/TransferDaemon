@@ -45,7 +45,7 @@ impl MappedRegion {
         {
             match Self::new_linux(ring_area, data_area_size, total) {
                 Ok(r) => return Ok(r),
-                Err(e) => eprintln!("Linux mirrored mmap failed ({e}), using heap fallback"),
+                Err(e) => tracing::warn!("Linux mirrored mmap failed ({e}), using heap fallback"),
             }
         }
 

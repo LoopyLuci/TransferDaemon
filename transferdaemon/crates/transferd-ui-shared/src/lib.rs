@@ -1,7 +1,14 @@
+pub mod animations;
 pub mod app;
 pub mod daemon;
 pub mod db;
+pub mod design;
+pub mod encryption_utils;
 pub mod grpc_daemon;
+pub mod image_preview;
+pub mod notifications;
 pub mod pages;
+pub mod platform_hooks;
+pub mod tray_channel;
 pub mod types;
 pub mod widgets;

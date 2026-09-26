@@ -140,7 +140,7 @@ async fn test_video_call_signaling_e2e() {
 
     // ── 5. Alice reads the "accepted" event ──────────────────────────────────
     // Alice's stream also receives the "invite" broadcast; skip until "accepted".
-    let accepted = loop {
+    let _accepted = loop {
         let ev = tokio::time::timeout(Duration::from_secs(5), stream_a.message())
             .await
             .expect("timeout waiting for accepted")

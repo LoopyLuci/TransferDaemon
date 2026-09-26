@@ -1,10 +1,16 @@
 use crate::ate::Ate;
 use crate::control_channel::ControlMessage;
 use crate::retransmit::RetransmitBuffer;
+use crate::telemetry::{emit_ate, AteLaneHookData};
 use crate::transport::{Chunk, TransportLane};
 use crate::types::{Gsn, SessionId};
 use bytes::Bytes;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
+use std::sync::atomic::Ordering;
+use std::time::{Duration, Instant};
+
+/// Retransmit timeout: a sent-but-unacked chunk is re-sent after this long.
+const RTO: Duration = Duration::from_millis(500);
 
 pub struct Session {
     pub id: SessionId,
@@ -14,6 +20,8 @@ pub struct Session {
     window_size: u64,
     pending: VecDeque<Chunk>,
     retransmit: RetransmitBuffer,
+    /// When each dispatched gsn was sent (for the retransmit timer).
+    sent_ts: HashMap<Gsn, Instant>,
 }
 
 impl Session {
@@ -26,6 +34,7 @@ impl Session {
             window_size,
             pending: VecDeque::new(),
             retransmit: RetransmitBuffer::new(),
+            sent_ts: HashMap::new(),
         }
     }
 
@@ -42,6 +51,39 @@ impl Session {
             qos_critical,
         });
         self.next_gsn = self.next_gsn.next();
+    }
+
+    /// Number of sent-but-unacked chunks (in-flight budget used).
+    pub fn outstanding(&self) -> usize {
+        self.retransmit.len()
+    }
+
+    /// Re-dispatch chunks that have been outstanding past the RTO.
+    pub async fn maybe_retransmit(
+        &mut self,
+        lanes: &mut [Box<dyn TransportLane>],
+    ) -> Vec<(usize, Gsn)> {
+        let now = Instant::now();
+        let stale: Vec<Chunk> = self
+            .retransmit
+            .snapshot()
+            .into_iter()
+            .filter(|c| {
+                self.sent_ts
+                    .get(&c.gsn)
+                    .map(|t| now.duration_since(*t) >= RTO)
+                    .unwrap_or(false)
+            })
+            .collect();
+        for chunk in stale {
+            self.sent_ts.remove(&chunk.gsn);
+            self.pending.push_front(chunk);
+        }
+        if !self.pending.is_empty() {
+            self.process_tick(lanes).await
+        } else {
+            Vec::new()
+        }
     }
 
     /// Drives the send loop: picks lanes via ATE and dispatches pending chunks.
@@ -67,7 +109,23 @@ impl Session {
             );
 
             if let Some(idx) = lane_idx {
+                // Snapshot metrics before the send for the telemetry record.
+                let lane_m = lanes[idx].metrics();
+                let rtt_ms = lane_m.rtt_ms.load(Ordering::Relaxed) as f64 / 1_000.0;
+                let bandwidth_bps = lane_m.bandwidth_bps.load(Ordering::Relaxed);
+                let active_chunks = lane_m.active_chunks.load(Ordering::Relaxed);
+                emit_ate(AteLaneHookData {
+                    session_id: self.id.0,
+                    gsn: chunk.gsn.0,
+                    selected_lane: idx as u32,
+                    rtt_ms,
+                    bandwidth_bps,
+                    active_chunks,
+                    total_lanes: lanes.len() as u32,
+                });
+
                 self.retransmit.insert(chunk.clone());
+                self.sent_ts.insert(chunk.gsn, Instant::now());
                 match lanes[idx].send(chunk.clone()).await {
                     Ok(()) => {
                         lanes[idx].metrics().inc_active();
@@ -87,6 +145,7 @@ impl Session {
                         }
                     }
                     Err(_) => {
+                        self.sent_ts.remove(&chunk.gsn);
                         self.pending.push_front(chunk);
                         break;
                     }
@@ -103,11 +162,16 @@ impl Session {
         match msg {
             ControlMessage::Ack { cumulative_gsn, .. } => {
                 let new_base = Gsn(cumulative_gsn);
-                if new_base > self.send_base { self.send_base = new_base; }
+                if new_base > self.send_base {
+                    self.send_base = new_base;
+                }
                 self.retransmit.prune(self.send_base);
+                // Drop send timestamps for acked gsns below the new base.
+                self.sent_ts.retain(|gsn, _| *gsn >= self.send_base);
                 None
             }
             ControlMessage::Nack { missing_gsn, .. } => {
+                self.sent_ts.remove(&Gsn(missing_gsn));
                 self.retransmit.get(Gsn(missing_gsn)).cloned()
             }
             ControlMessage::WindowUpdate { right_edge, .. } => {
@@ -119,4 +183,8 @@ impl Session {
     }
 
     pub fn pending_len(&self) -> usize { self.pending.len() }
+
+    /// The GSN the next enqueued chunk will be assigned. Used by upper layers to
+    /// correlate sent chunks with their message IDs for delivery status.
+    pub fn next_gsn(&self) -> Gsn { self.next_gsn }
 }

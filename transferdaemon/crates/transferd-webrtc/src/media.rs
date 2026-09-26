@@ -161,7 +161,7 @@ pub fn new_default_capture(video: bool) -> Arc<dyn MediaCapture> {
     #[cfg(feature = "desktop-capture")]
     {
         let _ = video; // DesktopMediaCapture always tries camera; returns None if absent
-        return Arc::new(DesktopMediaCapture::new());
+        Arc::new(DesktopMediaCapture::new())
     }
     #[cfg(not(feature = "desktop-capture"))]
     {

@@ -1,16 +1,14 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub enum AuthPolicy {
     /// Any peer that solves PoW may register.
+    #[default]
     Public,
     /// Only peers whose session token is in the allow-list may register.
     AllowList(Vec<[u8; 32]>),
 }
 
-impl Default for AuthPolicy {
-    fn default() -> Self { Self::Public }
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RelaySettings {
@@ -51,3 +49,4 @@ impl Default for RelaySettings {
         }
     }
 }
+

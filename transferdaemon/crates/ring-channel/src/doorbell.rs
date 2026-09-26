@@ -40,7 +40,9 @@ impl Doorbell {
                 unsafe { libc::write(*fd, &val as *const _ as *const libc::c_void, 8); }
             }
             DoorbellInner::Channel { tx, .. } => {
-                let _ = tx.lock().unwrap().try_send(());
+                if let Ok(guard) = tx.lock() {
+                    let _ = guard.try_send(());
+                }
             }
         }
     }
@@ -54,7 +56,9 @@ impl Doorbell {
                 unsafe { libc::read(*fd, buf.as_mut_ptr() as *mut libc::c_void, 8); }
             }
             DoorbellInner::Channel { rx, .. } => {
-                let _ = rx.lock().unwrap().try_recv();
+                if let Ok(guard) = rx.lock() {
+                    let _ = guard.try_recv();
+                }
             }
         }
     }

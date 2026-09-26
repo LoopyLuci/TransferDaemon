@@ -19,20 +19,13 @@ use aes_gcm::{
 use blake3::Hasher;
 use zeroize::Zeroizing;
 
-#[allow(dead_code)]
-const BLOCK: usize = 16 * 1024; // 16 KiB interleaving granularity (used when NT-store pipeline is enabled)
-
 /// Holds the 32-byte AES-256 key and a per-session deterministic RNG for nonces.
 /// The key is wrapped in `Zeroizing` so it is wiped on drop.
 pub struct DmiEncryptor {
     cipher: Aes256Gcm,
     // Held for zeroize-on-drop; not read after construction.
-    #[allow(dead_code)]
-    key_bytes: Zeroizing<[u8; 32]>,
+    _key_bytes: Zeroizing<[u8; 32]>,
     hasher: Hasher,
-    // Reserved for a software nonce counter fallback (currently derived from GSN).
-    #[allow(dead_code)]
-    nonce_ctr: u64,
 }
 
 impl DmiEncryptor {
@@ -44,13 +37,12 @@ impl DmiEncryptor {
     /// Creates an encryptor from a raw 32-byte AES-256 key.
     pub fn new(key: &[u8; 32]) -> Self {
         let aes_key = Key::<Aes256Gcm>::from_slice(key);
-        let mut key_bytes = Zeroizing::new([0u8; 32]);
-        key_bytes.copy_from_slice(key);
+        let mut _key_bytes = Zeroizing::new([0u8; 32]);
+        _key_bytes.copy_from_slice(key);
         Self {
             cipher: Aes256Gcm::new(aes_key),
-            key_bytes,
+            _key_bytes,
             hasher: Hasher::new(),
-            nonce_ctr: 0,
         }
     }
 
@@ -136,7 +128,7 @@ impl DmiEncryptor {
         use std::arch::x86_64::*;
 
         // Only use NT stores if the pointer is 32-byte aligned (required for MOVNTDQ).
-        if buf.as_ptr() as usize % 32 == 0 {
+        if (buf.as_ptr() as usize).is_multiple_of(32) {
             let mut i = 0;
             while i + 32 <= buf.len() {
                 let src = buf.as_ptr().add(i) as *const __m256i;
@@ -159,8 +151,8 @@ pub use crate::common::{DecryptError, EncryptResult};
 
 pub struct DmiDecryptor {
     cipher: Aes256Gcm,
-    #[allow(dead_code)]
-    key_bytes: Zeroizing<[u8; 32]>,
+    // Held for zeroize-on-drop; not read after construction.
+    _key_bytes: Zeroizing<[u8; 32]>,
 }
 
 impl DmiDecryptor {
@@ -171,9 +163,9 @@ impl DmiDecryptor {
 
     pub fn new(key: &[u8; 32]) -> Self {
         let aes_key = Key::<Aes256Gcm>::from_slice(key);
-        let mut key_bytes = Zeroizing::new([0u8; 32]);
-        key_bytes.copy_from_slice(key);
-        Self { cipher: Aes256Gcm::new(aes_key), key_bytes }
+        let mut _key_bytes = Zeroizing::new([0u8; 32]);
+        _key_bytes.copy_from_slice(key);
+        Self { cipher: Aes256Gcm::new(aes_key), _key_bytes }
     }
 
     /// Decrypts `ciphertext` in-place and verifies the GCM tag.

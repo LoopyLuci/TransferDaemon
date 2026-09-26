@@ -1,0 +1,363 @@
+//! Two-daemon end-to-end delivery over a real UDP relay.
+//!
+//! Topology:
+//!   sender daemon → RelayLane → inline relayd (UDP) → receiver daemon's RelayHub
+//!
+//! Exercises: PoW challenge bootstrap, X25519 handshake tunneled over the relay,
+//! per-direction AES-GCM keys, power-of-two padding, and end-to-end delivery.
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use parking_lot::Mutex;
+use relayd::protocol::{DeliveredMsg, ForwardMsg, RegisterMsg, Tag, encode, split};
+use relayd::relay::Relay;
+use tokio::net::{TcpListener, UdpSocket};
+use tokio::sync::Mutex as TokioMutex;
+use tokio_stream::wrappers::TcpListenerStream;
+use tonic::transport::Server;
+
+use transferd_api::{
+    AccountServiceClient, CreateIdentityRequest, MessageServiceClient,
+    SendTextRequest, Empty,
+};
+use transferd_lib::relay_hub::relay_token_for;
+use transferd_lib::state::{Contact, DaemonState};
+use transferd_lib::{grpc::add_all_services, new_state};
+
+/// The relay address comes from a process-global env var, so relay tests must
+/// not run concurrently (tokio::test defaults to parallel) or one test's hub
+/// can register with the other's relay.
+static RELAY_TEST_LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+
+async fn relay_test_lock() -> tokio::sync::MutexGuard<'static, ()> {
+    RELAY_TEST_LOCK.get_or_init(|| tokio::sync::Mutex::new(())).lock().await
+}
+
+// ---------------------------------------------------------------------------
+// Inline relay server (difficulty 8 → fast PoW, still exercises the solver)
+// ---------------------------------------------------------------------------
+
+async fn run_relay_server(socket: UdpSocket, relay: Arc<TokioMutex<Relay>>) {
+    let socket = Arc::new(socket);
+    let mut buf = vec![0u8; 65536];
+
+    async fn send_challenge(relay: &Arc<TokioMutex<Relay>>, socket: &Arc<UdpSocket>, src: std::net::SocketAddr) {
+        let (challenge, expires_at, difficulty) = {
+            let mut r = relay.lock().await;
+            let c = r.current_challenge();
+            (c.bytes, c.expires_at, c.difficulty)
+        };
+        let frame = encode(
+            Tag::Challenge,
+            &relayd::protocol::ChallengeMsg { challenge, expires_at, difficulty },
+        )
+        .unwrap_or_default();
+        let _ = socket.send_to(&frame, src).await;
+    }
+
+    loop {
+        let Ok((len, src)) = socket.recv_from(&mut buf).await else { return };
+        let frame = &buf[..len];
+        let Some((tag, body)) = split(frame) else { continue };
+
+        let socket = socket.clone();
+        let relay = relay.clone();
+
+        match tag {
+            Tag::Challenge => send_challenge(&relay, &socket, src).await,
+            Tag::Register => {
+                if let Ok(msg) = bincode::deserialize::<RegisterMsg>(body) {
+                    let _ = relay.lock().await.register(&msg, src);
+                    send_challenge(&relay, &socket, src).await;
+                }
+            }
+            Tag::Forward => {
+                if let Ok(msg) = bincode::deserialize::<ForwardMsg>(body) {
+                    let result = relay.lock().await.forward(&msg);
+                    if let Ok(dst) = result {
+                        let delivered = encode(
+                            Tag::Ack,
+                            &DeliveredMsg { sender_seq: msg.sender_seq, ciphertext: msg.ciphertext },
+                        )
+                        .unwrap_or_default();
+                        let _ = socket.send_to(&delivered, dst).await;
+                        let ack = encode(
+                            Tag::Ack,
+                            &relayd::protocol::AckMsg { sender_seq: msg.sender_seq },
+                        )
+                        .unwrap_or_default();
+                        let _ = socket.send_to(&ack, src).await;
+                    }
+                }
+            }
+            Tag::Keepalive | Tag::Error | Tag::Ack => {}
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Harness
+// ---------------------------------------------------------------------------
+
+async fn start_grpc(state: Arc<Mutex<DaemonState>>) -> std::net::SocketAddr {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        add_all_services(Server::builder(), state)
+            .serve_with_incoming(TcpListenerStream::new(listener))
+            .await
+            .unwrap();
+    });
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    addr
+}
+
+async fn pump_transport(state: &Arc<Mutex<DaemonState>>) {
+    let transport = state.lock().transport.clone();
+    let events = transport.lock().await.process_all_sessions().await;
+    if !events.sent_msg_ids.is_empty() || !events.inbound.is_empty() {
+        let mut s = state.lock();
+        for id in events.sent_msg_ids {
+            s.mark_status(&id, "sent");
+        }
+        for (_, msg) in events.inbound {
+            let _ = s.apply_inbound(&msg);
+        }
+        s.try_save();
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Test
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn text_delivers_between_two_daemons_over_relay() {
+    let _guard = relay_test_lock().await;
+    // Spin up the relay (difficulty 8) on an ephemeral port.
+    let relay_socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let relay_addr = relay_socket.local_addr().unwrap();
+    let relay = Arc::new(TokioMutex::new(Relay::new(8, 90, 63 * 1024)));
+    tokio::spawn(run_relay_server(relay_socket, relay));
+
+    // Both daemons use this relay.
+    std::env::set_var("TRANSFERD_RELAY_ADDR", relay_addr.to_string());
+
+    // ── Receiver daemon ────────────────────────────────────────────────────
+    let recv_state = new_state();
+    let recv_grpc = start_grpc(recv_state.clone()).await;
+    let recv_url = format!("http://{recv_grpc}");
+    let mut recv_acct = AccountServiceClient::connect(recv_url.clone()).await.unwrap();
+    recv_acct
+        .create_identity(CreateIdentityRequest { display_name: "Bob".into() })
+        .await
+        .unwrap();
+    // Wait for the relay hub to register Bob's token.
+    for _ in 0..100 {
+        if recv_state.lock().relay_hub.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(recv_state.lock().relay_hub.is_some(), "receiver relay hub must start");
+    let recv_pk = recv_acct
+        .get_public_key_hex(Empty {})
+        .await
+        .unwrap()
+        .into_inner()
+        .hex;
+    let recv_token = relay_token_for(&recv_pk);
+
+    // ── Sender daemon ──────────────────────────────────────────────────────
+    let send_state = new_state();
+    let sender_grpc = start_grpc(send_state.clone()).await;
+    let sender_url = format!("http://{sender_grpc}");
+    let mut send_acct = AccountServiceClient::connect(sender_url.clone()).await.unwrap();
+    send_acct
+        .create_identity(CreateIdentityRequest { display_name: "Alice".into() })
+        .await
+        .unwrap();
+    for _ in 0..100 {
+        if send_state.lock().relay_hub.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(send_state.lock().relay_hub.is_some(), "sender relay hub must start");
+
+    // Sender adds Bob via his relay address (token derived from Bob's public key).
+    let peer_pk = recv_pk.clone();
+    {
+        let mut s = send_state.lock();
+        s.contacts.push(Contact {
+            id: peer_pk.clone(),
+            name: "Bob".into(),
+            last_seen_ts: 0,
+            online: false,
+            blocked: false,
+            address: Some(format!("relay://{relay_addr}/{}", hex::encode(recv_token))),
+            hybrid_public_key: None,
+        });
+    }
+    // (The contact + relay address are set directly on the state above;
+    //  add_contact RPC does not carry an address.)
+
+    // Send a text message over the relay.
+    let mut send_msg = MessageServiceClient::connect(sender_url.clone()).await.unwrap();
+    send_msg
+        .send_text(SendTextRequest {
+            contact_id: peer_pk.clone(),
+            text: "hello over the relay".into(),
+            reply_to: String::new(),
+        })
+        .await
+        .unwrap();
+
+    // Pump the sender transport until the receiver has the message.
+    for _ in 0..500 {
+        pump_transport(&send_state).await;
+        let delivered = {
+            let s = recv_state.lock();
+            s.messages.values().flatten().any(|m| m.text == "hello over the relay")
+        };
+        if delivered {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    // The receiver stored the inbound message from Alice.
+    {
+        let s = recv_state.lock();
+        let got = s
+            .messages
+            .values()
+            .flatten()
+            .find(|m| m.text == "hello over the relay")
+            .expect("receiver must have the relayed message");
+        assert!(!got.outbound);
+        assert_eq!(got.status, "delivered");
+    }
+}
+
+/// Both peers initiate relay sessions to each other AND reply over the relay.
+/// Exercises the role-aware session table: a single per-token session slot
+/// would let the reverse handshake overwrite the forward one and drop the reply.
+#[tokio::test]
+async fn text_round_trips_between_two_daemons_over_relay() {
+    let _guard = relay_test_lock().await;
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::new("transferd_lib=debug,relayd=debug"))
+        .with_test_writer()
+        .try_init();
+    let relay_socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+    let relay_addr = relay_socket.local_addr().unwrap();
+    let relay = Arc::new(TokioMutex::new(Relay::new(8, 90, 63 * 1024)));
+    tokio::spawn(run_relay_server(relay_socket, relay));
+
+    std::env::set_var("TRANSFERD_RELAY_ADDR", relay_addr.to_string());
+
+    // Daemon A.
+    let a_state = new_state();
+    let a_grpc = start_grpc(a_state.clone()).await;
+    let a_url = format!("http://{a_grpc}");
+    let mut a_acct = AccountServiceClient::connect(a_url.clone()).await.unwrap();
+    a_acct
+        .create_identity(CreateIdentityRequest { display_name: "Alice".into() })
+        .await
+        .unwrap();
+    for _ in 0..100 {
+        if a_state.lock().relay_hub.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(a_state.lock().relay_hub.is_some(), "A relay hub must start");
+    let a_pk = a_acct.get_public_key_hex(Empty {}).await.unwrap().into_inner().hex;
+    let a_token = relay_token_for(&a_pk);
+
+    // Daemon B.
+    let b_state = new_state();
+    let b_grpc = start_grpc(b_state.clone()).await;
+    let b_url = format!("http://{b_grpc}");
+    let mut b_acct = AccountServiceClient::connect(b_url.clone()).await.unwrap();
+    b_acct
+        .create_identity(CreateIdentityRequest { display_name: "Bob".into() })
+        .await
+        .unwrap();
+    for _ in 0..100 {
+        if b_state.lock().relay_hub.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(b_state.lock().relay_hub.is_some(), "B relay hub must start");
+    let b_pk = b_acct.get_public_key_hex(Empty {}).await.unwrap().into_inner().hex;
+    let b_token = relay_token_for(&b_pk);
+
+    // Each daemon adds the other with the explicit relay address.
+    for (state, peer, token) in [
+        (&a_state, b_pk.clone(), b_token),
+        (&b_state, a_pk.clone(), a_token),
+    ] {
+        state.lock().contacts.push(Contact {
+            id: peer,
+            name: "peer".into(),
+            last_seen_ts: 0,
+            online: false,
+            blocked: false,
+            address: Some(format!("relay://{relay_addr}/{}", hex::encode(token))),
+            hybrid_public_key: None,
+        });
+    }
+
+    // A → B over the relay.
+    eprintln!("[probe] A→B send");
+    let mut a_msg = MessageServiceClient::connect(a_url.clone()).await.unwrap();
+    a_msg
+        .send_text(SendTextRequest { contact_id: b_pk.clone(), text: "from A".into(), reply_to: String::new() })
+        .await
+        .unwrap();
+    eprintln!("[probe] A→B sent, pumping");
+    for _ in 0..500 {
+        pump_transport(&a_state).await;
+        if b_state.lock().messages.values().flatten().any(|m| m.text == "from A") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    eprintln!("[probe] A→B done: {}", b_state.lock().messages.values().flatten().any(|m| m.text == "from A"));
+    assert!(
+        b_state.lock().messages.values().flatten().any(|m| m.text == "from A"),
+        "B must receive A's message"
+    );
+
+    // B → A (the reverse session over the same relay).
+    eprintln!("[probe] B→A send");
+    let mut b_msg = MessageServiceClient::connect(b_url.clone()).await.unwrap();
+    b_msg
+        .send_text(SendTextRequest { contact_id: a_pk.clone(), text: "from B".into(), reply_to: String::new() })
+        .await
+        .unwrap();
+    eprintln!("[probe] B→A sent, pumping");
+    for _ in 0..500 {
+        pump_transport(&b_state).await;
+        if a_state.lock().messages.values().flatten().any(|m| m.text == "from B") {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    eprintln!("[probe] B→A done: {}", a_state.lock().messages.values().flatten().any(|m| m.text == "from B"));
+    {
+        let s = a_state.lock();
+        eprintln!("[probe] A pk starts={} b_pk starts={}", &a_pk[..8], &b_pk[..8]);
+        for (k, v) in &s.messages {
+            eprintln!("[probe] A key={} msgs={:?}", &k[..8], v.iter().map(|m| (&m.text[..], m.outbound, &m.status[..])).collect::<Vec<_>>());
+        }
+    }
+    assert!(
+        a_state.lock().messages.values().flatten().any(|m| m.text == "from B"),
+        "A must receive B's reverse-session reply"
+    );
+}

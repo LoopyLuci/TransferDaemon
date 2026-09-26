@@ -11,6 +11,9 @@ path = "src/main.rs"
 name = "relayd"
 path = "src/lib.rs"
 
+[lints]
+workspace = true
+
 [dependencies]
 tokio    = { workspace = true }
 serde    = { workspace = true }
@@ -21,3 +24,9 @@ thiserror = { workspace = true }
 
 [dev-dependencies]
 tokio    = { workspace = true }
+criterion = { workspace = true }
+
+[[bench]]
+name = "protocol"
+harness = false
+

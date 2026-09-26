@@ -28,6 +28,19 @@ impl RetransmitBuffer {
     pub fn clear(&mut self) {
         self.map.clear();
     }
+
+    pub fn len(&self) -> usize {
+        self.map.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.map.is_empty()
+    }
+
+    /// Clone all buffered chunks (for retransmit scanning).
+    pub fn snapshot(&self) -> Vec<Chunk> {
+        self.map.values().cloned().collect()
+    }
 }
 
 impl Default for RetransmitBuffer {

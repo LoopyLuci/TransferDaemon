@@ -17,8 +17,15 @@ members = [
     "crates/transferd-tui",
     "crates/transferd-tui-video",
     "crates/transferd-relay",
+    "crates/transferd-telemetry",
 ]
+exclude = ["fuzz"]
 resolver = "2"
+
+[workspace.lints.clippy]
+unwrap_used = "deny"
+panic = "deny"
+missing_docs_in_private_items = "allow"
 
 [workspace.dependencies]
 bytes = "1"
@@ -27,6 +34,8 @@ tokio = { version = "1", features = ["full"] }
 blake3 = "1"
 serde = { version = "1", features = ["derive"] }
 bincode = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 nix = { version = "0.29", features = ["mman"] }
 libc = "0.2"
 thiserror = "2"
@@ -48,3 +57,16 @@ aes-gcm = "0.10"
 argon2  = "0.5"
 dirs    = "5"
 chrono  = { version = "0.4", default-features = false, features = ["clock"] }
+criterion = { version = "0.5", features = ["html_reports"] }
+
+# Notifications + system tray
+tray-icon = "0.19"
+notify-rust = "4"
+proptest = "1"
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"

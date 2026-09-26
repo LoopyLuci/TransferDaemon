@@ -5,6 +5,8 @@
 //!   - Otherwise try `http://127.0.0.1:50051` with a 500 ms timeout.
 //!   - Fall back to `MockDaemon` when the daemon is not reachable.
 
+mod tray;
+
 use transferd_ui_shared::{
     app::TransferDaemonApp,
     daemon::MockDaemon,
@@ -27,17 +29,19 @@ fn main() -> eframe::Result<()> {
             .unwrap_or_else(|_| "http://127.0.0.1:50051".into());
         match rt.block_on(GrpcDaemon::try_connect(&addr)) {
             Some(g) => {
-                eprintln!("[ui] connected to daemon at {addr}");
+                tracing::info!("[ui] connected to daemon at {addr}");
                 daemon_arc = Arc::new(g);
                 daemon_is_live = true;
             }
             None => {
-                eprintln!("[ui] daemon not reachable — using MockDaemon (offline mode)");
+                tracing::warn!("[ui] daemon not reachable — using MockDaemon (offline mode)");
                 daemon_arc = Arc::new(MockDaemon::new());
                 daemon_is_live = false;
             }
         }
     }
+
+    let (tray_tx, tray_rx) = tray::start_tray();
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
@@ -50,6 +54,10 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         "TransferDaemon",
         options,
-        Box::new(move |cc| Ok(Box::new(TransferDaemonApp::with_daemon(cc, daemon_arc, daemon_is_live)))),
+        Box::new(move |cc| {
+            let mut app = TransferDaemonApp::with_daemon(cc, daemon_arc, daemon_is_live);
+            app.set_tray_channels(tray_tx, tray_rx);
+            Ok(Box::new(app))
+        }),
     )
 }

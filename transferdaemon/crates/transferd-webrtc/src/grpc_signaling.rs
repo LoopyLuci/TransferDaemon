@@ -1,3 +1,4 @@
+#![allow(clippy::result_large_err)]
 /// gRPC-backed call signaling for TransferDaemon.
 ///
 /// Requires the `grpc-signaling` feature.

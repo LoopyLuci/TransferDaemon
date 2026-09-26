@@ -59,7 +59,6 @@ fn test_handshake_then_encrypt_decrypt() {
 
     let plaintext = b"Post-quantum zero-copy transfer payload.";
     let mut ct = vec![0u8; plaintext.len()];
-    let mut nonce = [0u8; 12];
 
     let result = unsafe { encryptor.encrypt_fused(plaintext, &mut ct, 42, 0, &[]) };
 
@@ -69,7 +68,6 @@ fn test_handshake_then_encrypt_decrypt() {
 
     assert_eq!(&ct, plaintext.as_ref(), "plaintext must be recovered");
     assert_eq!(recovered_hash, result.blake3_hash, "BLAKE3 hash must match");
-    let _ = nonce; // suppress unused warning
 
     println!("Handshake-then-encrypt-decrypt test passed.");
 }

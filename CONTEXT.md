@@ -55,3 +55,55 @@ The sibling check comes first so a portable installation (e.g., USB drive) alway
 ## 12. No External Services
 
 TransferDaemon has zero runtime dependencies on external servers — no update servers, no telemetry endpoints, no STUN/TURN servers (the relay replaces TURN). The only network traffic is peer-to-peer and relay traffic that the user explicitly initiates.
+
+## 13. Protocol v2 - Authenticated Hybrid Wire Format
+
+The peer handshake is Protocol v2 (see `transferd_crypto::auth_handshake`), replacing the original X25519-only scheme. Every flight is a self-describing envelope: protocol version + ciphersuite id + X25519 key + ML-KEM-768 key material + the peer's 2624-byte hybrid identity (Ed25519 || ML-DSA-87) + a BLAKE3 transcript + a hybrid signature over the transcript. The signature binds the ephemeral key exchange to the long-term identity, so a man-in-the-middle cannot substitute key material without the victim's signing key. The ML-KEM serialization ("the ml-kem crate lacks public encode/decode") was solved via the `kem` crate's `KeyExport`/`TryKeyInit` traits; note the ML-KEM ciphertext type is already raw bytes.
+
+## 14. Ciphersuite Registry with Sunset Dates
+
+`CIPHERSUITES` (in `auth_handshake.rs`) records every ciphersuite with `introduced`/`sunset` year-months plus `negotiate()`/`newest_active()`. Handshake negotiation picks the newest non-sunset suite both peers support, so new KEMs can be added and old ones retired without breaking existing clients - the protocol-evolution story.
+
+## 15. Peer-Identity Enforcement + Trust-on-First-Use + Safety Numbers
+
+Session establishment (`establish_tcp_session`/`establish_relay_session`) now verifies the peer's authenticated Ed25519 identity against the contact's public key - a poisoned relay/DHT can no longer swap you onto an attacker's session. On first verified contact the full hybrid fingerprint is persisted (`Contact.hybrid_public_key`); a changed identity on later sessions is refused. Both peers derive the same Signal-style safety number from `BLAKE3(lo || hi)` of the two canonical-sorted hybrid identities, shown in the chat header for out-of-band verification.
+
+## 16. Inbound Notification Hook
+
+The daemon exposes a global `set_inbound_notify` callback fired on each new inbound 1:1 text. The mobile embedding sets it to raise a system notification via a JNI bridge (`transferd_mobile::notifications`). Desktop can hook the same seam for OS notifications later.
+
+## 17. Manual-Only Update Policy (reconciled with #12)
+
+An auto-updater exists (`transferd::update`), but it is wired strictly opt-in: a Settings "Check for updates" button calls a new `UpdateService` RPC only when the user clicks it. There is no background phone-home, preserving decision #12's "no automatic external traffic" guarantee.
+
+## 18. Desktop-Gated Native Dialogs
+
+`rfd` (native file dialogs for QR import) is a target-gated dependency (`cfg(not(any(android, ios)))`) because rfd has no mobile backend. This keeps the Android build clean - a break that otherwise surfaces only when cross-compiling.
+
+## 19. Local On-Device CI/CD Pipeline
+
+`build_pipeline.ps1` (repo root) is the canonical local pipeline for BOTH artifacts: preflight (toolchain + connected device), static (check + clippy -D warnings), tests + deterministic wire fuzz, desktop EXE release build, Android APK (3 ABIs -> gradle -> apksigner), and deploy+smoke to a connected Android device (adb install, launch, wait for "Daemon ready" + "gRPC connected"). It is incremental (cargo/gradle caches), fail-fast, logs a JSON summary, and supports `-Fast`/`-SkipTests`/`-SkipExe`/`-SkipApk`/`-SkipDeploy`/`-RequireDevice` for CI-loop use. CI (`.github/workflows/ci.yml`) mirrors it and adds a 2M-iteration fuzz job.
+
+## 20. Per-Message Forward Secrecy (Double Ratchet)
+
+Established on top of the authenticated hybrid handshake: the session key becomes the ratchet ROOT (`transferd_crypto::ratchet::DoubleRatchet`). Each message is encrypted under a fresh key derived from a BLAKE3 KDF chain, and every `RATCHET_INTERVAL` (10) sends the sender performs an X25519 DH ratchet that mixes a fresh ephemeral into the root. Compromising one message key (or even the session key) reveals neither earlier messages (forward secrecy) nor messages sent after a DH ratchet (future secrecy). The chunk payload is now `bincode(RatchetMessage)` wrapping the AES-256-GCM'd WireMsg; the initiator's `PeerSession`, the TCP responder (`transport.rs`) and the relay responder (`relay_hub.rs`) each own a ratchet aligned by role. In-order delivery is assumed (the lane + GSN reassembly guarantee it), so no skipped-key store is needed - documented for any future unordered transport. **Post-quantum future secrecy**: each DH ratchet step ALSO performs an ML-KEM-768 encapsulation (fresh keypair, encapsulate to the peer's published ML-KEM ek, mix `kem_ss` into the root alongside the X25519 DH output via `root = KDF(root, x25519_ss ‖ kem_ss)`). The first message publishes both the X25519 pk and the ML-KEM ek; a DH-step message carries the 1088-byte KEM ciphertext. An attacker holding every classical secret cannot derive post-ratchet keys - the quantum component protects future secrecy exactly as the handshake's hybrid exchange protects the session. `RatchetMessage` gained `kem_ek`/`kem_ct` (serde-defaulted, so old/new envelopes interoperate).
+
+## 21. Mobile daemon.config (relay/DHT settings file)
+
+Android processes cannot be given env vars, so `daemon_thread::spawn_with_config` reads `<files>/TransferDaemon/daemon.config` (`KEY=VALUE` lines) and applies `TRANSFERD_PORT` / `TRANSFERD_RELAY_ADDR` / `TRANSFERD_DHT_BIND` / `TRANSFERD_DHT_BOOTSTRAP` / `TRANSFERD_DIFFICULTY` as env defaults (real env wins; missing file is a no-op). This lets the mobile app be pointed at a relay/DHT without a code change - used to verify relay delivery on-device.
+
+## 22. UDP Cross-Host Rules (learned on the wire)
+
+Three hard-won facts from the desktop<->Kindle relay E2E: (1) `adb forward/reverse` is TCP-only, so a UDP relay/DHT can NEVER be reached through adb - the peers must share a LAN/subnet. (2) A UDP socket bound to `127.0.0.1` cannot route to a non-loopback destination, and a node bound to `0.0.0.0` advertises an unreachable address to remote peers - bind explicit LAN IPs for cross-host DHT nodes. (3) A UDP server's reply must go to the datagram's actual `src`, not the peer's advertised address (the `handle_request` in `transferd-relay::dht` did the latter - fixed). A node's advertised address is whatever it bound; loopback or wildcard binds break remote peers.
+
+## 23. relayd recv-loop resilience
+
+`relayd`'s main loop propagated `recv_from` errors with `?` - on Windows a stale UDP datagram to a just-closed client socket surfaces as `WSAECONNRESET` (10054) on the NEXT recv, killing the relay with an ICMP-triggered error that Linux never sees. The recv loop now logs and `continue`s with a 10ms backoff instead of exiting. Rule: UDP servers must never treat a transient recv error as fatal.
+
+## 24. The transport tick is library code, not binary code
+
+`process_all_sessions` (the 50ms tick that flushes queued messages over lanes, applies acks/inbound, and marks "sent") originally lived ONLY in the desktop `transferd` binary's `main.rs`. The mobile daemon - which boots the same library - never spawned it, so the mobile daemon could RECEIVE but never SEND: messages stayed "pending" forever. Extracted as `transferd::transport::spawn_transport_tick(state)` and called from the binary, the mobile `daemon_thread`, and any embedder (e.g. probes). Anyone spawning a daemon via the library must call it.
+
+## 25. Relay hub session map is per-peer-token (FIXED)
+
+`RelayHub::sessions` is keyed by the PEER's relay token only, so a peer that initiates to us AND that we initiate to cannot hold both roles simultaneously - the second handshake overwrites the first session. Consequence: a desktop that initiated a session to the Kindle cannot cleanly receive the Kindle's own reverse-initiated session reply (observed in the on-device relay E2E: inbound delivery works, the reverse reply leg does not). **Fixed**: sessions are keyed by `(peer_token, we_initiated)`, so both roles coexist; `handle_chunk` tries each role's recv-key and keeps whichever passes the GCM tag. Proven by `text_round_trips_between_two_daemons_over_relay` and a live desktop↔Kindle bidirectional conversation over the LAN relay. Two related bugs found while proving it: `store_inbound_text` dedup'd by `msg_id` alone (the per-daemon "d-N" counter makes ids collide across peers, silently dropping inbound messages) - now dedups on `(sender_pk, msg_id)`; and the two relay tests raced on the process-global `TRANSFERD_RELAY_ADDR` env var - now serialized behind a test lock.

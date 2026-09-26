@@ -7,10 +7,11 @@ use transferd_api::{
     GetMessagesRequest, RestoreIdentityRequest, SendTextRequest, SendFileRequest,
 };
 use tonic::transport::Channel;
+use transferd_api::auth::{AuthChannel, resolve_token};
 
 #[derive(Clone)]
 pub struct GrpcDaemon {
-    channel: Channel,
+    channel: AuthChannel,
 }
 
 impl GrpcDaemon {
@@ -20,20 +21,24 @@ impl GrpcDaemon {
             .connect()
             .await
             .ok()?;
-        Some(Self { channel })
+        let token = resolve_token().unwrap_or_default();
+        Some(Self { channel: AuthChannel::new(channel, &token) })
     }
 
-    fn account(&self) -> AccountServiceClient<Channel> {
+    fn account(&self) -> AccountServiceClient<AuthChannel> {
         AccountServiceClient::new(self.channel.clone())
     }
-    fn friends(&self) -> FriendServiceClient<Channel> {
+    fn friends(&self) -> FriendServiceClient<AuthChannel> {
         FriendServiceClient::new(self.channel.clone())
     }
-    fn messages(&self) -> MessageServiceClient<Channel> {
+    fn messages(&self) -> MessageServiceClient<AuthChannel> {
         MessageServiceClient::new(self.channel.clone())
     }
-    fn transfers(&self) -> TransferServiceClient<Channel> {
+    fn transfers(&self) -> TransferServiceClient<AuthChannel> {
         TransferServiceClient::new(self.channel.clone())
+    }
+    fn groups(&self) -> transferd_api::GroupServiceClient<AuthChannel> {
+        transferd_api::GroupServiceClient::new(self.channel.clone())
     }
 }
 
@@ -74,6 +79,7 @@ fn proto_contact(r: transferd_api::ContactReply) -> Contact {
         name: r.name,
         last_seen_ts: if r.last_seen_ts == 0 { None } else { Some(r.last_seen_ts) },
         online: r.online,
+        blocked: r.blocked,
     }
 }
 
@@ -142,9 +148,38 @@ impl DaemonApi for GrpcDaemon {
             })
     }
 
-    async fn remove_contact(&self, _contact_id: String) -> Result<(), DaemonError> {
-        // Not yet in proto; no-op for gRPC mode.
-        Ok(())
+    // Full rename UI lives in the egui app; the TUI wires block/unblock/delete.
+    #[allow(dead_code)]
+    async fn rename_contact(&self, contact_id: String, name: String) -> Result<Contact, DaemonError> {
+        self.friends()
+            .rename_contact(transferd_api::RenameContactRequest { contact_id, name })
+            .await
+            .map(|r| proto_contact(r.into_inner()))
+            .map_err(|e| DaemonError::NotReachable(e.to_string()))
+    }
+
+    async fn remove_contact(&self, contact_id: String) -> Result<(), DaemonError> {
+        self.friends()
+            .remove_contact(transferd_api::RemoveContactRequest { contact_id })
+            .await
+            .map(|_| ())
+            .map_err(|e| DaemonError::NotReachable(e.to_string()))
+    }
+
+    async fn block_contact(&self, contact_id: String) -> Result<Contact, DaemonError> {
+        self.friends()
+            .block_contact(transferd_api::BlockContactRequest { contact_id })
+            .await
+            .map(|r| proto_contact(r.into_inner()))
+            .map_err(|e| DaemonError::NotReachable(e.to_string()))
+    }
+
+    async fn unblock_contact(&self, contact_id: String) -> Result<Contact, DaemonError> {
+        self.friends()
+            .unblock_contact(transferd_api::BlockContactRequest { contact_id })
+            .await
+            .map(|r| proto_contact(r.into_inner()))
+            .map_err(|e| DaemonError::NotReachable(e.to_string()))
     }
 
     async fn get_messages(&self, contact_id: &str) -> Vec<Message> {
@@ -157,7 +192,7 @@ impl DaemonApi for GrpcDaemon {
 
     async fn send_text(&self, contact_id: &str, text: String) -> Result<Message, DaemonError> {
         self.messages()
-            .send_text(SendTextRequest { contact_id: contact_id.to_owned(), text })
+            .send_text(SendTextRequest { contact_id: contact_id.to_owned(), text, reply_to: String::new() })
             .await
             .map(|r| proto_msg(r.into_inner()))
             .map_err(|e| DaemonError::NotReachable(e.to_string()))
@@ -196,11 +231,6 @@ impl DaemonApi for GrpcDaemon {
             .map_err(|e| DaemonError::NotReachable(e.to_string()))
     }
 
-    async fn get_public_key_hex(&self) -> Option<String> {
-        let r = self.account().get_public_key_hex(Empty {}).await.ok()?.into_inner();
-        if r.hex.is_empty() { None } else { Some(r.hex) }
-    }
-
     async fn start_call(&self, _contact_id: &str) -> Result<String, DaemonError> {
         // Placeholder — call service RPC would go here.
         Ok("grpc-call-unsupported".into())
@@ -208,5 +238,48 @@ impl DaemonApi for GrpcDaemon {
 
     async fn end_call(&self, _call_id: &str) -> Result<(), DaemonError> {
         Ok(())
+    }
+
+    async fn get_groups(&self) -> Vec<Group> {
+        self.groups().get_groups(Empty {}).await
+            .map(|r| r.into_inner().groups.into_iter().map(proto_group).collect())
+            .unwrap_or_default()
+    }
+
+    async fn create_group(&self, name: String, member_ids: Vec<String>) -> Result<Group, DaemonError> {
+        self.groups()
+            .create_group(transferd_api::CreateGroupRequest { name, member_ids })
+            .await
+            .map(|r| proto_group(r.into_inner()))
+            .map_err(|e| DaemonError::NotReachable(e.to_string()))
+    }
+
+    async fn send_group_text(&self, group_id: &str, text: String) -> Result<Message, DaemonError> {
+        self.groups()
+            .send_group_text(transferd_api::SendGroupTextRequest { group_id: group_id.to_owned(), text })
+            .await
+            .map(|r| proto_msg(r.into_inner()))
+            .map_err(|e| DaemonError::NotReachable(e.to_string()))
+    }
+
+    async fn get_group_messages(&self, group_id: &str) -> Vec<Message> {
+        self.groups()
+            .get_group_messages(transferd_api::GetGroupRequest { group_id: group_id.to_owned() })
+            .await
+            .map(|r| r.into_inner().messages.into_iter().map(proto_msg).collect())
+            .unwrap_or_default()
+    }
+}
+
+fn proto_group(r: transferd_api::GroupReply) -> Group {
+    Group {
+        id: r.group_id,
+        name: r.name,
+        owner: r.owner,
+        members: r.members.into_iter().map(|m| GroupMember {
+            public_key: m.public_key,
+            role: m.role as u8,
+        }).collect(),
+        created_at: r.created_at,
     }
 }

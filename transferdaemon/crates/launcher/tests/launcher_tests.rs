@@ -4,9 +4,7 @@
 //! random port — no filesystem or process spawning needed.
 
 use std::net::SocketAddr;
-use std::sync::Arc;
 use std::time::Duration;
-use parking_lot::Mutex;
 use tokio::net::TcpListener;
 use tonic::transport::Server;
 use launcher_lib::{probe_daemon, wait_for_daemon, find_binary, daemon_addr, DEFAULT_DAEMON_ADDR};

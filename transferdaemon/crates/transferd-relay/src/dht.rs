@@ -156,10 +156,6 @@ impl KBucket {
         self.last_changed = Instant::now();
     }
 
-    fn remove(&mut self, id: &NodeId) {
-        self.nodes.retain(|n| &n.id != id);
-    }
-
     fn nodes(&self) -> impl Iterator<Item = &NodeInfo> { self.nodes.iter() }
 }
 
@@ -189,12 +185,7 @@ impl RoutingTable {
         self.buckets[idx].update(node);
     }
 
-    fn remove(&mut self, id: &NodeId) {
-        let idx = self.bucket_index(id);
-        self.buckets[idx].remove(id);
-    }
-
-    /// Returns up to `n` nodes closest to `target`, sorted by XOR distance.
+/// Returns up to `n` nodes closest to `target`, sorted by XOR distance.
     fn find_closest(&self, target: &NodeId, n: usize) -> Vec<NodeInfo> {
         let mut candidates: Vec<(NodeId, NodeInfo)> = self.buckets.iter()
             .flat_map(|b| b.nodes().cloned())
@@ -204,8 +195,8 @@ impl RoutingTable {
         candidates.into_iter().map(|(_, n)| n).take(n).collect()
     }
 
-    fn all_nodes(&self) -> Vec<NodeInfo> {
-        self.buckets.iter().flat_map(|b| b.nodes().cloned()).collect()
+    fn len(&self) -> usize {
+        self.buckets.iter().map(|b| b.nodes().count()).sum()
     }
 }
 
@@ -231,10 +222,12 @@ impl DhtStore {
         })
     }
 
-    fn prune(&mut self) {
+fn prune(&mut self) {
         let now = now_secs();
         self.entries.retain(|_, (_, exp)| *exp > now);
     }
+
+    fn len(&self) -> usize { self.entries.len() }
 }
 
 // ---------------------------------------------------------------------------
@@ -287,12 +280,19 @@ impl DhtNode {
         let (shutdown_tx, _) = broadcast::channel(8);
 
         let node = Self { socket: socket.clone(), inner: inner.clone(), shutdown_tx: shutdown_tx.clone() };
-        node.spawn_recv_loop(socket, inner, shutdown_tx.clone());
+        node.spawn_recv_loop(socket, inner.clone(), shutdown_tx.clone());
+        node.spawn_store_pruner(inner, shutdown_tx.clone());
         Ok(node)
     }
 
-    pub fn id(&self) -> NodeId { self.inner.lock().unwrap().info.id }
-    pub fn addr(&self) -> SocketAddr { self.inner.lock().unwrap().info.addr }
+pub fn id(&self) -> NodeId { self.inner.lock().unwrap_or_else(|e| e.into_inner()).info.id }
+    pub fn addr(&self) -> SocketAddr { self.inner.lock().unwrap_or_else(|e| e.into_inner()).info.addr }
+
+    /// Debug introspection: number of known peers and stored values.
+    pub fn debug_stats(&self) -> (usize, usize) {
+        let g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        (g.routing.len(), g.store.len())
+    }
 
     pub fn stop(&self) { let _ = self.shutdown_tx.send(()); }
 
@@ -336,7 +336,7 @@ impl DhtNode {
         let own_id = self.id();
         for peer_addr in peers {
             if let Some(closer) = self.rpc_find_node(peer_addr, own_id).await {
-                let mut guard = self.inner.lock().unwrap();
+                let mut guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
                 // The responding peer itself is already added by the recv loop;
                 // add any nodes it told us about.
                 for node in closer {
@@ -349,7 +349,7 @@ impl DhtNode {
     /// Publish `(key, value)` to the k closest nodes in the network.
     pub async fn dht_store(&self, key: NodeId, value: Vec<u8>, ttl_secs: u64) {
         // Store locally first.
-        self.inner.lock().unwrap().store.insert(key, value.clone(), ttl_secs);
+        self.inner.lock().unwrap_or_else(|e| e.into_inner()).store.insert(key, value.clone(), ttl_secs);
 
         // Iterative node lookup to find the k closest nodes.
         let closest = self.iterative_find_node(key).await;
@@ -363,14 +363,14 @@ impl DhtNode {
     /// Iterative FIND_VALUE lookup across the DHT.
     pub async fn dht_get(&self, key: NodeId) -> Option<Vec<u8>> {
         // Check local storage first.
-        if let Some(v) = self.inner.lock().unwrap().store.get(&key).cloned() {
+        if let Some(v) = self.inner.lock().unwrap_or_else(|e| e.into_inner()).store.get(&key).cloned() {
             return Some(v);
         }
 
         let mut asked: HashSet<NodeId> = HashSet::new();
         asked.insert(self.id()); // don't re-ask ourselves
 
-        let mut candidates: Vec<NodeInfo> = self.inner.lock().unwrap()
+        let mut candidates: Vec<NodeInfo> = self.inner.lock().unwrap_or_else(|e| e.into_inner())
             .routing.find_closest(&key, K);
 
         loop {
@@ -391,12 +391,11 @@ impl DhtNode {
                     }
                     Some(DhtMsg::FindValueResp { value: None, closer, .. }) => {
                         for c in closer {
-                            if !asked.contains(&c.id) {
-                                if !candidates.iter().any(|n| n.id == c.id) {
+                            if !asked.contains(&c.id)
+                                && !candidates.iter().any(|n| n.id == c.id) {
                                     candidates.push(c);
                                     found_closer = true;
                                 }
-                            }
                         }
                     }
                     _ => {}
@@ -433,7 +432,7 @@ impl DhtNode {
 
     /// Returns a list of all relay announcements stored locally (for scanning).
     pub fn local_relays(&self) -> Vec<RelayAnnounce> {
-        let guard = self.inner.lock().unwrap();
+        let guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         guard.store.entries.values()
             .filter(|(_, exp)| *exp > now_secs())
             .filter_map(|(v, _)| bincode::deserialize::<RelayAnnounce>(v).ok())
@@ -444,13 +443,13 @@ impl DhtNode {
     // ── Internal ──────────────────────────────────────────────────────────────
 
     fn my_info(&self) -> NodeInfo {
-        self.inner.lock().unwrap().info.clone()
+        self.inner.lock().unwrap_or_else(|e| e.into_inner()).info.clone()
     }
 
     /// Send an RPC and wait for the response (identified by `rpc_id`).
     async fn send_rpc(&self, addr: SocketAddr, msg: DhtMsg, rpc_id: u64) -> Option<DhtMsg> {
         let (tx, rx) = oneshot::channel();
-        self.inner.lock().unwrap().pending.insert(rpc_id, tx);
+        self.inner.lock().unwrap_or_else(|e| e.into_inner()).pending.insert(rpc_id, tx);
 
         let bytes = bincode::serialize(&msg).ok()?;
         self.socket.send_to(&bytes, addr).await.ok()?;
@@ -458,7 +457,7 @@ impl DhtNode {
         match timeout(RPC_TIMEOUT, rx).await {
             Ok(Ok(resp)) => Some(resp),
             _ => {
-                self.inner.lock().unwrap().pending.remove(&rpc_id);
+                self.inner.lock().unwrap_or_else(|e| e.into_inner()).pending.remove(&rpc_id);
                 None
             }
         }
@@ -469,7 +468,7 @@ impl DhtNode {
         let mut asked: HashSet<NodeId> = HashSet::new();
         asked.insert(self.id());
 
-        let mut candidates: Vec<NodeInfo> = self.inner.lock().unwrap()
+        let mut candidates: Vec<NodeInfo> = self.inner.lock().unwrap_or_else(|e| e.into_inner())
             .routing.find_closest(&target, K);
 
         loop {
@@ -525,19 +524,37 @@ impl DhtNode {
 
                         // Update routing table with sender.
                         {
-                            let mut g = inner.lock().unwrap();
+                            let mut g = inner.lock().unwrap_or_else(|e| e.into_inner());
                             let sender = msg.sender().clone();
                             g.routing.update(sender);
                         }
 
                         if msg.is_response() {
                             // Route to waiting oneshot.
-                            let tx = inner.lock().unwrap().pending.remove(&msg.rpc_id());
+                            let tx = inner.lock().unwrap_or_else(|e| e.into_inner()).pending.remove(&msg.rpc_id());
                             if let Some(tx) = tx { let _ = tx.send(msg); }
                         } else {
                             // Handle inbound request and send reply.
                             handle_request(&socket_send, &inner, msg, src).await;
                         }
+                    }
+                }
+            }
+        });
+    }
+
+    fn spawn_store_pruner(
+        &self,
+        inner: Arc<Mutex<DhtNodeInner>>,
+        shutdown_tx: broadcast::Sender<()>,
+    ) {
+        let mut shutdown_rx = shutdown_tx.subscribe();
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    _ = shutdown_rx.recv() => break,
+                    _ = tokio::time::sleep(Duration::from_secs(60)) => {
+                        inner.lock().unwrap_or_else(|e| e.into_inner()).store.prune();
                     }
                 }
             }
@@ -560,7 +577,7 @@ async fn handle_request(
     _src: SocketAddr,
 ) {
     let reply: Option<DhtMsg> = {
-        let mut g = inner.lock().unwrap();
+        let mut g = inner.lock().unwrap_or_else(|e| e.into_inner());
         let my_info = g.info.clone();
         match &msg {
             DhtMsg::Ping { rpc_id, .. } => {
@@ -583,11 +600,12 @@ async fn handle_request(
         }
     };
 
-    if let Some(reply) = reply {
-        // Determine destination from msg sender.
-        let dst = msg.sender().addr;
+if let Some(reply) = reply {
+        // Reply to the datagram's actual source, not the peer's advertised
+        // address (which is loopback or 0.0.0.0 when bound to an ephemeral /
+        // wildcard socket on another host).
         if let Ok(bytes) = bincode::serialize(&reply) {
-            let _ = socket.send_to(&bytes, dst).await;
+            let _ = socket.send_to(&bytes, _src).await;
         }
     }
 }
@@ -668,12 +686,10 @@ fn now_secs() -> u64 {
 }
 
 fn random_u64() -> u64 {
-    use std::collections::hash_map::DefaultHasher;
-    use std::hash::{Hash, Hasher};
-    let mut h = DefaultHasher::new();
-    Instant::now().hash(&mut h);
-    std::thread::current().id().hash(&mut h);
-    h.finish()
+    use rand::RngCore;
+    let mut bytes = [0u8; 8];
+    rand::rngs::OsRng.fill_bytes(&mut bytes);
+    u64::from_le_bytes(bytes)
 }
 
 // ---------------------------------------------------------------------------
@@ -794,3 +810,6 @@ mod tests {
         assert!(rec.verify(), "record must pass verification");
     }
 }
+
+
+

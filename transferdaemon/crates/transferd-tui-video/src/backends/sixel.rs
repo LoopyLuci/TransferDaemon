@@ -23,7 +23,7 @@ impl SixelBackend {
         // so round up to multiple of 6).
         let pw = cols as u32;
         let ph_raw = rows as u32 * 2;
-        let ph = ((ph_raw + 5) / 6) * 6; // round up to multiple of 6
+        let ph = ph_raw.div_ceil(6) * 6;
 
         let scaled = image::imageops::resize(frame, pw, ph, FilterType::Triangle);
 
@@ -40,9 +40,9 @@ fn encode_sixel(img: &RgbaImage, w: u32, h: u32) -> String {
 
     // Emit palette definitions.  Colors are R,G,B in 0-100 scale.
     for idx in 0u16..216 {
-        let r100 = ((idx / 36)       * 20) as u16;
-        let g100 = (((idx / 6) % 6)  * 20) as u16;
-        let b100 = ((idx % 6)        * 20) as u16;
+        let r100 = (idx / 36)       * 20;
+        let g100 = ((idx / 6) % 6)  * 20;
+        let b100 = (idx % 6)        * 20;
         out.push_str(&format!("#{idx};2;{r100};{g100};{b100}"));
     }
 
