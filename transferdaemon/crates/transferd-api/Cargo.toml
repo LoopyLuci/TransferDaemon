@@ -24,4 +24,7 @@ futures-core  = "0.3"
 
 [build-dependencies]
 tonic-build = "0.11"
+# Bundles a protoc binary so the build is hermetic (no system protoc needed on
+# CI runners / other machines).
+protoc-bin-vendored = "3"
 
