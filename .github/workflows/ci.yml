@@ -29,7 +29,7 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: stable
-      - run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libappindicator3-dev libglib2.0-dev
+      - run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libappindicator3-dev libglib2.0-dev libasound2-dev libpulse-dev
       - run: cargo check --workspace --all-features
 
   fmt:
@@ -50,7 +50,7 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: stable
-      - run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libappindicator3-dev libglib2.0-dev
+      - run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libappindicator3-dev libglib2.0-dev libasound2-dev libpulse-dev
       - run: cargo test --workspace --all-features
 
   clippy:
@@ -61,7 +61,7 @@ jobs:
         with:
           toolchain: stable
           components: clippy
-      - run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libappindicator3-dev libglib2.0-dev
+      - run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libappindicator3-dev libglib2.0-dev libasound2-dev libpulse-dev
       - run: cargo clippy --workspace --all-features -- -D warnings
 
   build:
@@ -75,7 +75,7 @@ jobs:
         with:
           toolchain: stable
       - if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libappindicator3-dev libglib2.0-dev
+        run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libappindicator3-dev libglib2.0-dev libasound2-dev libpulse-dev
       - run: cargo build --release --workspace
       - uses: actions/upload-artifact@v4
         with:
@@ -89,7 +89,7 @@ jobs:
       - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
           toolchain: stable
-      - run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libappindicator3-dev libglib2.0-dev
+      - run: sudo apt-get update && sudo apt-get install -y libgtk-3-dev libappindicator3-dev libglib2.0-dev libasound2-dev libpulse-dev
       - run: cargo bench --workspace
 
   fuzz:
