@@ -187,7 +187,14 @@ mod tests {
         let ask = encode(Tag::Challenge, &()).unwrap_or_default();
         sink.send(Message::Binary(ask.into())).await.unwrap();
         let (challenge, difficulty) = loop {
-            if let Some(Ok(Message::Binary(f))) = source.next().await {
+            let frame = tokio::time::timeout(
+                Duration::from_secs(5),
+                source.next(),
+            )
+            .await
+            .expect("challenge reply must arrive within 5s")
+            .expect("stream must stay open");
+            if let Some(Ok(Message::Binary(f))) = frame {
                 if let Some((Tag::Challenge, body)) = split(&f) {
                     let c: ChallengeMsg = bincode::deserialize(body).unwrap();
                     break (c.challenge, c.difficulty);
