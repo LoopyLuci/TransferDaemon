@@ -7,6 +7,10 @@ edition = "2021"
 name = "relayd"
 path = "src/main.rs"
 
+[[bin]]
+name = "relayd-ws"
+path = "src/bin/relayd-ws.rs"
+
 [lib]
 name = "relayd"
 path = "src/lib.rs"
@@ -21,6 +25,8 @@ bincode  = { workspace = true }
 blake3   = { workspace = true }
 rand     = "0.8"
 thiserror = { workspace = true }
+tokio-tungstenite = "0.24"
+futures-util = "0.3"
 
 [dev-dependencies]
 tokio    = { workspace = true }

@@ -105,3 +105,28 @@ TRANSFERD_DHT_BOOTSTRAP=<public-ip>:7901
   `daemon.config` points at the public address).
 - Two `dhtd` nodes (a small DHT mesh) can be run for redundancy; clients accept
   a comma-separated `TRANSFERD_DHT_BOOTSTRAP`.
+## WebSocket relay + Cloudflare free tier
+
+**elayd-ws** (new) is the same blind relay over WebSocket frames (same
+elayd::protocol wire format, so the same client logic speaks both). Use it
+when UDP is blocked:
+
+`sh
+RELAYD_WS_PORT=5902 RELAYD_WS_DIFFICULTY=20 cargo run -p relayd --bin relayd-ws
+`
+
+**Cloudflare Worker (free tier, zero servers)** — deploy/cloudflare-worker/
+(worker.js + wrangler.toml) implements the relay as a Durable Object on
+Cloudflare's edge. It forwards the exact bincode frames (elayd::protocol)
+between WebSocket sessions, keyed by opaque token, so a client that speaks
+elayd-ws speaks the Worker too. PoW enforcement is intentionally off there
+(Cloudflare's edge rate-limits + a per-IP bucket are the free-tier abuse
+barrier); self-hosted elayd/elayd-ws keep full BLAKE3 PoW.
+
+## Multi-relay + auto-routing
+
+TRANSFERD_RELAY_ADDR accepts a comma-separated list. The daemon registers its
+identity token on every relay and publishes all of them to the DHT; a session
+builds one lane per relay it shares with the peer, and the ATE fails over
+between them when a relay dies (see docs/NODE_SYSTEM.md). A peer reachable
+through relays A, B, C stays connected while any one of them is alive.
