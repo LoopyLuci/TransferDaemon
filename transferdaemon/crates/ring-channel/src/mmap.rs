@@ -68,7 +68,7 @@ impl MappedRegion {
     fn new_linux(ring_area: usize, data_area_size: usize, total: usize) -> Result<Self, String> {
         use libc::*;
         unsafe {
-            let name = std::ffi::CString::new("vbus_dmi_ring").unwrap();
+            let name = std::ffi::CString::new("vbus_dmi_ring").expect("static name has no NUL bytes");
             let fd = memfd_create(name.as_ptr(), MFD_ALLOW_SEALING);
             if fd < 0 {
                 return Err(format!("memfd_create: {}", std::io::Error::last_os_error()));
