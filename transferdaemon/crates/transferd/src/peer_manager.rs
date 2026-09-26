@@ -431,23 +431,26 @@ pub async fn establish_tcp_session(
     ))
 }
 
-/// Establish a relay session to a peer via the daemon's `RelayHub`.
+/// Establish a relay session to a peer across one or more relays.
 ///
-/// Runs the authenticated hybrid handshake over the relay (or reuses an
-/// existing session), verifies the peer's authenticated identity against the
-/// contact's public key, then builds a send-only `RelayLane`. Returns the
-/// session together with the peer's verified 2624-byte hybrid public key.
+/// Runs the authenticated hybrid handshake ONCE over the first relay (or
+/// reuses an existing session), verifies the peer's authenticated identity
+/// against the contact's public key, then builds a `RelayLane` for EVERY
+/// shared relay. The ATE ranks the lanes and fails over between relays, so a
+/// peer reachable through relays A, B, C stays connected while any two of them
+/// are alive. Returns the session together with the peer's verified 2624-byte
+/// hybrid public key.
 pub async fn establish_relay_session(
     contact_id: &str,
-    relay_addr: &str,
+    relay_addrs: &[std::net::SocketAddr],
     peer_token_hex: &str,
     state: &std::sync::Arc<parking_lot::Mutex<crate::state::DaemonState>>,
 ) -> Result<(PeerSession, Vec<u8>), String> {
     let peer_token: [u8; 32] = hex_decode(peer_token_hex)
         .ok_or_else(|| format!("invalid relay peer token: {peer_token_hex}"))?;
-    let relay_addr: std::net::SocketAddr = relay_addr
-        .parse()
-        .map_err(|e| format!("invalid relay address {relay_addr}: {e}"))?;
+    if relay_addrs.is_empty() {
+        return Err("no shared relay".to_string());
+    }
 
     let identity = state
         .lock()
@@ -459,14 +462,35 @@ pub async fn establish_relay_session(
         .relay_hub
         .clone()
         .ok_or_else(|| "relay not enabled on this daemon".to_string())?;
-    if hub.relay_addr() != relay_addr {
-        return Err(format!(
-            "relay mismatch: daemon is on {}, contact wants {relay_addr}",
-            hub.relay_addr()
-        ));
+    for addr in relay_addrs {
+        if !hub.has_relay(*addr) {
+            return Err(format!("relay mismatch: daemon is not registered on {addr}"));
+        }
     }
 
-    let peer_hybrid_pk = hub.initiate(peer_token, &identity).await?;
+    // One handshake, routed through the first relay that RESPONDS (a dead
+    // relay must not block a session that has other live paths). The session's
+    // keys are then used over every relay lane (the token is identity-derived,
+    // so it is the same on all relays). The working relay is moved first so the
+    // ATE's equal-RTT tie-break prefers a live path.
+    let mut peer_hybrid_pk = None;
+    let mut last_err = "all relays failed the handshake".to_string();
+    let mut working = relay_addrs[0];
+    for addr in relay_addrs {
+        match hub.initiate(peer_token, &identity, *addr).await {
+            Ok(pk) => {
+                peer_hybrid_pk = Some(pk);
+                working = *addr;
+                break;
+            }
+            Err(e) => last_err = e,
+        }
+    }
+    let peer_hybrid_pk = peer_hybrid_pk.ok_or(last_err)?;
+    let mut relay_order: Vec<std::net::SocketAddr> = relay_addrs.to_vec();
+    if let Some(pos) = relay_order.iter().position(|a| *a == working) {
+        relay_order.swap(0, pos);
+    }
     let peer_vk = transferd_crypto::identity::HybridVerifyingKey::from_bytes(&peer_hybrid_pk)
         .ok_or_else(|| "invalid peer hybrid identity from relay".to_string())?;
     let peer_hybrid_pk = verify_peer_identity(contact_id, &peer_vk)?;
@@ -476,19 +500,23 @@ pub async fn establish_relay_session(
         .ok_or_else(|| "relay session not established".to_string())?;
     let self_token = hub.self_token();
 
-    let lane = transferd_core::lanes::relay_lane::RelayLane::new(
-        0x52454C59, // "RELY" lane ID
-        relay_addr,
-        self_token,
-        peer_token,
-        &send_key,
-        &recv_key,
-        false, // registration is owned by the hub
-    )
-    .await
-    .map_err(|e| format!("Failed to create relay lane: {e}"))?;
+    let mut lanes: Vec<Box<dyn transferd_core::transport::TransportLane>> = Vec::new();
+    for (idx, relay_addr) in relay_order.iter().enumerate() {
+        let lane = transferd_core::lanes::relay_lane::RelayLane::new(
+            0x52454C59 + idx as u32, // "RELY"+n lane ID
+            *relay_addr,
+            self_token,
+            peer_token,
+            &send_key,
+            &recv_key,
+            false, // registration is owned by the hub
+        )
+        .await
+        .map_err(|e| format!("Failed to create relay lane: {e}"))?;
+        lanes.push(Box::new(lane));
+    }
 
-    tracing::info!("[PeerManager] relay session established for {contact_id} via {relay_addr}");
+    tracing::info!("[PeerManager] relay session established for {contact_id} via {} relays", relay_addrs.len());
     let root = hub
         .session_root(peer_token)
         .await
@@ -496,7 +524,7 @@ pub async fn establish_relay_session(
     Ok((
         PeerSession::with_ratchet(
             SessionId(hex_to_bytes(contact_id)),
-            vec![Box::new(lane)],
+            lanes,
             &root,
             true,
         ),

@@ -161,7 +161,8 @@ async fn peer_discovers_contact_via_dht_and_delivers() {
 
     // Sanity: Alice can resolve Bob's endpoint purely from his public key.
     let resolved = resolve_peer(&dht_a, &recv_pk).await.expect("must resolve Bob via DHT");
-    assert!(resolved.starts_with("relay://"), "resolved address must be a relay URI: {resolved}");
+    assert!(!resolved.is_empty(), "resolved endpoint list must be non-empty");
+    assert!(resolved.iter().any(|a| a.starts_with("relay://")), "resolved addresses must be relay URIs: {resolved:?}");
 
     // Alice adds Bob WITHOUT an address — discovery must fill it in.
     {

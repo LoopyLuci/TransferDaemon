@@ -82,21 +82,33 @@ pub fn signing_key_from_phrase(phrase: &str) -> Option<SigningKey> {
 pub async fn publish_endpoint_if_ready(
     state: &std::sync::Arc<parking_lot::Mutex<crate::state::DaemonState>>,
 ) {
-    let (pk, phrase, relay_addr, token) = {
+    let (pk, phrase, relays) = {
         let s = state.lock();
         let Some(id) = &s.identity else { return };
         let Some(hub) = &s.relay_hub else { return };
         let Some(_dht) = &s.dht else { return };
-        (id.public_key.clone(), id.phrase.clone(), hub.relay_addr(), hub.self_token())
+        (id.public_key.clone(), id.phrase.clone(), hub.relay_addrs())
     };
+    if relays.is_empty() {
+        return;
+    }
     let Some(key) = signing_key_from_phrase(&phrase) else {
         tracing::warn!("[dht] could not derive signing key from phrase");
         return;
     };
+    let relays: Vec<(String, String)> = relays
+        .into_iter()
+        .map(|addr| {
+            let token = crate::relay_hub::relay_token_for(&pk);
+            (addr.to_string(), hex::encode(token))
+        })
+        .collect();
+    let (first_addr, first_token) = &relays[0];
     let ep = PeerEndpoint {
         public_key: pk.clone(),
-        relay_addr: relay_addr.to_string(),
-        token: hex::encode(token),
+        relay_addr: first_addr.clone(),
+        token: first_token.clone(),
+        relays,
         published_at: std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -111,11 +123,11 @@ pub async fn publish_endpoint_if_ready(
     }
 }
 
-/// Resolve a contact's relay endpoint from the DHT. Returns a `relay://` address.
+/// Resolve a contact's relay endpoints from the DHT. Returns all `relay://` addresses.
 pub async fn resolve_peer(
     dht: &Arc<transferd_relay::DhtNode>,
     public_key_hex: &str,
-) -> Option<String> {
+) -> Option<Vec<String>> {
     PeerEndpoint::resolve(dht.as_ref(), public_key_hex).await
 }
 
@@ -124,10 +136,17 @@ pub async fn resolve_peer(
 pub struct PeerEndpoint {
     /// 64-hex Ed25519 public key of the peer.
     pub public_key: String,
-    /// `host:port` of a relay that will forward to this peer.
+    /// Legacy single `host:port` relay (kept for old peers; always mirrors the
+    /// first entry of `relays` on new records).
+    #[serde(default)]
     pub relay_addr: String,
-    /// Hex-encoded 32-byte relay token the peer registered.
+    /// Legacy single hex-encoded 32-byte relay token.
+    #[serde(default)]
     pub token: String,
+    /// All relays this peer is registered on: `(relay_addr, token)` pairs.
+    /// A sender may use ANY of them — reachability never depends on one relay.
+    #[serde(default)]
+    pub relays: Vec<(String, String)>,
     /// Unix timestamp (secs) when the record was created.
     pub published_at: u64,
     /// Ed25519 signature over the record with this field zeroed.
@@ -135,6 +154,17 @@ pub struct PeerEndpoint {
 }
 
 impl PeerEndpoint {
+    /// Every (relay_addr, token) pair the peer is reachable through.
+    pub fn relay_endpoints(&self) -> Vec<(String, String)> {
+        if !self.relays.is_empty() {
+            self.relays.clone()
+        } else if !self.relay_addr.is_empty() && !self.token.is_empty() {
+            vec![(self.relay_addr.clone(), self.token.clone())]
+        } else {
+            Vec::new()
+        }
+    }
+
     /// The DHT key under which this peer's endpoint is stored.
     pub fn dht_key(public_key_hex: &str) -> [u8; 32] {
         let pk_hash = blake3::hash(public_key_hex.as_bytes());
@@ -183,9 +213,9 @@ impl PeerEndpoint {
 
     /// Look up a peer's relay endpoint by their public key.
     ///
-    /// Returns a `relay://host:port/<token>` address when a valid, unexpired,
-    /// correctly-signed record is found.
-    pub async fn resolve(dht: &transferd_relay::DhtNode, public_key_hex: &str) -> Option<String> {
+    /// Returns every valid `relay://host:port/<token>` address for the peer,
+    /// so a sender can route through ANY relay the peer is registered on.
+    pub async fn resolve(dht: &transferd_relay::DhtNode, public_key_hex: &str) -> Option<Vec<String>> {
         let key = Self::dht_key(public_key_hex);
         let value = dht.dht_get(key).await?;
         let ep: PeerEndpoint = bincode::deserialize(&value).ok()?;
@@ -202,7 +232,12 @@ impl PeerEndpoint {
         if now.saturating_sub(ep.published_at) > 600 {
             return None; // stale
         }
-        Some(format!("relay://{}/{}", ep.relay_addr, ep.token))
+        let addrs: Vec<String> = ep
+            .relay_endpoints()
+            .into_iter()
+            .map(|(addr, token)| format!("relay://{addr}/{token}"))
+            .collect();
+        if addrs.is_empty() { None } else { Some(addrs) }
     }
 }
 
@@ -227,6 +262,7 @@ mod tests {
             public_key: pk_hex.clone(),
             relay_addr: "relay.example:7777".into(),
             token: hex::encode([7u8; 32]),
+            relays: vec![("relay.example:7777".into(), hex::encode([7u8; 32]))],
             published_at: 1_000_000,
             signature: Vec::new(),
         };
@@ -243,6 +279,7 @@ mod tests {
             public_key: pk_hex,
             relay_addr: "relay.example:7777".into(),
             token: hex::encode([7u8; 32]),
+            relays: vec![("relay.example:7777".into(), hex::encode([7u8; 32]))],
             published_at: 1_000_000,
             signature: Vec::new(),
         };
@@ -259,6 +296,7 @@ mod tests {
             public_key: hex::encode(alice.verifying_key().to_bytes()),
             relay_addr: "relay.example:7777".into(),
             token: hex::encode([7u8; 32]),
+            relays: vec![("relay.example:7777".into(), hex::encode([7u8; 32]))],
             published_at: 1_000_000,
             signature: Vec::new(),
         };

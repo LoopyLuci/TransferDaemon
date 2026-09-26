@@ -66,46 +66,39 @@ async fn ensure_contact_session(state: &State, contact_id: &str, address: Option
         return true;
     }
 
-    // Resolve the endpoint address: explicit, or DHT-discovered by public key.
+    // Resolve the endpoint address(es): explicit, or DHT-discovered by public
+    // key (which may return MULTIPLE relays the peer is reachable through).
     // (The parking_lot guard is dropped before any await so the future stays Send.)
-    let resolved = match address {
-        Some(addr) => Some(addr.to_owned()),
+    let resolved: Vec<String> = match address {
+        Some(addr) => vec![addr.to_owned()],
         None => {
             let dht = { let s = state.lock(); s.dht.clone() };
             match dht {
                 Some(dht) => {
                     match crate::peer_discovery::resolve_peer(&dht, contact_id).await {
-                        Some(addr) => {
-                            tracing::info!("[grpc] discovered relay endpoint for {contact_id}");
-                            Some(addr)
+                        Some(addrs) => {
+                            tracing::info!("[grpc] discovered {} relay endpoint(s) for {contact_id}", addrs.len());
+                            addrs
                         }
-                        None => None,
+                        None => Vec::new(),
                     }
                 }
-                None => None,
+                None => Vec::new(),
             }
         }
     };
-    let Some(resolved) = resolved else { return false };
+    if resolved.is_empty() {
+        return false;
+    }
 
     // Policy steers which transports may be used.
     let policy = { let s = state.lock(); s.settings.get("conn.policy").cloned().unwrap_or_else(|| "auto".into()) };
-    let is_relay = resolved.starts_with("relay://");
 
-    let session = if is_relay {
-        if policy == "direct" {
-            tracing::info!("[grpc] policy=direct: skipping relay lane to {contact_id}");
-            return false;
-        }
-        let (relay_addr, token) = match resolved.strip_prefix("relay://").and_then(|r| r.split_once('/')) {
-            Some((a, t)) => (a, t),
-            None => {
-                tracing::warn!("[grpc] invalid relay address: {resolved}");
-                return false;
-            }
-        };
-        crate::peer_manager::establish_relay_session(contact_id, relay_addr, token, state).await
-    } else {
+    // Prefer a direct address when one is known; otherwise use the relay set.
+    let direct = resolved.iter().find(|a| !a.starts_with("relay://"));
+    let relays: Vec<&String> = resolved.iter().filter(|a| a.starts_with("relay://")).collect();
+
+    let session = if let Some(d) = direct {
         if policy == "relay" {
             tracing::info!("[grpc] policy=relay: skipping direct lane to {contact_id}");
             return false;
@@ -117,7 +110,37 @@ async fn ensure_contact_session(state: &State, contact_id: &str, address: Option
                 return false;
             }
         };
-        crate::peer_manager::establish_tcp_session(contact_id, &resolved, &identity).await
+        crate::peer_manager::establish_tcp_session(contact_id, d, &identity).await
+    } else if !relays.is_empty() {
+        if policy == "direct" {
+            tracing::info!("[grpc] policy=direct: skipping relay lane to {contact_id}");
+            return false;
+        }
+        // Keep only relays this daemon is ALSO registered on (a relay lane is
+        // only useful when both sides can reach the same relay).
+        let hub = { let s = state.lock(); s.relay_hub.clone() };
+        let mut shared: Vec<std::net::SocketAddr> = Vec::new();
+        let mut token = String::new();
+        for r in &relays {
+            if let Some((a, t)) = r.strip_prefix("relay://").and_then(|r| r.split_once('/')) {
+                if let Ok(addr) = a.parse::<std::net::SocketAddr>() {
+                    if hub.as_ref().map(|h| h.has_relay(addr)).unwrap_or(false) {
+                        shared.push(addr);
+                        token = t.to_string();
+                    }
+                }
+            }
+        }
+        if shared.is_empty() {
+            tracing::warn!(
+                "[grpc] no shared relay with {contact_id} among {} candidate(s)",
+                relays.len()
+            );
+            return false;
+        }
+        crate::peer_manager::establish_relay_session(contact_id, &shared, &token, state).await
+    } else {
+        return false;
     };
     match session {
         Ok((s, peer_hybrid_pk)) => {
