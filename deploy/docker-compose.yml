@@ -1,0 +1,36 @@
+# Hosted TransferDaemon relay stack: `relayd` (blind UDP relay) + `dhtd`
+# (DHT bootstrap node) for peers on the public Internet.
+#
+#   docker compose -f deploy/docker-compose.yml up -d
+#
+# Set PUBLIC_IP to the VPS's public address so the DHT bootstrap advertises a
+# reachable address (and so clients can publish relay:// endpoints that work).
+# Open UDP 5901 (relay) and 7901 (DHT) on the host firewall.
+
+services:
+  relayd:
+    build:
+      context: ..
+      dockerfile: deploy/relayd.Dockerfile
+    image: transferd-relay
+    restart: unless-stopped
+    ports:
+      - "5901:5901/udp"
+    environment:
+      # PoW difficulty = anti-abuse cost for registration. 20 (default) is a
+      # good public default; raise if the relay is being flooded.
+      RELAYD_PORT: "5901"
+      RELAYD_DIFFICULTY: "20"
+      RELAYD_TTL: "90"
+
+  dhtd:
+    image: transferd-relay
+    restart: unless-stopped
+    command: ["/usr/local/bin/dhtd"]
+    ports:
+      - "7901:7901/udp"
+    environment:
+      DHTD_BIND: "0.0.0.0:7901"
+      # MUST be the VPS's public address:port, otherwise peers route to
+      # 0.0.0.0 and discovery breaks.
+      DHTD_ADVERTISE: "${PUBLIC_IP:-127.0.0.1}:7901"

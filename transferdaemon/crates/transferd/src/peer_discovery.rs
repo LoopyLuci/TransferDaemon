@@ -28,7 +28,14 @@ pub async fn spawn_dht_node(public_key_hex: Option<String>) -> Option<Arc<transf
         }
     };
 
-    let node = match transferd_relay::DhtNode::start(&bind, node_id).await {
+    // When binding 0.0.0.0 / an ephemeral port, advertise an externally
+    // reachable address (e.g. `TRANSFERD_DHT_ADVERTISE=public-ip:7901`) so
+    // remote peers can route to this node.
+    let advertised = std::env::var("TRANSFERD_DHT_ADVERTISE")
+        .ok()
+        .and_then(|s| s.parse().ok());
+
+    let node = match transferd_relay::DhtNode::start_with_advertised(&bind, node_id, advertised).await {
         Ok(n) => Arc::new(n),
         Err(e) => {
             tracing::warn!("[dht] failed to start node: {e}");

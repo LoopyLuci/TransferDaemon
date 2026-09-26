@@ -269,14 +269,31 @@ pub struct DhtNode {
 impl DhtNode {
     // ── Constructor ───────────────────────────────────────────────────────────
 
-    /// Bind a UDP socket and start the receive loop.
+/// Bind a UDP socket and start the receive loop.
     ///
     /// `id` should be a blake3-derived 32-byte node ID unique to this instance.
+    /// The node advertises its bound address; when binding `0.0.0.0` (or an
+    /// ephemeral port) that address is NOT reachable by remote peers, so use
+    /// [`Self::start_with_advertised`] to advertise the externally-reachable
+    /// address instead (e.g. a public VPS IP).
     pub async fn start(bind_addr: &str, id: NodeId) -> std::io::Result<Self> {
+        Self::start_with_advertised(bind_addr, id, None).await
+    }
+
+    /// Like [`Self::start`], but advertises `advertised` (e.g. a public IP) in
+    /// routing/NodeInfo messages instead of the bound address. This is what a
+    /// hosted bootstrap node must use: it binds `0.0.0.0:port` and advertises
+    /// `public-ip:port` so remote peers can route to it.
+    pub async fn start_with_advertised(
+        bind_addr: &str,
+        id: NodeId,
+        advertised: Option<SocketAddr>,
+    ) -> std::io::Result<Self> {
         let socket = UdpSocket::bind(bind_addr).await?;
         let local_addr = socket.local_addr()?;
+        let node_addr = advertised.unwrap_or(local_addr);
         let socket = Arc::new(socket);
-        let inner = Arc::new(Mutex::new(DhtNodeInner::new(id, local_addr)));
+        let inner = Arc::new(Mutex::new(DhtNodeInner::new(id, node_addr)));
         let (shutdown_tx, _) = broadcast::channel(8);
 
         let node = Self { socket: socket.clone(), inner: inner.clone(), shutdown_tx: shutdown_tx.clone() };
@@ -750,7 +767,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn store_and_retrieve_via_dht() {
+async fn store_and_retrieve_via_dht() {
         let id_a = derive_node_id(&[0xA2u8; 32]);
         let id_b = derive_node_id(&[0xB2u8; 32]);
 
@@ -770,6 +787,33 @@ mod tests {
         let retrieved = b.dht_get(key).await;
         assert_eq!(retrieved.as_deref(), Some(value.as_slice()),
             "B must retrieve the value stored by A");
+    }
+
+    #[tokio::test]
+    async fn advertised_address_is_used_for_routing() {
+        // A hosted bootstrap node binds the wildcard address (reachable on any
+        // interface) but advertises an externally-reachable address. Peers must
+        // route to the ADVERTISED address, not the bound `0.0.0.0` one.
+        let probe = tokio::net::UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let port = probe.local_addr().unwrap().port();
+        drop(probe);
+
+        let id_a = derive_node_id(&[0x11u8; 32]);
+        let id_b = derive_node_id(&[0x22u8; 32]);
+        let advertised = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+        let a = DhtNode::start_with_advertised(
+            &format!("0.0.0.0:{port}"), id_a, Some(advertised),
+        ).await.unwrap();
+        assert_eq!(a.addr(), advertised, "node must advertise the override, not 0.0.0.0");
+
+        let b = DhtNode::start("127.0.0.1:0", id_b).await.unwrap();
+        b.bootstrap(vec![a.addr()]).await;
+
+        let key = [0x55u8; 32];
+        a.dht_store(key, b"via-advertised".to_vec(), 300).await;
+        let retrieved = b.dht_get(key).await;
+        assert_eq!(retrieved.as_deref(), Some(b"via-advertised".as_slice()),
+            "B must reach A through its advertised address");
     }
 
     #[tokio::test]
