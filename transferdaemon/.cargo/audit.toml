@@ -1,0 +1,55 @@
+# cargo-audit configuration.
+#
+# The advisories below are intentionally acknowledged with a documented reason.
+# Keep the ignore list minimal: an advisory must either have NO patched release
+# within the compatible version range, or be an informational "unmaintained"
+# notice with no functional impact.
+
+[advisories]
+ignore = [
+    # h2 0.3.27 — unbounded empty DATA frames (DoS in the HTTP/2 library used by
+    # tonic/hyper). No patched h2 0.3.x exists; the fix landed in h2 0.4, which
+    # requires migrating hyper 0.14 -> hyper 1 / tonic 0.12. Tracked migration.
+    "RUSTSEC-2026-0258",
+
+    # rsa 0.9.10 — Marvin timing side-channel on RSA decryption. The fix is only
+    # in rsa 0.10 (release candidate); 0.9.x has no backport. rsa is pulled by the
+    # ssh-key/tor stack, which only builds when the `tor-transport` feature is
+    # enabled (never in the default build). No RSA secrets are used by the core
+    # protocol (X25519/ML-KEM only).
+    "RUSTSEC-2023-0071",
+
+    # bincode 1.3.3 / 2.0.1 — unmaintained. bincode is the core wire format used
+    # by every protocol envelope; migrating to a maintained fork (bincode 3) is a
+    # tracked, separate task and cannot be done as a dependency bump.
+    "RUSTSEC-2025-0141",
+
+    # derivative 2.2.0 — unmaintained. Informational; no known security impact.
+    "RUSTSEC-2024-0388",
+
+    # instant 0.1.13 — unmaintained. Informational; web-time is the replacement
+    # but it is a transitive dependency of the UI stack (winit/glutin).
+    "RUSTSEC-2024-0384",
+
+    # paste 1.0.15 — no longer maintained. Informational; a tiny macro crate.
+    "RUSTSEC-2024-0436",
+
+    # proc-macro-error 1.0.4 — unmaintained. Informational; pulled transitively by
+    # older macro crates in the dependency tree.
+    "RUSTSEC-2024-0370",
+
+    # ttf-parser 0.25.1 — unmaintained. Informational; used by the font rasterizer
+    # in the GUI. The maintained fork (owned_ttf_parser) is already in the tree.
+    "RUSTSEC-2026-0192",
+
+    # glib 0.18.5 — VariantStrIter Iterator unsoundness. No patched glib 0.18.x;
+    # the fix is in glib 0.19+, which requires upgrading the whole gtk-rs stack
+    # (pulled by rfd's GTK backend on Linux). Tracked migration.
+    "RUSTSEC-2024-0429",
+
+    # lru 0.12.5 — IterMut stacked-borrows violation + panic-unsafe `pop()`.
+    # lru is pinned at 0.12 by ratatui 0.27 (the TUI framework) and 0.13 is not
+    # a compatible bump; the affected methods are not exercised by our stack.
+    "RUSTSEC-2026-0002",
+    "RUSTSEC-2026-0253",
+]

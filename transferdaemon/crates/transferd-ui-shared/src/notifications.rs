@@ -24,14 +24,16 @@ pub fn send_notification(title: &str, body: &str, _level: NotificationLevel) {
      .body(body)
      .appname("TransferDaemon");
 
-    // Set urgency/priority based on level
-    match _level {
-        NotificationLevel::Error => n.urgency(notify_rust::Urgency::Critical),
-        _ => n.urgency(notify_rust::Urgency::Normal),
-    };
-
-    // Timeout: notifications auto-dismiss after 5 seconds
-    n.timeout(5000);
+    // urgency/timeout are Linux (D-Bus) specific in notify-rust; macOS uses
+    // the default notification style.
+    #[cfg(target_os = "linux")]
+    {
+        match _level {
+            NotificationLevel::Error => n.urgency(notify_rust::Urgency::Critical),
+            _ => n.urgency(notify_rust::Urgency::Normal),
+        };
+        n.timeout(5000);
+    }
 
     let _ = n.show();
 }
