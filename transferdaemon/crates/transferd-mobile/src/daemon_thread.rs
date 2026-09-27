@@ -1,6 +1,6 @@
 //! Background thread that runs the TransferDaemon gRPC server.
 
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use tokio::runtime::Handle;
 
 /// Handle to the daemon's tokio runtime.
@@ -19,7 +19,7 @@ const CONFIG_KEYS: &[&str] = &[
 /// Read `<config_dir>/TransferDaemon/daemon.config` (`KEY=VALUE` lines) and
 /// apply it as env defaults. The explicit process env wins; a missing file is
 /// a no-op.
-fn apply_config(config_dir: Option<std::path::PathBuf>) {
+fn apply_config(config_dir: &Option<std::path::PathBuf>) {
     let Some(dir) = config_dir else { return };
     let path = dir.join("TransferDaemon").join("daemon.config");
     let Ok(content) = std::fs::read_to_string(&path) else { return };
@@ -46,7 +46,7 @@ pub fn spawn(socket_path: String) {
 /// `<config_dir>/TransferDaemon/daemon.config` (the Android app has no way to
 /// set process env vars, so settings are shipped as a key-value file).
 pub fn spawn_with_config(socket_path: String, config_dir: Option<std::path::PathBuf>) {
-    apply_config(config_dir);
+    apply_config(&config_dir);
     // Surface the daemon's tracing (relay/DHT/session) on-device: Android
     // routes stderr to logcat under `RustStdoutStderr`.
     let _ = tracing_subscriber::fmt()
@@ -75,7 +75,22 @@ pub fn spawn_with_config(socket_path: String, config_dir: Option<std::path::Path
             let addr = format!("127.0.0.1:{port}").parse().expect("parse addr");
             eprintln!("[daemon] starting on {addr} (socket hint: {socket_path})");
 
-            let state = transferd_lib::new_state();
+            // Persist the identity to the app's own directory so it survives
+            // process restarts (Android has no env; the store file lives next
+            // to the config). Falls back to volatile state if the dir is gone.
+            let state = match &config_dir {
+                Some(dir) => {
+                    let store = dir.join("TransferDaemon").join("user_data.enc");
+                    eprintln!("[daemon] persistent store: {}", store.display());
+                    Arc::new(parking_lot::Mutex::new(
+                        transferd_lib::state::DaemonState::with_store(
+                            store,
+                            transferd_store::StoreParams::production(),
+                        ),
+                    ))
+                }
+                None => transferd_lib::new_state(),
+            };
             // Raise a platform notification for each new inbound 1:1 message.
             transferd_lib::state::set_inbound_notify(|sender, text, contact_id| {
                 crate::notifications::notify_incoming(sender, text, contact_id);
