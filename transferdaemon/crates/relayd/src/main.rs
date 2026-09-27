@@ -41,9 +41,17 @@ async fn main() -> std::io::Result<()> {
     let addr: SocketAddr = format!("0.0.0.0:{port}").parse()
         .expect("configured address is valid");
     let socket = Arc::new(UdpSocket::bind(addr).await?);
-    println!("relayd: listening on {addr} (difficulty={difficulty}, ttl={ttl_secs}s)");
+    let limits = relayd::limits::RelayLimits::from_env("RELAYD_");
+    println!(
+        "relayd: listening on {addr} (difficulty={difficulty}, ttl={ttl_secs}s, \
+         max_blob={} day={} week={} month={})",
+        limits.max_blob_bytes.map(relayd::limits::format_bytes).unwrap_or_else(|| "unlimited".into()),
+        limits.daily_bytes.map(relayd::limits::format_bytes).unwrap_or_else(|| "unlimited".into()),
+        limits.weekly_bytes.map(relayd::limits::format_bytes).unwrap_or_else(|| "unlimited".into()),
+        limits.monthly_bytes.map(relayd::limits::format_bytes).unwrap_or_else(|| "unlimited".into()),
+    );
 
-    let relay = Arc::new(Mutex::new(Relay::new(difficulty, ttl_secs, MAX_PAYLOAD)));
+    let relay = Arc::new(Mutex::new(Relay::with_limits(difficulty, ttl_secs, MAX_PAYLOAD, limits)));
 
     // Background task: prune expired entries.
     {

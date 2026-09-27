@@ -85,6 +85,33 @@ TRANSFERD_DHT_BIND=127.0.0.1:7901
 TRANSFERD_DHT_BOOTSTRAP=<public-ip>:7901
 ```
 
+## Data-transfer limits (presets + custom) at every layer
+
+Every layer enforces what it can see (`relayd::limits`, crates/relayd/src/limits.rs):
+
+- **Relay nodes** (relayd / relayd-ws / the Worker) enforce a hard per-blob cap
+  and per-token daily/weekly/monthly bandwidth budgets; an over-size or
+  over-budget FORWARD is refused before the relay commits bandwidth:
+  ```
+  RELAYD_MAX_BLOB_BYTES=1073741824      RELAYD_MAX_MB_PER_DAY=500
+  RELAYD_MAX_MB_PER_WEEK=2000           RELAYD_MAX_MB_PER_MONTH=8000
+  # relayd-ws uses RELAYD_WS_*; the Worker uses MAX_BLOB_BYTES / MAX_MB_PER_*
+  ```
+  Preset quick-picks exist for per-message caps: 1 MB, 5, 10, 25, 50, 100, 250,
+  500 MB, 1 GB, 5 GB (see `relayd::limits::Preset`).
+- **Peers** advertise their `TransferLimits` (per-content-type caps + budgets)
+  in `PeerEndpoint.limits`; the sender refuses text/files over the peer's
+  advertised caps, and the receiver drops inbound transfers over its own caps.
+  The daemon's own limits come from env (same keys work in the mobile
+  `daemon.config`):
+  ```
+  TRANSFERD_MAX_MSG_BYTES=1mb   TRANSFERD_MAX_PHOTO_BYTES=5mb
+  TRANSFERD_MAX_VIDEO_BYTES=25mb  TRANSFERD_MAX_FILE_BYTES=100mb
+  TRANSFERD_CALL_KBPS=1000      TRANSFERD_MAX_MB_PER_DAY=500
+  TRANSFERD_MAX_MB_PER_WEEK=2000  TRANSFERD_MAX_MB_PER_MONTH=8000
+  ```
+  Values accept `0` (unlimited), a byte count, or a preset name like `"5mb"`.
+
 ## Security notes
 
 - **Blind relay**: `relayd` forwards only PoW-authenticated, fixed-size

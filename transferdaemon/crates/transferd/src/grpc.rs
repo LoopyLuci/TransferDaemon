@@ -69,21 +69,29 @@ async fn ensure_contact_session(state: &State, contact_id: &str, address: Option
     // Resolve the endpoint address(es): explicit, or DHT-discovered by public
     // key (which may return MULTIPLE relays the peer is reachable through).
     // (The parking_lot guard is dropped before any await so the future stays Send.)
-    let resolved: Vec<String> = match address {
-        Some(addr) => vec![addr.to_owned()],
+    let (resolved, _discovered_limits): (Vec<String>, Option<relayd::limits::TransferLimits>) = match address {
+        Some(addr) => (vec![addr.to_owned()], None),
         None => {
             let dht = { let s = state.lock(); s.dht.clone() };
             match dht {
                 Some(dht) => {
                     match crate::peer_discovery::resolve_peer(&dht, contact_id).await {
-                        Some(addrs) => {
+                        Some((addrs, limits)) => {
                             tracing::info!("[grpc] discovered {} relay endpoint(s) for {contact_id}", addrs.len());
-                            addrs
+                            // Cache the peer's advertised limits on the contact
+                            // so the send path can enforce them.
+                            if let Some(l) = limits.clone() {
+                                let mut s = state.lock();
+                                if let Some(c) = s.contacts.iter_mut().find(|c| c.id == contact_id) {
+                                    c.limits = Some(l);
+                                }
+                            }
+                            (addrs, limits)
                         }
-                        None => Vec::new(),
+                        None => (Vec::new(), None),
                     }
                 }
-                None => Vec::new(),
+                None => (Vec::new(), None),
             }
         }
     };
@@ -365,6 +373,7 @@ impl FriendService for FriendServiceImpl {
             blocked:      false,
             address:      None,
             hybrid_public_key: None,
+            limits:      None,
         };
         let mut s = self.0.lock();
         // Prevent duplicates.
@@ -549,6 +558,23 @@ impl MessageService for MessageServiceImpl {
 
         let contact_id = r.contact_id.clone();
         let reply_to = if r.reply_to.is_empty() { None } else { Some(r.reply_to.clone()) };
+
+        // 0. Outbound limit check: our own message cap applies to what we send;
+        //    a peer's advertised cap (if known) is the tighter bound.
+        let outbound = crate::limits::daemon_limits();
+        let peer_limits = {
+            let s = self.0.lock();
+            s.contacts.iter().find(|c| c.id == contact_id).and_then(|c| c.limits.clone())
+        };
+        let cap = crate::limits::peer_cap(peer_limits.as_ref(), relayd::limits::ContentType::Message)
+            .unwrap_or_else(|| outbound.cap_for(relayd::limits::ContentType::Message).unwrap_or(u64::MAX));
+        if (r.text.len() as u64) > cap {
+            return Err(Status::failed_precondition(crate::limits::refusal_reason(
+                relayd::limits::ContentType::Message,
+                r.text.len() as u64,
+                cap,
+            )));
+        }
 
         // 1. Resolve the contact's direct address (short state lock).
         let address = {
@@ -763,6 +789,24 @@ impl TransferService for TransferServiceImpl {
             ));
         }
         let size_bytes = data.len() as u64;
+
+        // 0. Outbound limit check: classify the MIME → content type, then apply
+        //    the peer's advertised cap (tighter) or our own message cap.
+        let content_type = relayd::limits::ContentType::from_mime(&r.mime_type);
+        let outbound = crate::limits::daemon_limits();
+        let peer_limits = {
+            let s = self.0.lock();
+            s.contacts.iter().find(|c| c.id == r.contact_id).and_then(|c| c.limits.clone())
+        };
+        let cap = crate::limits::peer_cap(peer_limits.as_ref(), content_type)
+            .unwrap_or_else(|| outbound.cap_for(content_type).unwrap_or(u64::MAX));
+        if size_bytes > cap {
+            return Err(Status::failed_precondition(crate::limits::refusal_reason(
+                content_type,
+                size_bytes,
+                cap,
+            )));
+        }
 
         let contact_id = r.contact_id.clone();
         let file_name = r.file_name.clone();

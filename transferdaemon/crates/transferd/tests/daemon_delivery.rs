@@ -104,6 +104,7 @@ async fn text_message_delivers_end_to_end() {
             blocked: false,
             address: Some(recv_addr.to_string()),
             hybrid_public_key: None,
+            limits: None,
         });
     }
     let sender_addr = start_grpc(send_state.clone()).await;
@@ -209,6 +210,7 @@ async fn file_delivers_end_to_end() {
             blocked: false,
             address: Some(recv_addr.to_string()),
             hybrid_public_key: None,
+            limits: None,
         });
     }
     let sender_addr = start_grpc(send_state.clone()).await;
@@ -295,6 +297,7 @@ async fn blocked_contact_messages_are_dropped() {
             blocked: false,
             address: Some(recv_addr.to_string()),
             hybrid_public_key: None,
+            limits: None,
         });
     }
     let sender_addr = start_grpc(send_state.clone()).await;
@@ -318,6 +321,7 @@ async fn blocked_contact_messages_are_dropped() {
             blocked: true,
             address: None,
 			 hybrid_public_key: None,
+            limits: None,
         });
     }
 
@@ -394,6 +398,7 @@ async fn safety_numbers_match_on_both_sides() {
             blocked: false,
             address: Some(recv_addr.to_string()),
             hybrid_public_key: None,
+            limits: None,
         });
     }
     {
@@ -406,6 +411,7 @@ async fn safety_numbers_match_on_both_sides() {
             blocked: false,
             address: None,
             hybrid_public_key: None,
+            limits: None,
         });
     }
 
@@ -487,6 +493,7 @@ async fn typing_and_reactions_flow_over_the_wire() {
             blocked: false,
             address: Some(recv_addr.to_string()),
             hybrid_public_key: None,
+            limits: None,
         });
     }
 
@@ -568,6 +575,7 @@ async fn ratchet_advances_over_the_wire() {
             blocked: false,
             address: Some(recv_addr.to_string()),
             hybrid_public_key: None,
+            limits: None,
         });
     }
 
@@ -594,4 +602,72 @@ async fn ratchet_advances_over_the_wire() {
     let s = recv_state.lock();
     let count = s.messages.values().flatten().filter(|m| m.text.starts_with("ratchet-message-")).count();
     assert_eq!(count, N, "all ratcheted messages must be delivered in order");
+}
+
+/// The sender refuses a transfer when the peer's advertised limits are smaller
+/// than the payload — both text and files are gated by the recipient's caps.
+#[tokio::test]
+async fn send_refused_when_peer_advertised_cap_is_smaller() {
+    // Receiver.
+    let recv_state = new_state();
+    recv_state.lock().install_identity(
+        "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+        "Bob",
+    );
+    let recv_addr = spawn_inbound_listener(recv_state.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+
+    // Sender with a contact whose advertised limits cap text at 8 bytes and
+    // photos at 1 KiB.
+    let send_state = new_state();
+    let peer_pk = recv_state.lock().identity.as_ref().unwrap().public_key.clone();
+    {
+        let mut s = send_state.lock();
+        s.contacts.push(Contact {
+            id: peer_pk.clone(),
+            name: "Bob".into(),
+            last_seen_ts: 0,
+            online: false,
+            blocked: false,
+            address: Some(recv_addr.to_string()),
+            hybrid_public_key: None,
+            limits: Some(relayd::limits::TransferLimits {
+                message_bytes: relayd::limits::MaxBytes::custom(8),
+                photo_bytes: relayd::limits::MaxBytes::custom(1024),
+                ..Default::default()
+            }),
+        });
+    }
+    let sender_addr = start_grpc(send_state.clone()).await;
+    let url = format!("http://{sender_addr}");
+    let mut msg = MessageServiceClient::connect(url).await.unwrap();
+
+    // Over the text cap → refused before anything is queued.
+    let long = "x".repeat(64);
+    let err = msg
+        .send_text(SendTextRequest { contact_id: peer_pk.clone(), text: long, reply_to: String::new() })
+        .await
+        .unwrap_err();
+    assert!(err.message().contains("exceeds"), "expected a cap refusal, got: {err}");
+
+    // Within the text cap → accepted.
+    msg.send_text(SendTextRequest { contact_id: peer_pk.clone(), text: "short".into(), reply_to: String::new() })
+        .await
+        .expect("within-cap text must send");
+
+// Over the photo cap → refused.
+    let big = std::env::temp_dir().join("harbor-over-cap.png");
+    std::fs::write(&big, vec![0u8; 4096]).unwrap();
+    let mut tr = TransferServiceClient::connect(format!("http://{sender_addr}")).await.unwrap();
+    let err = tr
+        .send_file(SendFileRequest {
+            contact_id: peer_pk.clone(),
+            file_path: big.to_string_lossy().into_owned(),
+            file_name: "pic.png".into(),
+            file_size: 4096,
+            mime_type: "image/png".into(),
+        })
+        .await
+        .unwrap_err();
+    assert!(err.message().contains("exceeds"), "expected a photo cap refusal, got: {err}");
+    let _ = std::fs::remove_file(&big);
 }

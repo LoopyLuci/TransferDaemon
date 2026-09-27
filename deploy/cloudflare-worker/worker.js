@@ -41,10 +41,41 @@ export default {
 };
 
 export class TRANSFERD_RELAY {
-  constructor(state) {
+  constructor(state, env) {
     this.state = state;
     this.clients = new Map(); // token(hex) → { ws, ip, expires }
     this.rate = new Map();    // ip → { hits, windowStart }
+    this.bandwidth = new Map(); // token(hex) → [dayEpoch, dayBytes, weekEpoch, weekBytes, monthEpoch, monthBytes]
+    // Node limits from wrangler.toml [vars] (0 = unlimited):
+    //   MAX_BLOB_BYTES, MAX_MB_PER_DAY, MAX_MB_PER_WEEK, MAX_MB_PER_MONTH
+    this.limits = {
+      maxBlobBytes: Number(env.MAX_BLOB_BYTES) || 0,
+      dayBytes: (Number(env.MAX_MB_PER_DAY) || 0) << 20,
+      weekBytes: (Number(env.MAX_MB_PER_WEEK) || 0) << 20,
+      monthBytes: (Number(env.MAX_MB_PER_MONTH) || 0) << 20,
+    };
+  }
+
+  // Charge `bytes` to `token`'s rolling windows; false if a budget would break.
+  chargeBandwidth(token, bytes) {
+    const now = Math.floor(Date.now() / 1000);
+    const dayE = Math.floor(now / 86400), weekE = Math.floor(now / 604800), monthE = Math.floor(now / 2592000);
+    let w = this.bandwidth.get(token);
+    if (!w) { w = [dayE, 0, weekE, 0, monthE, 0]; this.bandwidth.set(token, w); }
+    const buckets = [
+      [dayE, w[0], w[1], this.limits.dayBytes],
+      [weekE, w[2], w[3], this.limits.weekBytes],
+      [monthE, w[4], w[5], this.limits.monthBytes],
+    ];
+    for (let i = 0; i < 3; i++) {
+      const cur = buckets[i][1] === buckets[i][0] ? buckets[i][2] : 0;
+      if (buckets[i][3] && cur + bytes > buckets[i][3]) return false;
+    }
+    for (let i = 0; i < 3; i++) {
+      if (w[i * 2] !== buckets[i][0]) { w[i * 2] = buckets[i][0]; w[i * 2 + 1] = 0; }
+      w[i * 2 + 1] += bytes;
+    }
+    return true;
   }
 
   async fetch(request) {
@@ -95,6 +126,15 @@ export class TRANSFERD_RELAY {
       case TAG.Forward: {
         // sender_seq = bytes 40..42 (after 32-byte token + 8-byte pow_nonce).
         // DeliveredMsg body == ForwardMsg body[40..] (u16 seq + varint ciphertext).
+        const blobBytes = body.length - 40;
+        if (this.limits.maxBlobBytes && blobBytes > this.limits.maxBlobBytes) {
+          ws.send(errorFrame(ErrorCode.PAYLOAD_TOO_LARGE, 0, 'blob exceeds node limit'));
+          break;
+        }
+        if (!this.chargeBandwidth(token, blobBytes)) {
+          ws.send(errorFrame(ErrorCode.BANDWIDTH_EXCEEDED, 0, 'token bandwidth budget exceeded'));
+          break;
+        }
         const dst = this.clients.get(token);
         if (dst && dst.ws.readyState === 1) {
           dst.ws.send(prefix(TAG.Ack, body.subarray(40)));
@@ -130,6 +170,19 @@ export class TRANSFERD_RELAY {
 
 function toHex(bytes) {
   return Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+const ErrorCode = { InvalidPoW: 1, TokenNotFound: 2, PayloadTooLarge: 4, RateLimited: 5, BandwidthExceeded: 7 };
+
+// ErrorMsg bincode: [code:u16 LE][seq:u32 LE][len:u64 LE][detail bytes].
+function errorFrame(code, seq, detail) {
+  const d = new TextEncoder().encode(detail);
+  const body = new Uint8Array(2 + 4 + 8 + d.length);
+  new DataView(body.buffer).setUint16(0, code, true);
+  new DataView(body.buffer).setUint32(2, seq, true);
+  new DataView(body.buffer).setBigUint64(6, BigInt(d.length), true);
+  body.set(d, 14);
+  return prefix(TAG.Error, body);
 }
 
 function prefix(tag, bytes) {

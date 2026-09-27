@@ -13,6 +13,7 @@ pub mod transport;
 pub mod relay_hub;
 pub mod peer_discovery;
 pub mod connections;
+pub mod limits;
 pub mod safety;
 
 use std::sync::Arc;

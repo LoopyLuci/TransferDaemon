@@ -160,7 +160,7 @@ async fn peer_discovers_contact_via_dht_and_delivers() {
     wait_for_hub(&send_state).await;
 
     // Sanity: Alice can resolve Bob's endpoint purely from his public key.
-    let resolved = resolve_peer(&dht_a, &recv_pk).await.expect("must resolve Bob via DHT");
+    let resolved = resolve_peer(&dht_a, &recv_pk).await.expect("must resolve Bob via DHT").0;
     assert!(!resolved.is_empty(), "resolved endpoint list must be non-empty");
     assert!(resolved.iter().any(|a| a.starts_with("relay://")), "resolved addresses must be relay URIs: {resolved:?}");
 
@@ -175,6 +175,7 @@ async fn peer_discovers_contact_via_dht_and_delivers() {
             blocked: false,
             address: None,
 			 hybrid_public_key: None,
+            limits: None,
         });
     }
 
@@ -182,7 +183,8 @@ async fn peer_discovers_contact_via_dht_and_delivers() {
     send_msg
         .send_text(SendTextRequest {
             contact_id: recv_pk.clone(),
-            text: "found you via the DHT".into(),
+            text: "found you via the DHT".into(),
+
             reply_to: String::new(),
         })
         .await

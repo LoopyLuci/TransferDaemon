@@ -1,5 +1,28 @@
 # Changelog
 
+## v2.2.0 - 2026-09-27
+
+### Data-transfer limits (presets + custom) at every layer
+
+- **Limits model** (`relayd::limits`): `Preset` quick-picks (1 MB → 5 GB +
+  Unbounded), `MaxBytes { preset | custom }`, content types
+  (message/photo/video/voice/file/call, MIME-classified), `TransferLimits`
+  (per-type caps + daily/weekly/monthly budgets). One serde/bincode-stable
+  model shared by users and relay nodes.
+- **Relay nodes enforce**: `relayd`, `relayd-ws` and the Cloudflare Worker
+  refuse over-size blobs (`MAX_BLOB_BYTES`) and per-token bandwidth budgets
+  (`MAX_MB_PER_DAY/WEEK/MONTH`) via a rolling `BandwidthTracker` — an
+  over-budget FORWARD is refused before the relay commits bandwidth.
+- **Peers enforce**: `PeerEndpoint.limits` + `Contact.limits` advertise what a
+  peer accepts; the sender refuses text/files over the peer's advertised caps
+  (`failed_precondition`); the receiver drops inbound transfers over its own
+  caps.
+- **Config**: daemon env keys (`TRANSFERD_MAX_MSG/PHOTO/VIDEO/VOICE/FILE_BYTES`,
+  `TRANSFERD_CALL_KBPS`, `TRANSFERD_MAX_MB_PER_DAY/WEEK/MONTH`; presets like
+  `"5mb"` or byte counts) — the same keys work in the mobile `daemon.config`.
+- 14 new tests: presets, bandwidth windows + rollover, relay forward refusal,
+  daemon sender/receiver enforcement. **247 tests green**, clippy clean.
+
 ## v2.1.0 - 2026-09-26
 
 ### Autonomous nodes + resilient transport

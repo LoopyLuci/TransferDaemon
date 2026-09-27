@@ -114,6 +114,10 @@ pub struct PersistedContact {
     /// present the same identity or they are rejected.
     #[serde(default)]
     pub hybrid_public_key: Option<String>,
+    /// Bincode-encoded `relayd::limits::TransferLimits` (opaque here — the
+    /// store stays decoupled from relayd). `None` = peer's limits unknown.
+    #[serde(default)]
+    pub limits: Option<Vec<u8>>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -396,6 +400,7 @@ mod tests {
                 blocked:      false,
                 address:      None,
                 hybrid_public_key: None,
+                limits:      None,
             }],
             messages: {
                 let mut m = HashMap::new();

@@ -50,6 +50,10 @@ pub struct Contact {
     /// Hex-encoded 2624-byte hybrid public key verified on the peer's FIRST
     /// authenticated session (trust-on-first-use). `None` before first contact.
     pub hybrid_public_key: Option<String>,
+    /// The peer's advertised transfer limits (per-content-type caps +
+    /// bandwidth budgets), learned at discovery. `None` when unknown — the
+    /// sender then uses its own limits (and the peer enforces on its side).
+    pub limits: Option<relayd::limits::TransferLimits>,
 }
 
 // ---------------------------------------------------------------------------
@@ -289,6 +293,7 @@ impl DaemonState {
                 blocked:      c.blocked,
                 address:      c.address.clone(),
                 hybrid_public_key: c.hybrid_public_key.clone(),
+                limits:      c.limits.as_ref().and_then(|l| bincode::serialize(l).ok()),
             }).collect(),
 messages: self.messages.iter().map(|(cid, msgs)| {
                 let pm = msgs.iter().map(|m| transferd_store::PersistedMessage {
@@ -357,6 +362,7 @@ messages: self.messages.iter().map(|(cid, msgs)| {
             blocked:      c.blocked,
             address:      c.address,
             hybrid_public_key: c.hybrid_public_key,
+            limits:      c.limits.as_ref().and_then(|b| bincode::deserialize(b).ok()),
         }).collect();
         self.messages = data.messages.into_iter().map(|(cid, msgs)| {
             let sm = msgs.into_iter().map(|m| StoredMessage {
@@ -795,6 +801,7 @@ mod tests {
             blocked: false,
             address: None,
             hybrid_public_key: None,
+            limits: None,
         });
         let typing = WireMsg::Typing { sender: "peer".into(), is_typing: true };
         s.apply_inbound(&typing);
@@ -829,6 +836,7 @@ mod tests {
             blocked: false,
             address: None,
             hybrid_public_key: None,
+            limits: None,
         });
         assert!(s.record_verified_identity(&"ab".repeat(32), &"cd".repeat(1312)));
         assert_eq!(s.contacts[0].hybrid_public_key.as_deref(), Some("cd".repeat(1312).as_str()));
@@ -845,6 +853,7 @@ mod tests {
             blocked: false,
             address: None,
             hybrid_public_key: Some("cd".repeat(1312)),
+            limits: None,
         });
         assert!(s.record_verified_identity(&"ab".repeat(32), &"cd".repeat(1312)), "same identity ok");
         assert!(!s.record_verified_identity(&"ab".repeat(32), &"ef".repeat(1312)), "changed identity rejected");

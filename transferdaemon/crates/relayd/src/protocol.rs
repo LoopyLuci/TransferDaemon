@@ -117,6 +117,7 @@ pub enum ErrorCode {
     PayloadTooLarge   = 4,
     RateLimited       = 5,
     SeqReplay         = 6,
+    BandwidthExceeded = 7,
     InternalError     = 0xFFFF,
 }
 

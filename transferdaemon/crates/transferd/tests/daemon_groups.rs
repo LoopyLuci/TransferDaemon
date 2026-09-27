@@ -75,6 +75,7 @@ async fn group_messaging_delivers_to_members() {
             blocked: false,
             address: Some(bob_listener.to_string()),
 			 hybrid_public_key: None,
+            limits: None,
         });
     }
     let alice_grpc = start_grpc(alice_state.clone()).await;

@@ -165,7 +165,22 @@ pub async fn handle_inbound_connection(
 
         // Files accumulate here (TCP preserves order, so chunks are contiguous);
         // once complete they are written to disk and stored as a message.
-        if let WireMsg::File { msg_id, file_name, file_size, mime: _, seq, total_chunks, data, .. } = &msg {
+        if let WireMsg::File { msg_id, file_name, file_size, mime, seq, total_chunks, data, .. } = &msg {
+            // Inbound limit check: the RECEIVER's own limits decide what it
+            // accepts. A file that exceeds the cap is dropped wholesale.
+            let content_type = relayd::limits::ContentType::from_mime(mime);
+            let cap = crate::limits::daemon_limits()
+                .cap_for(content_type)
+                .unwrap_or(u64::MAX);
+            if *file_size > cap {
+                tracing::warn!(
+                    "[transport] rejecting inbound {content_type:?} '{}' ({} > cap {})",
+                    file_name,
+                    file_size,
+                    cap,
+                );
+                continue;
+            }
             let entry = files.entry(msg_id.clone()).or_insert(InboundFile {
                 name: file_name.clone(),
                 size: *file_size,
@@ -183,6 +198,17 @@ pub async fn handle_inbound_connection(
                         );
                     }
                 }
+            }
+        }
+
+        // Inbound text cap (the receiver's message limit).
+        if let WireMsg::Text { text, .. } = &msg {
+            let cap = crate::limits::daemon_limits()
+                .cap_for(relayd::limits::ContentType::Message)
+                .unwrap_or(u64::MAX);
+            if text.len() as u64 > cap {
+                tracing::warn!("[transport] rejecting inbound text ({} > cap {})", text.len(), cap);
+                continue;
             }
         }
 

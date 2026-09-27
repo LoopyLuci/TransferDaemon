@@ -122,12 +122,14 @@ pub async fn publish_endpoint_if_ready(
         })
         .collect();
     let (first_addr, first_token) = relays.first().cloned().unwrap_or_default();
+    let own_limits = crate::limits::daemon_limits();
     let ep = PeerEndpoint {
         public_key: pk.clone(),
         relay_addr: first_addr,
         token: first_token,
         relays,
         direct,
+        limits: Some(own_limits),
         published_at: std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -153,11 +155,12 @@ fn reachable_ipv4() -> Vec<std::net::IpAddr> {
         .collect()
 }
 
-/// Resolve a contact's relay endpoints from the DHT. Returns all `relay://` addresses.
+/// Resolve a contact's relay endpoints from the DHT. Returns all `relay://`
+/// addresses plus the peer's advertised transfer limits (if any).
 pub async fn resolve_peer(
     dht: &Arc<transferd_relay::DhtNode>,
     public_key_hex: &str,
-) -> Option<Vec<String>> {
+) -> Option<(Vec<String>, Option<relayd::limits::TransferLimits>)> {
     PeerEndpoint::resolve(dht.as_ref(), public_key_hex).await
 }
 
@@ -182,6 +185,10 @@ pub struct PeerEndpoint {
     /// listener is bound reachably. A sender prefers these over any relay.
     #[serde(default)]
     pub direct: Vec<String>,
+    /// The peer's advertised transfer limits (per-content-type caps +
+    /// bandwidth budgets). `None` = peer didn't publish limits.
+    #[serde(default)]
+    pub limits: Option<relayd::limits::TransferLimits>,
     /// Unix timestamp (secs) when the record was created.
     pub published_at: u64,
     /// Ed25519 signature over the record with this field zeroed.
@@ -249,8 +256,11 @@ impl PeerEndpoint {
     /// Look up a peer's relay endpoint by their public key.
     ///
     /// Returns every valid `relay://host:port/<token>` address for the peer,
-    /// so a sender can route through ANY relay the peer is registered on.
-    pub async fn resolve(dht: &transferd_relay::DhtNode, public_key_hex: &str) -> Option<Vec<String>> {
+    /// plus the peer's advertised transfer limits (if published).
+    pub async fn resolve(
+        dht: &transferd_relay::DhtNode,
+        public_key_hex: &str,
+    ) -> Option<(Vec<String>, Option<relayd::limits::TransferLimits>)> {
         let key = Self::dht_key(public_key_hex);
         let value = dht.dht_get(key).await?;
         let ep: PeerEndpoint = bincode::deserialize(&value).ok()?;
@@ -277,7 +287,7 @@ impl PeerEndpoint {
                 addrs.push(format!("relay://{addr}/{token}"));
             }
         }
-        if addrs.is_empty() { None } else { Some(addrs) }
+        if addrs.is_empty() { None } else { Some((addrs, ep.limits)) }
     }
 }
 
@@ -304,6 +314,7 @@ mod tests {
             token: hex::encode([7u8; 32]),
             relays: vec![("relay.example:7777".into(), hex::encode([7u8; 32]))],
             direct: vec!["tcp://10.0.0.5:9001".into()],
+            limits: Some(relayd::limits::TransferLimits::default_presets()),
             published_at: 1_000_000,
             signature: Vec::new(),
         };
@@ -322,6 +333,7 @@ mod tests {
             token: hex::encode([7u8; 32]),
             relays: vec![("relay.example:7777".into(), hex::encode([7u8; 32]))],
             direct: vec!["tcp://10.0.0.5:9001".into()],
+            limits: Some(relayd::limits::TransferLimits::default_presets()),
             published_at: 1_000_000,
             signature: Vec::new(),
         };
@@ -340,6 +352,7 @@ mod tests {
             token: hex::encode([7u8; 32]),
             relays: vec![("relay.example:7777".into(), hex::encode([7u8; 32]))],
             direct: vec!["tcp://10.0.0.5:9001".into()],
+            limits: Some(relayd::limits::TransferLimits::default_presets()),
             published_at: 1_000_000,
             signature: Vec::new(),
         };

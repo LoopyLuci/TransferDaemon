@@ -207,6 +207,7 @@ async fn text_delivers_between_two_daemons_over_relay() {
             blocked: false,
             address: Some(format!("relay://{relay_addr}/{}", hex::encode(recv_token))),
             hybrid_public_key: None,
+            limits: None,
         });
     }
     // (The contact + relay address are set directly on the state above;
@@ -320,6 +321,7 @@ async fn text_round_trips_between_two_daemons_over_relay() {
             blocked: false,
             address: Some(format!("relay://{relay_addr}/{}", hex::encode(token))),
             hybrid_public_key: None,
+            limits: None,
         });
     }
 
@@ -435,7 +437,7 @@ async fn text_round_trips_over_two_relays_with_failover() {
     let a_pk = a_acct.get_public_key_hex(Empty {}).await.unwrap().into_inner().hex;
 
     // Bob publishes BOTH relays; Alice resolves both.
-    let resolved = resolve_peer(&dht_a, &b_pk).await.expect("resolve Bob via DHT");
+    let resolved = resolve_peer(&dht_a, &b_pk).await.expect("resolve Bob via DHT").0;
     assert_eq!(resolved.len(), 2, "Bob must publish both relays: {resolved:?}");
 
     a_state.lock().contacts.push(Contact {
@@ -446,6 +448,7 @@ async fn text_round_trips_over_two_relays_with_failover() {
         blocked: false,
         address: None,
         hybrid_public_key: None,
+            limits: None,
     });
 
     // Message 1: over both relays (2 lanes).
@@ -564,7 +567,7 @@ async fn text_delivers_between_two_daemons_over_ws_relay() {
     assert!(a_state.lock().relay_hub.is_some(), "Alice hub must register on the WS relay");
 
     // Bob published a ws:// endpoint; Alice resolves a wsrelay:// URI.
-    let resolved = resolve_peer(&dht_a, &b_pk).await.expect("resolve Bob via DHT");
+    let resolved = resolve_peer(&dht_a, &b_pk).await.expect("resolve Bob via DHT").0;
     assert!(resolved.iter().any(|a| a.starts_with("wsrelay://")), "Bob must publish a WS relay URI: {resolved:?}");
 
     a_state.lock().contacts.push(Contact {
@@ -575,6 +578,7 @@ async fn text_delivers_between_two_daemons_over_ws_relay() {
         blocked: false,
         address: None,
         hybrid_public_key: None,
+            limits: None,
     });
 
     let mut a_msg = MessageServiceClient::connect(a_url.clone()).await.unwrap();
@@ -644,7 +648,7 @@ async fn peer_discovers_direct_address_and_connects_without_a_relay() {
         .unwrap();
 
     // Bob published a DIRECT address (no relay configured at all).
-    let resolved = resolve_peer(&dht_a, &b_pk).await.expect("resolve Bob via DHT");
+    let resolved = resolve_peer(&dht_a, &b_pk).await.expect("resolve Bob via DHT").0;
     assert!(resolved.iter().any(|a| a.starts_with("tcp://")), "Bob must publish a direct tcp:// address: {resolved:?}");
     assert!(!resolved.iter().any(|a| a.starts_with("relay://")), "no relay should be published: {resolved:?}");
 
@@ -656,6 +660,7 @@ async fn peer_discovers_direct_address_and_connects_without_a_relay() {
         blocked: false,
         address: None,
         hybrid_public_key: None,
+            limits: None,
     });
 
     let mut a_msg = MessageServiceClient::connect(a_url.clone()).await.unwrap();
@@ -728,7 +733,7 @@ let _guard = relay_test_lock().await;
     }
     assert!(a_state.lock().relay_hub.is_some(), "Alice hub must register on the public Worker");
 
-    let resolved = resolve_peer(&dht_a, &b_pk).await.expect("resolve Bob via DHT");
+    let resolved = resolve_peer(&dht_a, &b_pk).await.expect("resolve Bob via DHT").0;
     assert!(resolved.iter().any(|a| a.starts_with("wsrelay://")), "Bob must publish a wsrelay URI: {resolved:?}");
 
     a_state.lock().contacts.push(Contact {
@@ -739,6 +744,7 @@ let _guard = relay_test_lock().await;
         blocked: false,
         address: None,
         hybrid_public_key: None,
+            limits: None,
     });
 
     let mut a_msg = MessageServiceClient::connect(a_url.clone()).await.unwrap();

@@ -1,0 +1,51 @@
+# Harbor — user config for OpenCode (fail closed).
+# Grant exactly what you trust; everything else is denied or asks for approval.
+
+[policy]
+default = "ask"
+
+# Read project code freely.
+[[policy.rules]]
+pattern = "fs.read:Z:/Projects/**"
+decision = "allow"
+
+# Writes need a human click on the loopback approval URL.
+[[policy.rules]]
+pattern = "fs.write:Z:/Projects/**"
+decision = "ask"
+
+# Read-only PowerShell is fine; anything else asks.
+[[policy.rules]]
+pattern = "pwsh.run:Get-*"
+decision = "allow"
+
+[[policy.rules]]
+pattern = "pwsh.run:Select-*"
+decision = "allow"
+
+[[policy.rules]]
+pattern = "pwsh.run:Test-Path*"
+decision = "allow"
+
+[[policy.rules]]
+pattern = "pwsh.run"
+decision = "ask"
+
+[pwsh]
+binary = "pwsh"
+env_remove = ["AWS_SECRET_ACCESS_KEY", "AWS_ACCESS_KEY_ID", "AZURE_CLIENT_SECRET", "GITHUB_TOKEN", "GH_TOKEN"]
+
+[fs]
+roots = ["Z:/Projects"]
+deny = ["**/.ssh/**", "**/*.pem", "**/*.key", "**/id_rsa*", "**/secrets/**", "**/audit.log"]
+
+[sandbox]
+cwd = "Z:/Projects"
+
+[approval]
+enabled = true
+port = 0
+ttl_secs = 90
+
+[audit]
+path = "Z:/Projects/harbor-audit.log"

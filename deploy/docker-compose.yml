@@ -24,6 +24,16 @@ services:
       RELAYD_PORT: "5901"
       RELAYD_DIFFICULTY: "20"
       RELAYD_TTL: "90"
+      # Node transfer limits. 0 = unlimited. Set these so the node never
+      # carries a blob or per-token bandwidth beyond what it can handle:
+      #   RELAYD_MAX_BLOB_BYTES      hard cap on one forwarded ciphertext blob
+      #   RELAYD_MAX_MB_PER_DAY      per-token daily bandwidth budget (MiB)
+      #   RELAYD_MAX_MB_PER_WEEK     per-token weekly bandwidth budget (MiB)
+      #   RELAYD_MAX_MB_PER_MONTH    per-token monthly bandwidth budget (MiB)
+      RELAYD_MAX_BLOB_BYTES: "0"
+      RELAYD_MAX_MB_PER_DAY: "0"
+      RELAYD_MAX_MB_PER_WEEK: "0"
+      RELAYD_MAX_MB_PER_MONTH: "0"
 
   relayd-ws:
     image: transferd-relay
@@ -35,6 +45,10 @@ services:
       RELAYD_WS_PORT: "5902"
       RELAYD_WS_DIFFICULTY: "20"
       RELAYD_WS_TTL: "90"
+      RELAYD_WS_MAX_BLOB_BYTES: "0"
+      RELAYD_WS_MAX_MB_PER_DAY: "0"
+      RELAYD_WS_MAX_MB_PER_WEEK: "0"
+      RELAYD_WS_MAX_MB_PER_MONTH: "0"
 
   dhtd:
     image: transferd-relay

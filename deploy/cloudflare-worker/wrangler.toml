@@ -15,6 +15,18 @@ name = "transferd-relay"
 main = "worker.js"
 compatibility_date = "2026-01-01"
 
+# Node transfer limits. 0 = unlimited. Set these so the free-tier relay never
+# carries a blob or per-token bandwidth beyond what you want to pay for:
+#   MAX_BLOB_BYTES     hard cap on one forwarded ciphertext blob
+#   MAX_MB_PER_DAY     per-token daily bandwidth budget (MiB)
+#   MAX_MB_PER_WEEK    per-token weekly bandwidth budget (MiB)
+#   MAX_MB_PER_MONTH   per-token monthly bandwidth budget (MiB)
+[vars]
+MAX_BLOB_BYTES = "0"
+MAX_MB_PER_DAY = "0"
+MAX_MB_PER_WEEK = "0"
+MAX_MB_PER_MONTH = "0"
+
 [durable_objects]
 bindings = [
   { name = "TRANSFERD_RELAY", class_name = "TRANSFERD_RELAY" }

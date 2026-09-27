@@ -10,7 +10,7 @@
 
 use std::sync::Arc;
 
-use relayd::ws::{WsRelay, handle_connection, maintenance_loop};
+use relayd::ws::{handle_connection, maintenance_loop};
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 
@@ -22,8 +22,16 @@ async fn main() -> std::io::Result<()> {
     let bind = std::env::var("RELAYD_WS_BIND").unwrap_or_else(|_| "0.0.0.0".into());
 
     let listener = TcpListener::bind(format!("{bind}:{port}")).await?;
-    println!("relayd-ws: listening on ws://{bind}:{port} (difficulty={difficulty}, ttl={ttl_secs}s)");
-    let relay = Arc::new(Mutex::new(WsRelay::new(difficulty, ttl_secs)));
+    let limits = relayd::limits::RelayLimits::from_env("RELAYD_WS_");
+    println!(
+        "relayd-ws: listening on ws://{bind}:{port} (difficulty={difficulty}, ttl={ttl_secs}s, \
+         max_blob={} day={} week={} month={})",
+        limits.max_blob_bytes.map(relayd::limits::format_bytes).unwrap_or_else(|| "unlimited".into()),
+        limits.daily_bytes.map(relayd::limits::format_bytes).unwrap_or_else(|| "unlimited".into()),
+        limits.weekly_bytes.map(relayd::limits::format_bytes).unwrap_or_else(|| "unlimited".into()),
+        limits.monthly_bytes.map(relayd::limits::format_bytes).unwrap_or_else(|| "unlimited".into()),
+    );
+    let relay = Arc::new(Mutex::new(relayd::ws::WsRelay::with_limits(difficulty, ttl_secs, limits)));
 
     tokio::spawn(maintenance_loop(relay.clone()));
 

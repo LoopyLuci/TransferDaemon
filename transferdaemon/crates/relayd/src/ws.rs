@@ -36,16 +36,25 @@ pub struct WsRelay {
     pub challenge: PowChallenge,
     pub clients: HashMap<[u8; 32], (SocketAddr, Out)>,
     pub expires: HashMap<[u8; 32], u64>,
+    /// Node-level limits: max blob size + per-token bandwidth budgets.
+    pub limits: crate::limits::RelayLimits,
+    bandwidth: crate::limits::BandwidthTracker,
 }
 
 impl WsRelay {
     pub fn new(difficulty: u32, ttl_secs: u64) -> Self {
+        Self::with_limits(difficulty, ttl_secs, crate::limits::RelayLimits::unrestricted())
+    }
+
+    pub fn with_limits(difficulty: u32, ttl_secs: u64, limits: crate::limits::RelayLimits) -> Self {
         Self {
             difficulty,
             ttl_secs,
             challenge: PowChallenge::new(difficulty, now_secs() + 60),
             clients: HashMap::new(),
             expires: HashMap::new(),
+            limits,
+            bandwidth: crate::limits::BandwidthTracker::new(),
         }
     }
 
@@ -134,6 +143,38 @@ pub async fn handle_connection(
             }
             Tag::Forward => {
                 if let Ok(msg) = bincode::deserialize::<ForwardMsg>(body) {
+                    // Node limits: reject over-size blobs and over-budget
+                    // tokens BEFORE the relay commits bandwidth.
+                    if let Some(max) = r.limits.max_blob_bytes {
+                        if msg.ciphertext.len() as u64 > max {
+                            let e = encode(
+                                Tag::Error,
+                                &ErrorMsg {
+                                    code: ErrorCode::PayloadTooLarge,
+                                    seq: msg.sender_seq as u32,
+                                    detail: "blob exceeds node limit".into(),
+                                },
+                            )
+                            .unwrap_or_default();
+                            let _ = tx.send(Message::Binary(e));
+                            continue;
+                        }
+                    }
+                    let bytes = msg.ciphertext.len() as u64;
+                    let limits = r.limits;
+                    if !r.bandwidth.charge(&msg.session_token, bytes, &limits) {
+                        let e = encode(
+                            Tag::Error,
+                            &ErrorMsg {
+                                code: ErrorCode::BandwidthExceeded,
+                                seq: msg.sender_seq as u32,
+                                detail: "token bandwidth budget exceeded".into(),
+                            },
+                        )
+                        .unwrap_or_default();
+                        let _ = tx.send(Message::Binary(e));
+                        continue;
+                    }
                     if let Some((_, dst)) = r.clients.get(&msg.session_token) {
                         let delivered = encode(
                             Tag::Ack,

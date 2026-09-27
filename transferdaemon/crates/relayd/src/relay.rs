@@ -1,5 +1,6 @@
 //! Core relay state: forwarding table, registration, forwarding, TTL pruning.
 
+use crate::limits::{BandwidthTracker, RelayLimits};
 use crate::pow::PowChallenge;
 use crate::protocol::{ErrorCode, ForwardMsg, KeepaliveMsg, RegisterMsg};
 use std::collections::HashMap;
@@ -23,16 +24,19 @@ pub enum RelayError {
     SeqReplay,
     #[error("rate limit exceeded for this address")]
     RateLimited,
+    #[error("per-token bandwidth budget exceeded")]
+    BandwidthExceeded,
 }
 
 impl RelayError {
     pub fn code(&self) -> ErrorCode {
         match self {
-            Self::InvalidPoW      => ErrorCode::InvalidPoW,
-            Self::TokenNotFound   => ErrorCode::TokenNotFound,
-            Self::PayloadTooLarge => ErrorCode::PayloadTooLarge,
-            Self::SeqReplay       => ErrorCode::SeqReplay,
-            Self::RateLimited     => ErrorCode::RateLimited,
+            Self::InvalidPoW          => ErrorCode::InvalidPoW,
+            Self::TokenNotFound       => ErrorCode::TokenNotFound,
+            Self::PayloadTooLarge     => ErrorCode::PayloadTooLarge,
+            Self::SeqReplay           => ErrorCode::SeqReplay,
+            Self::RateLimited         => ErrorCode::RateLimited,
+            Self::BandwidthExceeded   => ErrorCode::BandwidthExceeded,
         }
     }
 }
@@ -64,10 +68,17 @@ pub struct Relay {
     max_payload: usize,
     /// Per-source-IP datagram rate limiter.
     rate_limiter: RateLimiter,
+    /// Node-level limits: max blob size + per-token bandwidth budgets.
+    limits: RelayLimits,
+    bandwidth: BandwidthTracker,
 }
 
 impl Relay {
     pub fn new(difficulty: u32, ttl_secs: u64, max_payload: usize) -> Self {
+        Self::with_limits(difficulty, ttl_secs, max_payload, RelayLimits::unrestricted())
+    }
+
+    pub fn with_limits(difficulty: u32, ttl_secs: u64, max_payload: usize, limits: RelayLimits) -> Self {
         let challenge = PowChallenge::new(difficulty, now_secs() + 60);
         Self {
             table: HashMap::new(),
@@ -76,7 +87,19 @@ impl Relay {
             ttl_secs,
             max_payload,
             rate_limiter: RateLimiter::new(30, 300), // ≤ 300 datagrams / 30s per IP
+            limits,
+            bandwidth: BandwidthTracker::new(),
         }
+    }
+
+    /// The node's configured limits (max blob + bandwidth budgets).
+    pub fn limits(&self) -> &RelayLimits {
+        &self.limits
+    }
+
+    /// Current per-token bandwidth usage `(day, week, month)`.
+    pub fn bandwidth_usage(&self, token: &[u8; 32]) -> (u64, u64, u64) {
+        self.bandwidth.usage(token)
     }
 
     /// Maximum datagrams allowed per IP within the rate-limit window.
@@ -151,6 +174,11 @@ impl Relay {
         if msg.ciphertext.len() > self.max_payload {
             return Err(RelayError::PayloadTooLarge);
         }
+        if let Some(max) = self.limits.max_blob_bytes {
+            if msg.ciphertext.len() as u64 > max {
+                return Err(RelayError::PayloadTooLarge);
+            }
+        }
         if !self.challenge.verify(&msg.session_token, msg.pow_nonce) {
             return Err(RelayError::InvalidPoW);
         }
@@ -159,12 +187,19 @@ impl Relay {
         if entry.expires_at_secs <= now_secs() {
             return Err(RelayError::TokenNotFound);
         }
+        // Per-token bandwidth budgets (daily / weekly / monthly). Charge BEFORE
+        // committing so an over-budget forward is refused outright.
+        let bytes = msg.ciphertext.len() as u64;
+        let limits = self.limits;
+        if !self.bandwidth.charge(&msg.session_token, bytes, &limits) {
+            return Err(RelayError::BandwidthExceeded);
+        }
         // No per-message replay guard on FORWARD: a replayed forward merely
         // re-delivers an identical ciphertext, which the endpoint rejects via
         // GCM authentication (reused nonce) or dedups by GSN. Senders may also
         // legitimately use multiple sockets (hub + lane) with independent
         // sequence counters.
-        entry.bytes_forwarded += msg.ciphertext.len() as u64;
+        entry.bytes_forwarded += bytes;
         Ok(entry.addr)
     }
 
@@ -286,16 +321,17 @@ mod tests {
         assert_eq!(dst, addr());
     }
 
-    #[test]
+#[test]
     fn test_forward_unknown_token_fails() {
         let mut relay = make_relay();
         let fwd = ForwardMsg {
             session_token: token(0x99),
             pow_nonce: 0,
-            sender_seq: 0,
-            ciphertext: vec![1, 2, 3],
+            sender_seq: 1,
+            ciphertext: vec![0xBB; 128],
         };
-        assert!(matches!(relay.forward(&fwd), Err(RelayError::TokenNotFound)));
+        let r = relay.forward(&fwd);
+        assert!(matches!(r, Err(RelayError::TokenNotFound)));
     }
 
     #[test]
@@ -310,6 +346,63 @@ mod tests {
             ciphertext: vec![0u8; 64 * 1024 + 1], // one byte over limit
         };
         assert!(matches!(relay.forward(&fwd), Err(RelayError::PayloadTooLarge)));
+    }
+
+    #[test]
+    fn test_node_max_blob_limits_forward() {
+        use crate::limits::RelayLimits;
+        let limits = RelayLimits {
+            max_blob_bytes: Some(1024),
+            daily_bytes: None,
+            weekly_bytes: None,
+            monthly_bytes: None,
+        };
+        let mut relay = Relay::with_limits(0, 90, 64 * 1024, limits);
+        let t = token(0x02);
+        relay.register(&RegisterMsg { session_token: t, pow_nonce: 0, seq: 0 }, addr()).unwrap();
+        let big = ForwardMsg {
+            session_token: t,
+            pow_nonce: 0,
+            sender_seq: 0,
+            ciphertext: vec![0u8; 2048],
+        };
+        assert!(matches!(relay.forward(&big), Err(RelayError::PayloadTooLarge)));
+        let small = ForwardMsg {
+            session_token: t,
+            pow_nonce: 0,
+            sender_seq: 1,
+            ciphertext: vec![0u8; 512],
+        };
+        assert!(relay.forward(&small).is_ok());
+    }
+
+    #[test]
+    fn test_bandwidth_budget_refuses_over_budget_forwards() {
+        use crate::limits::RelayLimits;
+        let limits = RelayLimits {
+            max_blob_bytes: None,
+            daily_bytes: Some(1000),
+            weekly_bytes: None,
+            monthly_bytes: None,
+        };
+        let mut relay = Relay::with_limits(0, 90, 64 * 1024, limits);
+        let t = token(0x03);
+        relay.register(&RegisterMsg { session_token: t, pow_nonce: 0, seq: 0 }, addr()).unwrap();
+        let fwd = |seq: u16| ForwardMsg {
+            session_token: t,
+            pow_nonce: 0,
+            sender_seq: seq,
+            ciphertext: vec![0u8; 400],
+        };
+        assert!(relay.forward(&fwd(1)).is_ok());
+        assert!(relay.forward(&fwd(2)).is_ok());
+        // 800 charged so far; 400 more would exceed the 1000-byte day budget.
+        assert!(matches!(
+            relay.forward(&fwd(3)),
+            Err(RelayError::BandwidthExceeded)
+        ));
+        let (day, _, _) = relay.bandwidth_usage(&t);
+        assert_eq!(day, 800, "only the successful forwards count");
     }
 
     #[test]
