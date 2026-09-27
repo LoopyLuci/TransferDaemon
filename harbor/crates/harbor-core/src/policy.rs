@@ -39,7 +39,13 @@ impl PolicyRule {
             }
             _ => (pattern.clone(), false, None),
         };
-        Self { pattern, decision, capability, scoped, matcher }
+        Self {
+            pattern,
+            decision,
+            capability,
+            scoped,
+            matcher,
+        }
     }
 
     fn matches(&self, capability_id: &str, resource: Option<&str>) -> bool {
@@ -65,7 +71,10 @@ pub struct PolicyEngine {
 
 impl PolicyEngine {
     pub fn new(default: Decision) -> Self {
-        Self { default, rules: Vec::new() }
+        Self {
+            default,
+            rules: Vec::new(),
+        }
     }
 
     pub fn add_rule(&mut self, rule: PolicyRule) {
@@ -88,7 +97,11 @@ impl PolicyEngine {
     }
 
     /// Like `decide` but also returns which rule (if any) produced the outcome.
-    pub fn decide_with_rule(&self, capability_id: &str, resource: Option<&str>) -> (Decision, Option<&PolicyRule>) {
+    pub fn decide_with_rule(
+        &self,
+        capability_id: &str,
+        resource: Option<&str>,
+    ) -> (Decision, Option<&PolicyRule>) {
         let mut decision = self.default;
         let mut matched: Option<&PolicyRule> = None;
         for rule in &self.rules {
@@ -110,7 +123,12 @@ impl Default for PolicyEngine {
 
 impl fmt::Display for PolicyEngine {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "PolicyEngine(default={:?}, rules={})", self.default, self.rules.len())
+        write!(
+            f,
+            "PolicyEngine(default={:?}, rules={})",
+            self.default,
+            self.rules.len()
+        )
     }
 }
 
@@ -123,7 +141,10 @@ mod tests {
     fn engine() -> PolicyEngine {
         let mut e = PolicyEngine::new(Decision::Deny);
         e.add_rule(PolicyRule::new("fs.read:Z:/Projects/**", Decision::Allow));
-        e.add_rule(PolicyRule::new("fs.read:Z:/Projects/**/.ssh/**", Decision::Deny));
+        e.add_rule(PolicyRule::new(
+            "fs.read:Z:/Projects/**/.ssh/**",
+            Decision::Deny,
+        ));
         e.add_rule(PolicyRule::new("pwsh.run:Get-*", Decision::Allow));
         e
     }
@@ -146,21 +167,30 @@ mod tests {
     #[test]
     fn scoped_rule_matches_inside_root() {
         let e = engine();
-        assert_eq!(e.decide("fs.read", Some("Z:/Projects/foo/bar.rs")), Decision::Allow);
+        assert_eq!(
+            e.decide("fs.read", Some("Z:/Projects/foo/bar.rs")),
+            Decision::Allow
+        );
     }
 
     #[test]
     fn last_match_wins_overrides() {
         let e = engine();
         // The narrower deny comes after the allow → wins.
-        assert_eq!(e.decide("fs.read", Some("Z:/Projects/foo/.ssh/id_rsa")), Decision::Deny);
+        assert_eq!(
+            e.decide("fs.read", Some("Z:/Projects/foo/.ssh/id_rsa")),
+            Decision::Deny
+        );
     }
 
     #[test]
     fn resource_glob_drilldown() {
         let e = engine();
         assert_eq!(e.decide("pwsh.run", Some("Get-Process")), Decision::Allow);
-        assert_eq!(e.decide("pwsh.run", Some("Remove-Item -Recurse .")), Decision::Deny);
+        assert_eq!(
+            e.decide("pwsh.run", Some("Remove-Item -Recurse .")),
+            Decision::Deny
+        );
     }
 
     #[test]
@@ -169,7 +199,11 @@ mod tests {
         let mut e = PolicyEngine::new(Decision::Deny);
         e.add_rule(PolicyRule::new("pwsh.run:Get-*", Decision::Allow));
         assert_eq!(e.decide("pwsh.run", Some("Get-Process")), Decision::Allow);
-        assert_eq!(e.decide("fs.read", Some("Get-Process")), Decision::Deny, "capability id must be honored");
+        assert_eq!(
+            e.decide("fs.read", Some("Get-Process")),
+            Decision::Deny,
+            "capability id must be honored"
+        );
     }
 
     #[test]

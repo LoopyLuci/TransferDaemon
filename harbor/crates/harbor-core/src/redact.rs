@@ -108,19 +108,28 @@ mod tests {
     fn redacts_named_secrets() {
         let r = Redactor::default();
         assert_eq!(r.redact("password=hunter2 next"), "[REDACTED] next");
-        assert_eq!(r.redact("Bearer abc1234567890123456789012345678xyz"), "Bearer [REDACTED]");
+        assert_eq!(
+            r.redact("Bearer abc1234567890123456789012345678xyz"),
+            "Bearer [REDACTED]"
+        );
     }
 
     #[test]
     fn redacts_uri_credentials() {
         let r = Redactor::default();
-        assert_eq!(r.redact("postgres://user:supersecret@db:5432/x"), "postgres://[REDACTED]db:5432/x");
+        assert_eq!(
+            r.redact("postgres://user:supersecret@db:5432/x"),
+            "postgres://[REDACTED]db:5432/x"
+        );
     }
 
     #[test]
     fn redacts_configured_secrets() {
         let r = Redactor::new(vec!["s3cr3t-TOKEN-xyz".into()]);
-        assert_eq!(r.redact("the value is s3cr3t-TOKEN-xyz ok"), "the value is [REDACTED] ok");
+        assert_eq!(
+            r.redact("the value is s3cr3t-TOKEN-xyz ok"),
+            "the value is [REDACTED] ok"
+        );
         assert_eq!(r.redact("S3cr3t-token-xyz in caps"), "[REDACTED] in caps");
     }
 
@@ -128,6 +137,8 @@ mod tests {
     fn long_hex_blobs_are_masked() {
         let r = Redactor::default();
         let hexish = "0x1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef";
-        assert!(!r.redact(hexish).contains("1234567890abcdef1234567890abcdef"));
+        assert!(!r
+            .redact(hexish)
+            .contains("1234567890abcdef1234567890abcdef"));
     }
 }

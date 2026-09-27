@@ -28,13 +28,19 @@ async fn main() -> std::io::Result<()> {
     let approval = if cfg.approval.enabled {
         match approval::ApprovalServer::start(cfg.approval.port, cfg.approval.ttl_secs).await {
             Ok(s) => {
-                tracing::info!(port = s.port(), ttl = cfg.approval.ttl_secs, "approval server on 127.0.0.1");
+                tracing::info!(
+                    port = s.port(),
+                    ttl = cfg.approval.ttl_secs,
+                    "approval server on 127.0.0.1"
+                );
                 Some(Arc::new(s))
             }
             Err(e) => {
                 // Fail closed: without an approval channel, `ask` cannot be
                 // satisfied — log loudly and continue (deny still works).
-                tracing::error!("approval server failed to start: {e} — 'ask' decisions will be denied");
+                tracing::error!(
+                    "approval server failed to start: {e} — 'ask' decisions will be denied"
+                );
                 None
             }
         }
@@ -47,9 +53,12 @@ async fn main() -> std::io::Result<()> {
 
 fn init_tracing() {
     use tracing_subscriber::prelude::*;
-    let filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "harbor=info".into());
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| "harbor=info".into());
     // JSON lines on stderr; stdout stays protocol-pure.
-    let fmt = tracing_subscriber::fmt::layer().json().with_writer(std::io::stderr);
+    let fmt = tracing_subscriber::fmt::layer()
+        .json()
+        .with_writer(std::io::stderr);
     tracing_subscriber::registry().with(filter).with(fmt).init();
 }
 

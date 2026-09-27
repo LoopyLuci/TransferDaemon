@@ -34,7 +34,10 @@ struct ToolCap {
 
 /// Run the MCP server: read newline-delimited JSON-RPC from stdin, write
 /// responses to stdout. Returns when stdin closes (the parent exited).
-pub async fn run(runtime: Arc<HarborRuntime>, approval: Option<Arc<ApprovalServer>>) -> std::io::Result<()> {
+pub async fn run(
+    runtime: Arc<HarborRuntime>,
+    approval: Option<Arc<ApprovalServer>>,
+) -> std::io::Result<()> {
     let stdin = tokio::io::stdin();
     let mut reader = tokio::io::BufReader::new(stdin);
     let mut line = String::new();
@@ -43,7 +46,10 @@ pub async fn run(runtime: Arc<HarborRuntime>, approval: Option<Arc<ApprovalServe
 
     tracing::info!(session = %session.id, "harbor MCP server ready");
     // First-class signal the parent can wait on before speaking to us.
-    println!("{}", json!({ "harbor": "ready", "session": session.id, "version": SERVER_VERSION }));
+    println!(
+        "{}",
+        json!({ "harbor": "ready", "session": session.id, "version": SERVER_VERSION })
+    );
 
     loop {
         line.clear();
@@ -73,10 +79,16 @@ fn build_tools(runtime: &HarborRuntime) -> Vec<ToolCap> {
     let mut tools: Vec<ToolCap> = Vec::new();
     // pwsh.run
     let pwsh = runtime.pwsh.clone();
-    tools.push(ToolCap { name: tool_name(pwsh.manifest().id), cap: pwsh });
+    tools.push(ToolCap {
+        name: tool_name(pwsh.manifest().id),
+        cap: pwsh,
+    });
     // fs.*
     for cap in &runtime.fs {
-        tools.push(ToolCap { name: tool_name(cap.manifest().id), cap: cap.clone() });
+        tools.push(ToolCap {
+            name: tool_name(cap.manifest().id),
+            cap: cap.clone(),
+        });
     }
     tools
 }
@@ -86,13 +98,22 @@ fn tool_name(id: &str) -> String {
 }
 
 /// A single request/notification/response message.
-async fn handle(msg: &Value, runtime: &Arc<HarborRuntime>, approval: &Option<Arc<ApprovalServer>>, session: &Session, tools: &mut [ToolCap]) {
+async fn handle(
+    msg: &Value,
+    runtime: &Arc<HarborRuntime>,
+    approval: &Option<Arc<ApprovalServer>>,
+    session: &Session,
+    tools: &mut [ToolCap],
+) {
     let method = msg.get("method").and_then(Value::as_str);
     let id = msg.get("id").cloned();
     match method {
         Some("initialize") => {
             // Version negotiation: pick the newest version both sides support.
-            let client_v = msg.pointer("/params/protocolVersion").and_then(Value::as_str).unwrap_or("");
+            let client_v = msg
+                .pointer("/params/protocolVersion")
+                .and_then(Value::as_str)
+                .unwrap_or("");
             let negotiated = PROTOCOL_VERSIONS
                 .iter()
                 .find(|v| **v == client_v)
@@ -132,12 +153,12 @@ async fn handle(msg: &Value, runtime: &Arc<HarborRuntime>, approval: &Option<Arc
             let params = msg.get("params").cloned().unwrap_or(json!({}));
             let name = params.get("name").and_then(Value::as_str).unwrap_or("");
             let mut args = params.get("arguments").cloned().unwrap_or(json!({}));
-    // Inject the configured default working directory when a call omits `cwd`.
-    if let (Some(cwd), Value::Object(_)) = (&runtime.default_cwd, &args) {
-        if args.get("cwd").is_none() {
-            args["cwd"] = json!(cwd);
-        }
-    }
+            // Inject the configured default working directory when a call omits `cwd`.
+            if let (Some(cwd), Value::Object(_)) = (&runtime.default_cwd, &args) {
+                if args.get("cwd").is_none() {
+                    args["cwd"] = json!(cwd);
+                }
+            }
             let req_id = params
                 .get("_meta")
                 .and_then(|m| m.get("request_id"))
@@ -178,13 +199,29 @@ async fn call_tool(
     let manifest = cap.manifest();
     let resource = cap.resource(&args);
 
-    let (decision, matched_rule) = runtime.policy.decide_with_rule(manifest.id, resource.as_deref());
+    let (decision, matched_rule) = runtime
+        .policy
+        .decide_with_rule(manifest.id, resource.as_deref());
 
     // ── Approval path ─────────────────────────────────────────────────────
     let approver = match decision {
         Decision::Deny => {
-            let rule = matched_rule.map(|r| r.pattern.clone()).unwrap_or_else(|| "default".into());
-            audit(runtime, session, req_id, manifest.id, resource.clone(), Decision::Deny, None, None, None, None, Some(format!("denied by rule '{rule}'")));
+            let rule = matched_rule
+                .map(|r| r.pattern.clone())
+                .unwrap_or_else(|| "default".into());
+            audit(
+                runtime,
+                session,
+                req_id,
+                manifest.id,
+                resource.clone(),
+                Decision::Deny,
+                None,
+                None,
+                None,
+                None,
+                Some(format!("denied by rule '{rule}'")),
+            );
             return call_result_error(format!("denied by policy (rule '{rule}') — add an allow rule to harbor.toml to permit `{}`", manifest.id));
         }
         Decision::Ask => {
@@ -200,18 +237,56 @@ async fn call_tool(
                     match await_decision(rx, approval_ttl(server)).await {
                         ApprovalOutcome::Granted => "human".to_string(),
                         ApprovalOutcome::Denied => {
-                            audit(runtime, session, req_id, manifest.id, resource.clone(), Decision::Ask, Some("human"), None, None, None, Some("denied by human".into()));
+                            audit(
+                                runtime,
+                                session,
+                                req_id,
+                                manifest.id,
+                                resource.clone(),
+                                Decision::Ask,
+                                Some("human"),
+                                None,
+                                None,
+                                None,
+                                Some("denied by human".into()),
+                            );
                             return call_result_error("denied by the operator");
                         }
                         ApprovalOutcome::Expired => {
-                            audit(runtime, session, req_id, manifest.id, resource.clone(), Decision::Ask, Some("timeout"), None, None, None, Some("approval timed out".into()));
+                            audit(
+                                runtime,
+                                session,
+                                req_id,
+                                manifest.id,
+                                resource.clone(),
+                                Decision::Ask,
+                                Some("timeout"),
+                                None,
+                                None,
+                                None,
+                                Some("approval timed out".into()),
+                            );
                             return call_result_error("approval timed out");
                         }
                     }
                 }
                 None => {
-                    audit(runtime, session, req_id, manifest.id, resource.clone(), Decision::Ask, None, None, None, None, Some("approval required but disabled".into()));
-                    return call_result_error("policy requires approval but the approval server is disabled");
+                    audit(
+                        runtime,
+                        session,
+                        req_id,
+                        manifest.id,
+                        resource.clone(),
+                        Decision::Ask,
+                        None,
+                        None,
+                        None,
+                        None,
+                        Some("approval required but disabled".into()),
+                    );
+                    return call_result_error(
+                        "policy requires approval but the approval server is disabled",
+                    );
                 }
             }
         }
@@ -221,7 +296,10 @@ async fn call_tool(
     // ── Execute ───────────────────────────────────────────────────────────
     let budget = manifest.budget;
     let redactor = runtime.redactor.clone();
-    let ctx = CapabilityContext { session: session.clone(), redactor };
+    let ctx = CapabilityContext {
+        session: session.clone(),
+        redactor,
+    };
     let started = std::time::Instant::now();
     let result = tokio::time::timeout(budget.timeout, cap.invoke(&ctx, args.clone())).await;
 
@@ -236,14 +314,28 @@ async fn call_tool(
             let envelope = harbor_core::errors::ErrorEnvelope::from(&e);
             (json!({ "error": envelope }), Some(e.to_string()), None)
         }
-        Err(_) => {
-            (json!({ "error": { "code": "timeout", "message": format!("capability timed out after {:?}", budget.timeout) } }), Some("timeout".into()), None)
-        }
+        Err(_) => (
+            json!({ "error": { "code": "timeout", "message": format!("capability timed out after {:?}", budget.timeout) } }),
+            Some("timeout".into()),
+            None,
+        ),
     };
     let duration_ms = started.elapsed().as_millis() as u64;
     let out_sha = harbor_core::redact::sha256(&serde_json::to_vec(&payload).unwrap_or_default());
 
-    audit(runtime, session, req_id, manifest.id, resource.clone(), decision_audit(&decision), Some(&approver), exit, Some(duration_ms), Some(out_sha), error.clone());
+    audit(
+        runtime,
+        session,
+        req_id,
+        manifest.id,
+        resource.clone(),
+        decision_audit(&decision),
+        Some(&approver),
+        exit,
+        Some(duration_ms),
+        Some(out_sha),
+        error.clone(),
+    );
 
     if error.is_some() {
         call_result_error(error.unwrap_or_else(|| "capability failed".into()))
@@ -273,8 +365,20 @@ fn audit(
     out_sha: Option<String>,
     error: Option<String>,
 ) {
-    let b = harbor_core::audit::EntryBuilder { session_id: session.id.clone(), request_id: req_id.to_string() };
-    let entry = b.build(capability, resource, decision, approver, exit, duration_ms, out_sha, error);
+    let b = harbor_core::audit::EntryBuilder {
+        session_id: session.id.clone(),
+        request_id: req_id.to_string(),
+    };
+    let entry = b.build(
+        capability,
+        resource,
+        decision,
+        approver,
+        exit,
+        duration_ms,
+        out_sha,
+        error,
+    );
     let _ = runtime.audit.append(entry);
 }
 
@@ -327,12 +431,16 @@ fn rpc_error(code: i64, message: String, data: Option<Value>) -> Value {
 }
 
 fn respond(id: Option<Value>, result: Value) {
-    write_json(json!({ "jsonrpc": JSONRPC_VERSION, "id": id.unwrap_or(Value::Null), "result": result }));
+    write_json(
+        json!({ "jsonrpc": JSONRPC_VERSION, "id": id.unwrap_or(Value::Null), "result": result }),
+    );
 }
 
 /// JSON-RPC error response (no `result` field, per spec).
 fn respond_error(id: Option<Value>, code: i64, message: String, data: Option<Value>) {
-    write_json(json!({ "jsonrpc": JSONRPC_VERSION, "id": id.unwrap_or(Value::Null), "error": rpc_error(code, message, data) }));
+    write_json(
+        json!({ "jsonrpc": JSONRPC_VERSION, "id": id.unwrap_or(Value::Null), "error": rpc_error(code, message, data) }),
+    );
 }
 
 /// Write one response frame to stdout (the protocol channel). Never logs here.
@@ -362,7 +470,10 @@ mod tests {
         };
         let mut runtime = crate::config::build_runtime(&cfg);
         let mut policy = PolicyEngine::new(harbor_core::policy::Decision::Deny);
-        policy.add_rule(PolicyRule::new(format!("fs.read:{root}/**"), harbor_core::policy::Decision::Allow));
+        policy.add_rule(PolicyRule::new(
+            format!("fs.read:{root}/**"),
+            harbor_core::policy::Decision::Allow,
+        ));
         runtime.policy = policy;
         Arc::new(runtime)
     }
@@ -384,8 +495,20 @@ mod tests {
     #[tokio::test]
     async fn denied_capability_returns_clean_error() {
         let runtime = test_runtime();
-        let tool = ToolCap { name: "pwsh_run".into(), cap: runtime.pwsh.clone() };
-        let out = call_tool(&[tool], "pwsh_run", json!({ "command": "whoami" }), &runtime, &None, &Session::new(std::path::Path::new(".")), "r1").await;
+        let tool = ToolCap {
+            name: "pwsh_run".into(),
+            cap: runtime.pwsh.clone(),
+        };
+        let out = call_tool(
+            &[tool],
+            "pwsh_run",
+            json!({ "command": "whoami" }),
+            &runtime,
+            &None,
+            &Session::new(std::path::Path::new(".")),
+            "r1",
+        )
+        .await;
         assert!(out["isError"].as_bool().unwrap());
         let text = out["content"][0]["text"].as_str().unwrap();
         assert!(text.contains("denied by policy"), "{text}");
@@ -406,11 +529,26 @@ mod tests {
         let mut runtime = crate::config::build_runtime(&cfg);
         let root = dir.path().to_string_lossy().replace('\\', "/");
         let mut policy = PolicyEngine::new(harbor_core::policy::Decision::Deny);
-        policy.add_rule(PolicyRule::new(format!("fs.read:{root}/**"), harbor_core::policy::Decision::Allow));
+        policy.add_rule(PolicyRule::new(
+            format!("fs.read:{root}/**"),
+            harbor_core::policy::Decision::Allow,
+        ));
         runtime.policy = policy;
         let runtime = Arc::new(runtime);
-        let tool = ToolCap { name: "fs_read".into(), cap: runtime.fs[0].clone() };
-        let out = call_tool(&[tool], "fs_read", json!({ "path": dir.path().join("a.txt").to_string_lossy() }), &runtime, &None, &Session::new(std::path::Path::new(".")), "r2").await;
+        let tool = ToolCap {
+            name: "fs_read".into(),
+            cap: runtime.fs[0].clone(),
+        };
+        let out = call_tool(
+            &[tool],
+            "fs_read",
+            json!({ "path": dir.path().join("a.txt").to_string_lossy() }),
+            &runtime,
+            &None,
+            &Session::new(std::path::Path::new(".")),
+            "r2",
+        )
+        .await;
         assert!(!out["isError"].as_bool().unwrap(), "{out}");
         let text = out["content"][0]["text"].as_str().unwrap();
         assert!(text.contains("hello"));

@@ -85,25 +85,39 @@ pub struct AuditSection {
 
 impl Default for PolicyConfig {
     fn default() -> Self {
-        Self { default: "deny".into(), rules: Vec::new() }
+        Self {
+            default: "deny".into(),
+            rules: Vec::new(),
+        }
     }
 }
 
 impl Default for RuleEntry {
     fn default() -> Self {
-        Self { pattern: String::new(), decision: "deny".into() }
+        Self {
+            pattern: String::new(),
+            decision: "deny".into(),
+        }
     }
 }
 
 impl Default for PwshSection {
     fn default() -> Self {
-        Self { binary: "pwsh".into(), constrained: false, env_remove: Vec::new() }
+        Self {
+            binary: "pwsh".into(),
+            constrained: false,
+            env_remove: Vec::new(),
+        }
     }
 }
 
 impl Default for FsSection {
     fn default() -> Self {
-        Self { roots: Vec::new(), deny: Vec::new(), max_read_bytes: 4 << 20 }
+        Self {
+            roots: Vec::new(),
+            deny: Vec::new(),
+            max_read_bytes: 4 << 20,
+        }
     }
 }
 
@@ -111,20 +125,32 @@ impl Default for SandboxSection {
     fn default() -> Self {
         Self {
             cwd: None,
-            scratch_dir: std::env::temp_dir().join("harbor").to_string_lossy().into_owned(),
+            scratch_dir: std::env::temp_dir()
+                .join("harbor")
+                .to_string_lossy()
+                .into_owned(),
         }
     }
 }
 
 impl Default for ApprovalSection {
     fn default() -> Self {
-        Self { enabled: true, port: 0, ttl_secs: 60 }
+        Self {
+            enabled: true,
+            port: 0,
+            ttl_secs: 60,
+        }
     }
 }
 
 impl Default for AuditSection {
     fn default() -> Self {
-        Self { path: std::env::temp_dir().join("harbor-audit.log").to_string_lossy().into_owned() }
+        Self {
+            path: std::env::temp_dir()
+                .join("harbor-audit.log")
+                .to_string_lossy()
+                .into_owned(),
+        }
     }
 }
 
@@ -193,7 +219,12 @@ pub fn build_redactor(_cfg: &HarborConfig) -> Redactor {
 
 pub fn build_fs_core(cfg: &FsSection) -> FsCore {
     let roots: Vec<PathBuf> = cfg.roots.iter().map(PathBuf::from).collect();
-    let deny: Vec<_> = cfg.deny.iter().filter_map(|p| Glob::new(p).ok()).map(|g| g.compile_matcher()).collect();
+    let deny: Vec<_> = cfg
+        .deny
+        .iter()
+        .filter_map(|p| Glob::new(p).ok())
+        .map(|g| g.compile_matcher())
+        .collect();
     FsCore::new(roots, deny, cfg.max_read_bytes)
 }
 
@@ -219,11 +250,25 @@ pub struct HarborRuntime {
 pub fn build_runtime(cfg: &HarborConfig) -> HarborRuntime {
     let policy = build_policy(&cfg.policy);
     let redactor = build_redactor(cfg);
-    let pwsh = Arc::new(harbor_providers::pwsh::PwshProvider::new(build_pwsh_cfg(&cfg.pwsh)));
-    let fs: Vec<Arc<dyn harbor_core::capability::Capability>> = harbor_providers::fs::fs_provider(build_fs_core(&cfg.fs)).into_iter().map(Arc::from).collect();
+    let pwsh = Arc::new(harbor_providers::pwsh::PwshProvider::new(build_pwsh_cfg(
+        &cfg.pwsh,
+    )));
+    let fs: Vec<Arc<dyn harbor_core::capability::Capability>> =
+        harbor_providers::fs::fs_provider(build_fs_core(&cfg.fs))
+            .into_iter()
+            .map(Arc::from)
+            .collect();
     let audit = Arc::new(
         harbor_core::audit::AuditLog::open(std::path::Path::new(&cfg.audit.path))
             .unwrap_or_else(|e| panic!("cannot open audit log {}: {e}", cfg.audit.path)),
     );
-    HarborRuntime { policy, redactor, pwsh, fs, audit, scratch_dir: PathBuf::from(&cfg.sandbox.scratch_dir), default_cwd: cfg.sandbox.cwd.clone() }
+    HarborRuntime {
+        policy,
+        redactor,
+        pwsh,
+        fs,
+        audit,
+        scratch_dir: PathBuf::from(&cfg.sandbox.scratch_dir),
+        default_cwd: cfg.sandbox.cwd.clone(),
+    }
 }

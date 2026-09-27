@@ -52,7 +52,9 @@ impl ApprovalServer {
             port: bound,
             ttl_secs,
         });
-        let server = Self { inner: inner.clone() };
+        let server = Self {
+            inner: inner.clone(),
+        };
         tokio::spawn(accept_loop(listener, inner));
         Ok(server)
     }
@@ -67,21 +69,33 @@ impl ApprovalServer {
 
     /// Create a pending approval for a call; returns the URL the operator must
     /// open. The call awaits `wait`.
-    pub fn request(&self, capability: &str, resource: Option<&str>) -> (String, oneshot::Receiver<ApprovalOutcome>) {
+    pub fn request(
+        &self,
+        capability: &str,
+        resource: Option<&str>,
+    ) -> (String, oneshot::Receiver<ApprovalOutcome>) {
         let token: String = rand::thread_rng()
             .sample_iter(&rand::distributions::Alphanumeric)
             .take(32)
             .map(char::from)
             .collect();
         let (tx, rx) = oneshot::channel();
-        self.inner.pending.lock().unwrap_or_else(|e| e.into_inner()).insert(
-            token.clone(),
-            Pending {
-                capability: capability.to_string(),
-                resource: resource.unwrap_or("(no resource)").chars().take(200).collect(),
-                sender: tx,
-            },
-        );
+        self.inner
+            .pending
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(
+                token.clone(),
+                Pending {
+                    capability: capability.to_string(),
+                    resource: resource
+                        .unwrap_or("(no resource)")
+                        .chars()
+                        .take(200)
+                        .collect(),
+                    sender: tx,
+                },
+            );
         let url = format!("http://127.0.0.1:{}/approve/{}", self.inner.port, token);
         (url, rx)
     }
@@ -89,7 +103,10 @@ impl ApprovalServer {
 
 /// Wait for the operator's decision with a TTL. Returns `Expired` if the TTL
 /// elapses (or the channel drops, e.g. server shutdown).
-pub async fn await_decision(rx: oneshot::Receiver<ApprovalOutcome>, ttl_secs: u64) -> ApprovalOutcome {
+pub async fn await_decision(
+    rx: oneshot::Receiver<ApprovalOutcome>,
+    ttl_secs: u64,
+) -> ApprovalOutcome {
     match tokio::time::timeout(std::time::Duration::from_secs(ttl_secs), rx).await {
         Ok(Ok(outcome)) => outcome,
         Ok(Err(_)) => ApprovalOutcome::Denied,
@@ -99,7 +116,9 @@ pub async fn await_decision(rx: oneshot::Receiver<ApprovalOutcome>, ttl_secs: u6
 
 async fn accept_loop(listener: TcpListener, inner: Arc<ApprovalInner>) {
     loop {
-        let Ok((stream, _)) = listener.accept().await else { continue };
+        let Ok((stream, _)) = listener.accept().await else {
+            continue;
+        };
         let inner = inner.clone();
         tokio::spawn(async move {
             let _ = handle_conn(stream, inner).await;
@@ -127,7 +146,10 @@ async fn route(req: &str, inner: &Arc<ApprovalInner>) -> (&'static str, String) 
     // GET /                  → status
     let path = req.split_whitespace().nth(1).unwrap_or("/");
     match path {
-        "/" => ("200 OK", format!("harbor approval server on 127.0.0.1:{}", inner.port)),
+        "/" => (
+            "200 OK",
+            format!("harbor approval server on 127.0.0.1:{}", inner.port),
+        ),
         _ => {
             let (verb, token) = match path.strip_prefix("/approve/") {
                 Some(t) => ("approve", t),
@@ -136,15 +158,26 @@ async fn route(req: &str, inner: &Arc<ApprovalInner>) -> (&'static str, String) 
                     None => return ("404 Not Found", "unknown route".into()),
                 },
             };
-            let outcome = if verb == "approve" { ApprovalOutcome::Granted } else { ApprovalOutcome::Denied };
-            let p = inner.pending.lock().unwrap_or_else(|e| e.into_inner()).remove(token);
+            let outcome = if verb == "approve" {
+                ApprovalOutcome::Granted
+            } else {
+                ApprovalOutcome::Denied
+            };
+            let p = inner
+                .pending
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(token);
             match p {
                 Some(p) => {
                     let _ = p.sender.send(outcome.clone());
                     let msg = format!("{verb}d: {} ({})", p.capability, p.resource);
                     ("200 OK", msg)
                 }
-                None => ("404 Not Found", "no such pending approval (expired or already decided)".into()),
+                None => (
+                    "404 Not Found",
+                    "no such pending approval (expired or already decided)".into(),
+                ),
             }
         }
     }
@@ -161,7 +194,11 @@ mod tests {
         assert!(url.contains(&srv.port().to_string()));
         // Nobody approves → the TTL elapses → Expired. Use a short wait.
         let outcome = await_decision(rx, 1).await;
-        assert_eq!(outcome, ApprovalOutcome::Expired, "no one approved → expired");
+        assert_eq!(
+            outcome,
+            ApprovalOutcome::Expired,
+            "no one approved → expired"
+        );
     }
 
     #[tokio::test]
@@ -170,11 +207,19 @@ mod tests {
         let (url, rx) = srv.request("fs.write", Some("Z:/x"));
         let token = url.rsplit('/').next().unwrap().to_string();
         // Simulate the operator hitting the URL.
-        let resp = req(&format!("GET /approve/{token} HTTP/1.1\r\nHost: localhost\r\n\r\n"), srv.port()).await;
+        let resp = req(
+            &format!("GET /approve/{token} HTTP/1.1\r\nHost: localhost\r\n\r\n"),
+            srv.port(),
+        )
+        .await;
         assert!(resp.starts_with("HTTP/1.1 200 OK"));
         assert_eq!(await_decision(rx, 60).await, ApprovalOutcome::Granted);
         // A second hit is a 404 (single-use).
-        let resp = req(&format!("GET /approve/{token} HTTP/1.1\r\nHost: localhost\r\n\r\n"), srv.port()).await;
+        let resp = req(
+            &format!("GET /approve/{token} HTTP/1.1\r\nHost: localhost\r\n\r\n"),
+            srv.port(),
+        )
+        .await;
         assert!(resp.starts_with("HTTP/1.1 404"));
     }
 
@@ -183,14 +228,20 @@ mod tests {
         let srv = ApprovalServer::start(0, 60).await.unwrap();
         let (url, rx) = srv.request("pwsh.run", None);
         let token = url.rsplit('/').next().unwrap().to_string();
-        let resp = req(&format!("GET /deny/{token} HTTP/1.1\r\nHost: localhost\r\n\r\n"), srv.port()).await;
+        let resp = req(
+            &format!("GET /deny/{token} HTTP/1.1\r\nHost: localhost\r\n\r\n"),
+            srv.port(),
+        )
+        .await;
         assert!(resp.starts_with("HTTP/1.1 200 OK"));
         assert_eq!(await_decision(rx, 60).await, ApprovalOutcome::Denied);
     }
 
     async fn req(raw: &str, port: u16) -> String {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        let mut s = tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        let mut s = tokio::net::TcpStream::connect(("127.0.0.1", port))
+            .await
+            .unwrap();
         s.write_all(raw.as_bytes()).await.unwrap();
         let mut out = Vec::new();
         let _ = s.read_to_end(&mut out).await;

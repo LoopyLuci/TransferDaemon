@@ -30,7 +30,10 @@ pub struct ResourceBudget {
 
 impl Default for ResourceBudget {
     fn default() -> Self {
-        Self { timeout: Duration::from_secs(60), max_output_bytes: 1 << 20 }
+        Self {
+            timeout: Duration::from_secs(60),
+            max_output_bytes: 1 << 20,
+        }
     }
 }
 

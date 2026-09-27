@@ -73,6 +73,9 @@ pub struct ErrorEnvelope {
 
 impl From<&CapError> for ErrorEnvelope {
     fn from(e: &CapError) -> Self {
-        Self { code: e.code(), message: e.to_string() }
+        Self {
+            code: e.code(),
+            message: e.to_string(),
+        }
     }
 }

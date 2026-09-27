@@ -9,7 +9,9 @@ use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
-use harbor_core::capability::{Capability, CapabilityContext, CapabilityManifest, ResourceBudget, Risk};
+use harbor_core::capability::{
+    Capability, CapabilityContext, CapabilityManifest, ResourceBudget, Risk,
+};
 use harbor_core::errors::{CapError, CapResult};
 use harbor_core::redact::sha256;
 use serde_json::{json, Value};
@@ -52,7 +54,11 @@ pub struct PwshConfig {
 
 impl Default for PwshConfig {
     fn default() -> Self {
-        Self { binary: "pwsh".into(), constrained_default: false, env_remove: Vec::new() }
+        Self {
+            binary: "pwsh".into(),
+            constrained_default: false,
+            env_remove: Vec::new(),
+        }
     }
 }
 
@@ -67,7 +73,9 @@ impl PwshProvider {
 
     fn script_with_clm(command: &str, constrained: bool) -> String {
         if constrained {
-            format!("$ExecutionContext.SessionState.LanguageMode = 'ConstrainedLanguage';\n{command}")
+            format!(
+                "$ExecutionContext.SessionState.LanguageMode = 'ConstrainedLanguage';\n{command}"
+            )
         } else {
             command.to_string()
         }
@@ -81,7 +89,10 @@ impl Capability for PwshProvider {
     }
 
     fn resource(&self, params: &Value) -> Option<String> {
-        params.get("command").and_then(Value::as_str).map(str::to_owned)
+        params
+            .get("command")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
     }
 
     async fn invoke(&self, _ctx: &CapabilityContext, params: Value) -> CapResult<Value> {
@@ -129,13 +140,16 @@ impl Capability for PwshProvider {
         }
 
         let start = Instant::now();
-        let mut child = cmd.spawn().map_err(|e| {
-            CapError::Internal(format!("failed to spawn {}: {e}", self.cfg.binary))
-        })?;
+        let mut child = cmd
+            .spawn()
+            .map_err(|e| CapError::Internal(format!("failed to spawn {}: {e}", self.cfg.binary)))?;
 
         let mut stdin_task = None;
         if let Some(text) = stdin {
-            let mut child_stdin = child.stdin.take().ok_or_else(|| CapError::Internal("no stdin pipe".into()))?;
+            let mut child_stdin = child
+                .stdin
+                .take()
+                .ok_or_else(|| CapError::Internal("no stdin pipe".into()))?;
             let text = text.to_string();
             stdin_task = Some(tokio::spawn(async move {
                 use tokio::io::AsyncWriteExt;
@@ -144,8 +158,14 @@ impl Capability for PwshProvider {
             }));
         }
 
-        let stdout = child.stdout.take().ok_or_else(|| CapError::Internal("no stdout pipe".into()))?;
-        let stderr = child.stderr.take().ok_or_else(|| CapError::Internal("no stderr pipe".into()))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| CapError::Internal("no stdout pipe".into()))?;
+        let stderr = child
+            .stderr
+            .take()
+            .ok_or_else(|| CapError::Internal("no stderr pipe".into()))?;
         let out_task = tokio::spawn(read_capped(stdout, max_output));
         let err_task = tokio::spawn(read_capped(stderr, max_output));
 
@@ -163,8 +183,12 @@ impl Capability for PwshProvider {
         if let Some(t) = stdin_task {
             let _ = t.await;
         }
-        let (out, out_trunc) = out_task.await.map_err(|e| CapError::Internal(format!("stdout task: {e}")))?;
-        let (err, err_trunc) = err_task.await.map_err(|e| CapError::Internal(format!("stderr task: {e}")))?;
+        let (out, out_trunc) = out_task
+            .await
+            .map_err(|e| CapError::Internal(format!("stdout task: {e}")))?;
+        let (err, err_trunc) = err_task
+            .await
+            .map_err(|e| CapError::Internal(format!("stderr task: {e}")))?;
 
         let stdout_text = String::from_utf8_lossy(&out).into_owned();
         let stderr_text = String::from_utf8_lossy(&err).into_owned();
@@ -180,7 +204,12 @@ impl Capability for PwshProvider {
             "out_sha256": sha256(&out),
         });
 
-        tracing::debug!(capability = "pwsh.run", duration_ms, exit_code, "pwsh invocation complete");
+        tracing::debug!(
+            capability = "pwsh.run",
+            duration_ms,
+            exit_code,
+            "pwsh invocation complete"
+        );
 
         Ok(output_json)
     }
@@ -263,32 +292,62 @@ mod tests {
 
     #[tokio::test]
     async fn runs_a_script_and_returns_exit_code() {
-        if std::process::Command::new("pwsh").arg("-NoProfile").arg("-Command").arg("exit 0").status().is_err() {
+        if std::process::Command::new("pwsh")
+            .arg("-NoProfile")
+            .arg("-Command")
+            .arg("exit 0")
+            .status()
+            .is_err()
+        {
             eprintln!("pwsh not available; skipping");
             return;
         }
         let p = PwshProvider::new(PwshConfig::default());
-        let out = p.invoke(&ctx(), json!({ "command": "'1+1' | Write-Output; Write-Output 'ok'" })).await.unwrap();
+        let out = p
+            .invoke(
+                &ctx(),
+                json!({ "command": "'1+1' | Write-Output; Write-Output 'ok'" }),
+            )
+            .await
+            .unwrap();
         assert_eq!(out["exit_code"], 0);
         assert!(out["stdout"].as_str().unwrap().contains("ok"));
     }
 
     #[tokio::test]
     async fn timeout_kills_the_process() {
-        if std::process::Command::new("pwsh").arg("-NoProfile").arg("-Command").arg("exit 0").status().is_err() {
+        if std::process::Command::new("pwsh")
+            .arg("-NoProfile")
+            .arg("-Command")
+            .arg("exit 0")
+            .status()
+            .is_err()
+        {
             return;
         }
         let p = PwshProvider::new(PwshConfig::default());
         let err = p
-            .invoke(&ctx(), json!({ "command": "Start-Sleep -Seconds 30; exit 0", "timeout_ms": 200 }))
+            .invoke(
+                &ctx(),
+                json!({ "command": "Start-Sleep -Seconds 30; exit 0", "timeout_ms": 200 }),
+            )
             .await
             .unwrap_err();
-        assert!(matches!(err, CapError::Timeout(_)), "expected Timeout, got {err:?}");
+        assert!(
+            matches!(err, CapError::Timeout(_)),
+            "expected Timeout, got {err:?}"
+        );
     }
 
     #[tokio::test]
     async fn output_cap_truncates() {
-        if std::process::Command::new("pwsh").arg("-NoProfile").arg("-Command").arg("exit 0").status().is_err() {
+        if std::process::Command::new("pwsh")
+            .arg("-NoProfile")
+            .arg("-Command")
+            .arg("exit 0")
+            .status()
+            .is_err()
+        {
             return;
         }
         let p = PwshProvider::new(PwshConfig::default());
@@ -296,7 +355,10 @@ mod tests {
             .invoke(&ctx(), json!({ "command": "1..100000 | ForEach-Object { 'x' * 80 }", "max_output": 1024, "timeout_ms": 20000 }))
             .await
             .unwrap();
-        assert!(out["truncated"].as_bool().unwrap(), "output should be truncated");
+        assert!(
+            out["truncated"].as_bool().unwrap(),
+            "output should be truncated"
+        );
         assert!(out["stdout"].as_str().unwrap().len() <= 4096);
     }
 
@@ -305,9 +367,16 @@ mod tests {
         let e = encode_command("Get-Process");
         // Decode and confirm it's UTF-16LE "Get-Process".
         use base64::Engine as _;
-        let bytes = base64::engine::general_purpose::STANDARD.decode(&e).unwrap();
-        let utf16: Vec<u16> = bytes.chunks(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
-        let s: String = char::decode_utf16(utf16).map(|r| r.unwrap_or('?')).collect();
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(&e)
+            .unwrap();
+        let utf16: Vec<u16> = bytes
+            .chunks(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .collect();
+        let s: String = char::decode_utf16(utf16)
+            .map(|r| r.unwrap_or('?'))
+            .collect();
         assert_eq!(s, "Get-Process");
     }
 }

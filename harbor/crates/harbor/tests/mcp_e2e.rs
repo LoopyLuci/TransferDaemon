@@ -41,7 +41,13 @@ impl Harness {
             .unwrap();
         let stdin = child.stdin.take().unwrap();
         let reader = BufReader::new(child.stdout.take().unwrap());
-        let mut harness = Self { child, stdin, reader, next_id: 1, audit_path };
+        let mut harness = Self {
+            child,
+            stdin,
+            reader,
+            next_id: 1,
+            audit_path,
+        };
         // Wait for the ready line.
         let _ = harness.read_line();
         harness
@@ -110,7 +116,10 @@ fn tools_list_exposes_registered_capabilities() {
         .map(|t| t["name"].as_str().unwrap().to_string())
         .collect();
     for expected in ["fs_read", "fs_write", "fs_list", "fs_stat", "pwsh_run"] {
-        assert!(names.contains(&expected.to_string()), "missing tool {expected}: {names:?}");
+        assert!(
+            names.contains(&expected.to_string()),
+            "missing tool {expected}: {names:?}"
+        );
     }
     h.close();
 }
@@ -148,7 +157,10 @@ fn denied_capability_is_rejected_end_to_end() {
 fn unknown_tool_returns_clean_error() {
     let dir = tempfile::tempdir().unwrap();
     let mut h = Harness::start(dir.path());
-    let resp = h.rpc("tools/call", json!({ "name": "does_not_exist", "arguments": {} }));
+    let resp = h.rpc(
+        "tools/call",
+        json!({ "name": "does_not_exist", "arguments": {} }),
+    );
     assert_eq!(resp["result"]["isError"], true);
     let text = resp["result"]["content"][0]["text"].as_str().unwrap();
     assert!(text.contains("unknown tool"), "{text}");
@@ -171,7 +183,10 @@ fn audit_log_records_decisions() {
     let mut h = Harness::start(dir.path());
     // An allowed read + a denied pwsh call.
     h.rpc("tools/call", json!({ "name": "fs_read", "arguments": { "path": dir.path().join("x.txt").to_string_lossy() } }));
-    h.rpc("tools/call", json!({ "name": "pwsh_run", "arguments": { "command": "whoami" } }));
+    h.rpc(
+        "tools/call",
+        json!({ "name": "pwsh_run", "arguments": { "command": "whoami" } }),
+    );
     drop(h.stdin);
     h.child.wait().unwrap();
 
@@ -179,9 +194,15 @@ fn audit_log_records_decisions() {
     let entries: Vec<&str> = contents.lines().filter(|l| !l.trim().is_empty()).collect();
     let n = entries.len();
     assert!(n >= 2, "audit should have >=2 entries, got {n}");
-    assert!(entries[n - 1].contains("\"capability\":\"pwsh.run\""), "last entry should be the pwsh call");
+    assert!(
+        entries[n - 1].contains("\"capability\":\"pwsh.run\""),
+        "last entry should be the pwsh call"
+    );
     assert!(entries[n - 1].contains("\"decision\":\"deny\""));
-    assert!(harbor_core::audit::AuditLog::verify(&h.audit_path), "audit chain must verify");
+    assert!(
+        harbor_core::audit::AuditLog::verify(&h.audit_path),
+        "audit chain must verify"
+    );
 }
 
 #[test]
