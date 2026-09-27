@@ -93,6 +93,45 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
     lines.push(Line::from("─".repeat(inner.width.saturating_sub(2) as usize)));
     lines.push(Line::from(""));
 
+    lines.push(Line::from(Span::styled("TRANSFER LIMITS",
+        Style::default().fg(Color::DarkGray).add_modifier(Modifier::BOLD))));
+    lines.push(Line::from(""));
+    match &app.limits_summary {
+        Some(summary) => {
+            lines.push(Line::from(vec![
+                Span::styled("  Effective:    ", Style::default().fg(Color::Gray)),
+                Span::styled(summary.as_str(), Style::default().fg(Color::White)),
+            ]));
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                "  Presets: 1 MB · 5 · 10 · 25 · 50 · 100 · 250 · 500 MB · 1 · 5 GB · Unlimited",
+                Style::default().fg(Color::DarkGray),
+            )));
+            lines.push(Line::from(Span::styled(
+                "  Set via SettingsService keys: limits.message_bytes = \"5mb\" | \"12345\" | \"0\"",
+                Style::default().fg(Color::DarkGray),
+            )));
+            lines.push(Line::from(Span::styled(
+                "  ...photo_bytes / video_bytes / voice_bytes / file_bytes; limits.daily_mb /",
+                Style::default().fg(Color::DarkGray),
+            )));
+            lines.push(Line::from(Span::styled(
+                "  weekly_mb / monthly_mb (MiB); limits.call_kbps. Env TRANSFERD_MAX_* too.",
+                Style::default().fg(Color::DarkGray),
+            )));
+        }
+        None => {
+            lines.push(Line::from(Span::styled(
+                "  (daemon offline — limits not available)",
+                Style::default().fg(Color::DarkGray),
+            )));
+        }
+    }
+
+    lines.push(Line::from(""));
+    lines.push(Line::from("─".repeat(inner.width.saturating_sub(2) as usize)));
+    lines.push(Line::from(""));
+
     lines.push(Line::from(Span::styled("ABOUT",
         Style::default().fg(Color::DarkGray).add_modifier(Modifier::BOLD))));
     lines.push(Line::from(""));

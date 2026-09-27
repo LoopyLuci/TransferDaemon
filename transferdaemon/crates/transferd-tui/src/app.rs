@@ -202,6 +202,10 @@ pub struct App {
     pub last_tick: Instant,
 
     pub telemetry: TelemetryState,
+
+    /// Human summary of the daemon's effective transfer limits (fetched from
+    /// `get_setting("limits.summary")`). Shown on the Settings page.
+    pub limits_summary: Option<String>,
 }
 
 impl App {
@@ -209,6 +213,7 @@ impl App {
         let identity = daemon.get_identity().await;
         let contacts = daemon.get_contacts().await;
         let transfers = daemon.get_transfers().await;
+        let limits_summary = daemon.get_setting("limits.summary").await;
 
         let screen = if identity.is_none() {
             Screen::Onboarding(OnboardingStep::Welcome)
@@ -246,6 +251,7 @@ impl App {
             status: String::new(),
             last_tick: Instant::now(),
             telemetry: TelemetryState::default(),
+            limits_summary,
         }
     }
 
@@ -293,6 +299,7 @@ impl App {
 
     pub async fn tick(&mut self) {
         self.transfers = self.daemon.get_transfers().await;
+        self.limits_summary = self.daemon.get_setting("limits.summary").await;
         // Refresh messages for open contact.
         if let Some(id) = self.open_contact_id().map(|s| s.to_owned()) {
             let msgs = self.daemon.get_messages(&id).await;

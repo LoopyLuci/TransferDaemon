@@ -18,7 +18,7 @@ use tonic::transport::Server;
 use transferd_api::{
     AccountServiceClient, CreateIdentityRequest, MessageServiceClient, SendFileRequest,
     SendTextRequest, TransferServiceClient, Empty, FriendServiceClient, SafetyNumberRequest,
-    SendTypingRequest, ReactionRequest,
+    SendTypingRequest, ReactionRequest, SettingsServiceClient, GetSettingRequest,
 };
 use transferd_lib::state::{Contact, DaemonState};
 use transferd_lib::transport::spawn_inbound_listener;
@@ -670,4 +670,48 @@ async fn send_refused_when_peer_advertised_cap_is_smaller() {
         .unwrap_err();
     assert!(err.message().contains("exceeds"), "expected a photo cap refusal, got: {err}");
     let _ = std::fs::remove_file(&big);
+}
+
+/// Transfer limits are settable via the SettingsService and enforced: a text
+/// over the newly-set cap is refused by the sender's own limits.
+#[tokio::test]
+async fn limits_set_via_settings_are_enforced() {
+    let recv_state = new_state();
+    recv_state.lock().install_identity(
+        "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+        "Bob",
+    );
+    let recv_addr = spawn_inbound_listener(recv_state.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+
+    let send_state = new_state();
+    let peer_pk = recv_state.lock().identity.as_ref().unwrap().public_key.clone();
+    {
+        let mut s = send_state.lock();
+        s.contacts.push(Contact {
+            id: peer_pk.clone(),
+            name: "Bob".into(),
+            last_seen_ts: 0,
+            online: false,
+            blocked: false,
+            address: Some(recv_addr.to_string()),
+            hybrid_public_key: None,
+            limits: None,
+        });
+        // User sets a tiny message cap via the settings map.
+        s.settings.insert("limits.message_bytes".into(), "8".into());
+    }
+    let sender_addr = start_grpc(send_state.clone()).await;
+    let url = format!("http://{sender_addr}");
+    let mut msg = MessageServiceClient::connect(url).await.unwrap();
+
+    // Read the effective limit back (synthesized by the SettingsService).
+    let mut settings = SettingsServiceClient::connect(format!("http://{sender_addr}")).await.unwrap();
+    let reply = settings.get_setting(GetSettingRequest { key: "limits.message_bytes".into() }).await.unwrap().into_inner();
+    assert!(reply.found && reply.value.contains("8"), "effective cap should reflect the setting: {reply:?}");
+
+    let err = msg
+        .send_text(SendTextRequest { contact_id: peer_pk.clone(), text: "x".repeat(64), reply_to: String::new() })
+        .await
+        .unwrap_err();
+    assert!(err.message().contains("exceeds"), "expected a cap refusal, got: {err}");
 }

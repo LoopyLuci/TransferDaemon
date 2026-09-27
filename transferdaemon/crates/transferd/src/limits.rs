@@ -78,6 +78,71 @@ pub fn daemon_limits() -> TransferLimits {
     l
 }
 
+/// Limit-setting keys in the daemon's settings map (`state.settings`).
+/// A value is a preset name (`"5mb"`), a byte count, or `"0"`/`"unbounded"`.
+/// Bandwidth keys take MiB numbers.
+pub const SETTING_KEYS: [(&str, ContentType); 5] = [
+    ("limits.message_bytes", ContentType::Message),
+    ("limits.photo_bytes", ContentType::Photo),
+    ("limits.video_bytes", ContentType::Video),
+    ("limits.voice_bytes", ContentType::Voice),
+    ("limits.file_bytes", ContentType::File),
+];
+pub const SETTING_BANDWIDTH_KEYS: [&str; 3] =
+    ["limits.daily_mb", "limits.weekly_mb", "limits.monthly_mb"];
+pub const SETTING_CALL_KEY: &str = "limits.call_kbps";
+
+/// The daemon's effective limits: env (base) overlaid by the user's stored
+/// settings (which win — they are the user-facing configuration).
+pub fn daemon_limits_with(settings: &std::collections::HashMap<String, String>) -> TransferLimits {
+    let mut l = daemon_limits();
+    for (key, ct) in SETTING_KEYS {
+        if let Some(v) = settings.get(key).filter(|v| !v.trim().is_empty()) {
+            match ct {
+                ContentType::Message => l.message_bytes = parse_max(v),
+                ContentType::Photo => l.photo_bytes = parse_max(v),
+                ContentType::Video => l.video_bytes = parse_max(v),
+                ContentType::Voice => l.voice_bytes = parse_max(v),
+                ContentType::File => l.file_bytes = parse_max(v),
+                ContentType::Call => {}
+            }
+        }
+    }
+    for (key, dst) in [
+        (SETTING_BANDWIDTH_KEYS[0], &mut l.daily_bytes),
+        (SETTING_BANDWIDTH_KEYS[1], &mut l.weekly_bytes),
+        (SETTING_BANDWIDTH_KEYS[2], &mut l.monthly_bytes),
+    ] {
+        if let Some(v) = settings.get(key).filter(|v| !v.trim().is_empty()) {
+            if let Ok(mb) = v.trim().parse::<u64>() {
+                *dst = if mb == 0 { MaxBytes::UNBOUNDED } else { MaxBytes::custom(mb << 20) };
+            }
+        }
+    }
+    if let Some(v) = settings.get(SETTING_CALL_KEY).filter(|v| !v.trim().is_empty()) {
+        if let Ok(n) = v.trim().parse::<u64>() {
+            l.call_kbps = n;
+        }
+    }
+    l
+}
+
+/// A one-line human summary of the effective limits (for the settings UI).
+pub fn summarize(l: &TransferLimits) -> String {
+    format!(
+        "msg {} · photo {} · video {} · voice {} · file {} · call {}kbps · day {} / week {} / month {}",
+        l.message_bytes.label(),
+        l.photo_bytes.label(),
+        l.video_bytes.label(),
+        l.voice_bytes.label(),
+        l.file_bytes.label(),
+        l.call_kbps,
+        l.daily_bytes.label(),
+        l.weekly_bytes.label(),
+        l.monthly_bytes.label(),
+    )
+}
+
 /// The byte cap a peer will accept for `ct`, if known (None = unknown/unbounded).
 pub fn peer_cap(limits: Option<&TransferLimits>, ct: ContentType) -> Option<u64> {
     limits.and_then(|l| l.cap_for(ct))

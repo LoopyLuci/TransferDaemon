@@ -42,6 +42,11 @@ pub trait DaemonApi: Send + Sync {
     async fn send_group_text(&self, group_id: &str, text: String) -> Result<Message, DaemonError>;
     #[allow(dead_code)]
     async fn get_group_messages(&self, group_id: &str) -> Vec<Message>;
+    /// Read a daemon setting (transfer limits etc.).
+    async fn get_setting(&self, key: &str) -> Option<String>;
+    /// Set a daemon setting (transfer limits etc.).
+    #[allow(dead_code)]
+    async fn set_setting(&self, key: &str, value: &str) -> Result<(), DaemonError>;
 }
 
 // ---------------------------------------------------------------------------
@@ -67,6 +72,7 @@ struct MockState {
     groups: Vec<Group>,
     messages: HashMap<String, Vec<Message>>,
     transfers: Vec<TransferStatus>,
+    settings: HashMap<String, String>,
     next_id: u64,
 }
 
@@ -334,5 +340,16 @@ impl DaemonApi for MockDaemon {
     async fn get_group_messages(&self, group_id: &str) -> Vec<Message> {
         self.state.lock().unwrap_or_else(|e| e.into_inner())
             .messages.get(group_id).cloned().unwrap_or_default()
+    }
+
+    async fn get_setting(&self, key: &str) -> Option<String> {
+        self.state.lock().unwrap_or_else(|e| e.into_inner())
+            .settings.get(key).cloned()
+    }
+
+    async fn set_setting(&self, key: &str, value: &str) -> Result<(), DaemonError> {
+        self.state.lock().unwrap_or_else(|e| e.into_inner())
+            .settings.insert(key.to_owned(), value.to_owned());
+        Ok(())
     }
 }

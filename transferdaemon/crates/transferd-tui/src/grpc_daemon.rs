@@ -40,6 +40,9 @@ impl GrpcDaemon {
     fn groups(&self) -> transferd_api::GroupServiceClient<AuthChannel> {
         transferd_api::GroupServiceClient::new(self.channel.clone())
     }
+    fn settings(&self) -> transferd_api::SettingsServiceClient<AuthChannel> {
+        transferd_api::SettingsServiceClient::new(self.channel.clone())
+    }
 }
 
 fn map_status(s: &str) -> MessageStatus {
@@ -268,6 +271,24 @@ impl DaemonApi for GrpcDaemon {
             .await
             .map(|r| r.into_inner().messages.into_iter().map(proto_msg).collect())
             .unwrap_or_default()
+    }
+
+    async fn get_setting(&self, key: &str) -> Option<String> {
+        self.settings()
+            .get_setting(transferd_api::GetSettingRequest { key: key.to_owned() })
+            .await
+            .ok()
+            .map(|r| r.into_inner())
+            .filter(|r| r.found)
+            .map(|r| r.value)
+    }
+
+    async fn set_setting(&self, key: &str, value: &str) -> Result<(), DaemonError> {
+        self.settings()
+            .set_setting(transferd_api::SetSettingRequest { key: key.to_owned(), value: value.to_owned() })
+            .await
+            .map(|_| ())
+            .map_err(|e| DaemonError::NotReachable(e.to_string()))
     }
 }
 

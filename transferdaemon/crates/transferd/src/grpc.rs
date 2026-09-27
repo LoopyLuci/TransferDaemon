@@ -561,7 +561,7 @@ impl MessageService for MessageServiceImpl {
 
         // 0. Outbound limit check: our own message cap applies to what we send;
         //    a peer's advertised cap (if known) is the tighter bound.
-        let outbound = crate::limits::daemon_limits();
+        let outbound = crate::limits::daemon_limits_with(&self.0.lock().settings.clone());
         let peer_limits = {
             let s = self.0.lock();
             s.contacts.iter().find(|c| c.id == contact_id).and_then(|c| c.limits.clone())
@@ -793,7 +793,7 @@ impl TransferService for TransferServiceImpl {
         // 0. Outbound limit check: classify the MIME → content type, then apply
         //    the peer's advertised cap (tighter) or our own message cap.
         let content_type = relayd::limits::ContentType::from_mime(&r.mime_type);
-        let outbound = crate::limits::daemon_limits();
+        let outbound = crate::limits::daemon_limits_with(&self.0.lock().settings.clone());
         let peer_limits = {
             let s = self.0.lock();
             s.contacts.iter().find(|c| c.id == r.contact_id).and_then(|c| c.limits.clone())
@@ -945,6 +945,26 @@ impl SettingsService for SettingsServiceImpl {
             return Ok(Response::new(SettingReply { value, found: true }));
         }
 
+        // Synthesise transfer-limit reads from the effective (env + settings)
+        // limits so a settings UI can display the actual caps.
+        if key.starts_with("limits.") {
+            let limits = crate::limits::daemon_limits_with(&s.settings);
+            let value = match key.as_str() {
+                "limits.summary" => crate::limits::summarize(&limits),
+                "limits.message_bytes" => limits.message_bytes.label(),
+                "limits.photo_bytes" => limits.photo_bytes.label(),
+                "limits.video_bytes" => limits.video_bytes.label(),
+                "limits.voice_bytes" => limits.voice_bytes.label(),
+                "limits.file_bytes" => limits.file_bytes.label(),
+                "limits.call_kbps" => limits.call_kbps.to_string(),
+                "limits.daily_mb" => format_mb(limits.daily_bytes.bytes()),
+                "limits.weekly_mb" => format_mb(limits.weekly_bytes.bytes()),
+                "limits.monthly_mb" => format_mb(limits.monthly_bytes.bytes()),
+                _ => return Ok(Response::new(SettingReply { value: String::new(), found: false })),
+            };
+            return Ok(Response::new(SettingReply { value, found: true }));
+        }
+
         match s.settings.get(&key) {
             Some(v) => Ok(Response::new(SettingReply { value: v.clone(), found: true })),
             None    => Ok(Response::new(SettingReply { value: String::new(), found: false })),
@@ -970,9 +990,24 @@ impl SettingsService for SettingsServiceImpl {
         }
 
         let s = &mut *self.0.lock();
-        s.settings.insert(r.key, r.value);
+        s.settings.insert(r.key.clone(), r.value);
         s.try_save();
+
+        // A limit change must re-advertise the peer's caps to the DHT.
+        if r.key.starts_with("limits.") {
+            let state = self.0.clone();
+            tokio::spawn(async move {
+                crate::peer_discovery::publish_endpoint_if_ready(&state).await;
+            });
+        }
         Ok(Response::new(Empty {}))
+    }
+}
+
+fn format_mb(bytes: Option<u64>) -> String {
+    match bytes {
+        Some(b) => format!("{}", b >> 20),
+        None => "0".to_string(),
     }
 }
 

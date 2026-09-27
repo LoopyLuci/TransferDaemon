@@ -169,7 +169,7 @@ pub async fn handle_inbound_connection(
             // Inbound limit check: the RECEIVER's own limits decide what it
             // accepts. A file that exceeds the cap is dropped wholesale.
             let content_type = relayd::limits::ContentType::from_mime(mime);
-            let cap = crate::limits::daemon_limits()
+            let cap = crate::limits::daemon_limits_with(&state.lock().settings.clone())
                 .cap_for(content_type)
                 .unwrap_or(u64::MAX);
             if *file_size > cap {
@@ -203,7 +203,7 @@ pub async fn handle_inbound_connection(
 
         // Inbound text cap (the receiver's message limit).
         if let WireMsg::Text { text, .. } = &msg {
-            let cap = crate::limits::daemon_limits()
+            let cap = crate::limits::daemon_limits_with(&state.lock().settings.clone())
                 .cap_for(relayd::limits::ContentType::Message)
                 .unwrap_or(u64::MAX);
             if text.len() as u64 > cap {

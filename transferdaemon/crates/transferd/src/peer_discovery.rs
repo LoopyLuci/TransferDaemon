@@ -122,7 +122,7 @@ pub async fn publish_endpoint_if_ready(
         })
         .collect();
     let (first_addr, first_token) = relays.first().cloned().unwrap_or_default();
-    let own_limits = crate::limits::daemon_limits();
+    let own_limits = crate::limits::daemon_limits_with(&state.lock().settings.clone());
     let ep = PeerEndpoint {
         public_key: pk.clone(),
         relay_addr: first_addr,
