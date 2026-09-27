@@ -6,7 +6,6 @@
 //!   cargo run --release -p transferd --example mobile_identity -- create "Bob"
 //!   cargo run --release -p transferd --example mobile_identity -- get
 
-use tonic::transport::Channel;
 use transferd_api::{
     AccountServiceClient, CreateIdentityRequest, Empty,
 };
