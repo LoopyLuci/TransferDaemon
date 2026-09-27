@@ -823,8 +823,6 @@ a_state.lock().contacts.push(Contact {
             eprintln!("[diag] no desktop hub");
         }
     }
-    eprintln!("[diag] handshake probe complete — returning before send/pump");
-    return;
 
     let mut a_msg = MessageServiceClient::connect(a_url.clone()).await.unwrap();
     a_msg
