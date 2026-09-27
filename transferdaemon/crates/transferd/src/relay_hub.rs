@@ -289,6 +289,16 @@ impl RelayHub {
         self.relays.iter().any(|r| r.addr == addr)
     }
 
+    /// Whether the hub is registered on a relay with this AUTHORITY
+    /// (`host:port`, hostname preserved — DNS round-robin may resolve the same
+    /// hostname to different IPs, so the hostname is the stable identity).
+    pub fn has_relay_authority(&self, authority: &str) -> bool {
+        self.relays.iter().any(|r| {
+            r.authority.as_deref().map(|a| a == authority).unwrap_or(false)
+                || r.addr.to_string() == authority
+        })
+    }
+
     /// The kind of the relay at `addr`, if registered.
     pub fn relay_kind(&self, addr: std::net::SocketAddr) -> Option<RelayKind> {
         self.relays.iter().find(|r| r.addr == addr).map(|r| r.kind)

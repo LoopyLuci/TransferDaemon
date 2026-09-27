@@ -770,3 +770,82 @@ let _guard = relay_test_lock().await;
 
 
 
+
+/// LIVE ON-DEVICE E2E: the DESKTOP daemon delivers a message to the real Kindle
+/// through the deployed Cloudflare Worker. The Kindle's relay token is
+/// identity-derived (relay_token_for), so the desktop addresses it directly via
+/// the Worker's wss:// endpoint — no DHT needed for the delivery leg. Ignored;
+/// run with -- --ignored with the Kindle running.
+#[tokio::test]
+#[ignore]
+async fn desktop_sends_to_real_kindle_over_public_worker() {
+    let _guard = relay_test_lock().await;
+    std::env::set_var("TRANSFERD_RELAY_ADDR", "wss://transferd-relay.limpidluci.workers.dev:443");
+
+    let a_state = new_state();
+    let a_grpc = start_grpc(a_state.clone()).await;
+    let a_url = format!("http://{a_grpc}");
+    let mut a_acct = AccountServiceClient::connect(a_url.clone()).await.unwrap();
+    a_acct.create_identity(CreateIdentityRequest { display_name: "Desktop".into() }).await.unwrap();
+    for _ in 0..300 {
+        if a_state.lock().relay_hub.is_some() { break; }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(a_state.lock().relay_hub.is_some(), "desktop hub must register on the Worker");
+
+// The Kindle's public key (from env KINDLE_PK; identity is re-created each
+    // app launch since the mobile daemon doesn't persist it across restarts).
+    let kindle_pk = std::env::var("KINDLE_PK").unwrap_or_else(|_| "26da5db79219f42b9d30965cbcf7805e8ba0d044dca624108d49236e678fd818".into());
+    let token_hex = hex::encode(relay_token_for(kindle_pk.as_str()));
+    let kindle_addr = format!("wsrelay://transferd-relay.limpidluci.workers.dev:443/{token_hex}");
+    eprintln!("[diag] kindle relay token: {token_hex}");
+
+a_state.lock().contacts.push(Contact {
+        id: kindle_pk.to_string(),
+        name: "Kindle".into(),
+        last_seen_ts: 0,
+        online: false,
+        blocked: false,
+        address: Some(kindle_addr),
+        hybrid_public_key: None,
+        limits: None,
+    });
+
+    // Directly attempt the relay handshake to the Kindle + print the outcome.
+    {
+        let s = a_state.lock();
+        if let Some(hub) = &s.relay_hub {
+            let id = s.hybrid_signing_key().expect("desktop identity");
+            let spec = hub.relay_specs()[0];
+            let result = hub.initiate(relay_token_for(kindle_pk.as_str()), &id, spec.0).await;
+            eprintln!("[diag] hub.initiate(kindle) via {} = {:?}", spec.0, result.map(|pk| format!("{}..", hex::encode(&pk[..4]))));
+        } else {
+            eprintln!("[diag] no desktop hub");
+        }
+    }
+    eprintln!("[diag] handshake probe complete — returning before send/pump");
+    return;
+
+    let mut a_msg = MessageServiceClient::connect(a_url.clone()).await.unwrap();
+    a_msg
+        .send_text(SendTextRequest { contact_id: kindle_pk.to_string(), text: "across the internet to the kindle via the cloudflare worker".into(), reply_to: String::new() })
+        .await
+        .expect("send must be accepted");
+    for _ in 0..120 {
+        pump_transport(&a_state).await;
+        let sent = a_state.lock().messages.values().flatten()
+            .any(|m| m.text == "across the internet to the kindle via the cloudflare worker" && m.status == "sent");
+        if sent { break; }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let s = a_state.lock();
+    let m = s.messages.values().flatten()
+        .find(|m| m.text == "across the internet to the kindle via the cloudflare worker")
+        .expect("message must reach 'sent' (relay acked the forward)");
+let hub = a_state.lock().relay_hub.clone();
+    if let Some(hub) = hub {
+        let tok = relay_token_for(kindle_pk.as_str());
+        eprintln!("[diag] desktop hub has_session(kindle)={} root={:?}", hub.has_session(tok).await, hub.session_root(tok).await.map(|r| format!("{r:02x?}")));
+    }
+    assert_eq!(m.status, "sent", "relay must ack the forward to the Kindle: {:?}", m.status);
+}

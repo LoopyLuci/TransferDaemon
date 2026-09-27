@@ -99,8 +99,26 @@ export class TRANSFERD_RELAY {
     return r.hits > 30;
   }
 
+  // Rebuild the in-memory token→socket map after a hibernation wake. SQLite
+  // Durable Objects hibernate after seconds idle; the `clients` Map is NOT
+  // persisted, but the accepted WebSockets (with their `_meta.token`) survive.
+  rebuildClients() {
+    for (const ws of this.state.getWebSockets()) {
+      const t = ws._meta && ws._meta.token;
+      if (t && !this.clients.has(t)) {
+        this.clients.set(t, {
+          ws,
+          ip: (ws._meta && ws._meta.ip) || 'unknown',
+          expires: Date.now() + 90_000,
+        });
+      }
+    }
+  }
+
   // Hibernation message handler: `message` is the raw payload.
   async webSocketMessage(ws, message) {
+    // Any message may follow a hibernation wake — rebuild the routing map.
+    this.rebuildClients();
     // The message may arrive as an ArrayBuffer or a wrapper object; normalize.
     let data = message;
     if (data && typeof data === 'object' && data.data !== undefined) {
@@ -120,6 +138,11 @@ export class TRANSFERD_RELAY {
     const token = toHex(body.subarray(0, 32));
     switch (tag) {
       case TAG.Register:
+        // Persist the token on the socket's metadata so rebuildClients() can
+        // restore the mapping across hibernation.
+        ws._meta = ws._meta || {};
+        ws._meta.token = token;
+        ws._meta.ip = ip;
         this.clients.set(token, { ws, ip, expires: Date.now() + 90_000 });
         ws.send(challengeFrame()); // register accepted (ChallengeMsg reply)
         break;
