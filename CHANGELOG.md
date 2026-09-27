@@ -4,6 +4,16 @@
 
 ### Autonomous nodes + resilient transport
 
+- **Live Internet E2E**: the free-tier Cloudflare Worker relay is deployed at
+  `transferd-relay.limpidluci.workers.dev`; two daemons deliver a message
+  across the public Internet through it (ignored test
+  `text_delivers_between_two_daemons_over_public_cloudflare_worker`). The live
+  E2E caught three Worker bugs (WebSocket hibernation forbids `ws.accept()`;
+  tag bytes swapped vs `relayd::protocol`; the `>=32` guard dropped the bare
+  Challenge ask) and forced daemon-side `wss://` relays, DNS hostname relay
+  addresses (SNI-correct TLS connect + hostname publish/discover), a 30s
+  challenge timeout (DO cold start), and rustls TLS support.
+
 - **Multi-relay protocol + auto-routing**: a peer publishes a LIST of relay
   endpoints (`PeerEndpoint.relays`); `TRANSFERD_RELAY_ADDR` is comma-separated;
   a session builds one lane per shared relay and the ATE fails over when a

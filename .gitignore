@@ -80,3 +80,8 @@ Desktop.ini
 # Android signing keystore (never commit the signing key)
 /transferdaemon.keystore
 ProjectData.md
+
+# Wrangler / Cloudflare local state
+deploy/cloudflare-worker/.wrangler/
+deploy/cloudflare-worker/node_modules/
+deploy/cloudflare-worker/package-lock.json
