@@ -273,6 +273,7 @@ impl TransferDaemonApp {
                 let transfers = d.get_transfers().await;
                 let identity  = d.get_identity().await;
                 let groups    = d.get_groups().await;
+                crate::call_caps::update_call_kbps(d.get_setting("limits.call_kbps").await);
                 *REFRESH_RESULT.lock().unwrap_or_else(|e| e.into_inner()) = Some((contacts, transfers, identity, groups));
             });
         }

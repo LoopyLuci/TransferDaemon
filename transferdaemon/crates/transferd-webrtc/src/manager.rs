@@ -28,6 +28,9 @@ enum SessionInner {
 #[derive(Default)]
 pub struct CallManager {
     session: Arc<Mutex<Option<SessionInner>>>,
+    /// Send-bandwidth cap in kbps applied to calls (from the daemon's
+    /// `limits.call_kbps`). `None` = unbounded. Set by the UI layer.
+    pub max_kbps: Option<u64>,
 }
 
 impl CallManager {
@@ -39,10 +42,12 @@ impl CallManager {
         conv_id: String,
         video: bool,
         media: Arc<dyn MediaCapture>,
+        max_kbps: Option<u64>,
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+        let max_kbps = max_kbps.or(self.max_kbps);
         #[cfg(feature = "real-webrtc")]
         {
-            let sess = RtcCallSession::new_outgoing(conv_id, video, media).await
+            let sess = RtcCallSession::new_outgoing(conv_id, video, media, max_kbps).await
                 .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
                     Box::new(e)
                 })?;
@@ -69,11 +74,13 @@ impl CallManager {
         video: bool,
         remote_sdp: String,
         media: Arc<dyn MediaCapture>,
+        max_kbps: Option<u64>,
     ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+        let max_kbps = max_kbps.or(self.max_kbps);
         #[cfg(feature = "real-webrtc")]
         {
             let sess = RtcCallSession::new_incoming(
-                call_id, conv_id, video, remote_sdp, media,
+                call_id, conv_id, video, remote_sdp, media, max_kbps,
             ).await
                 .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
                     Box::new(e)

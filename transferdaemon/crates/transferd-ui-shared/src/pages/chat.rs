@@ -401,7 +401,7 @@ impl ChatPage {
                                             let media = self.make_capture(true);
                                             let _ = rt.block_on(
                                                 self.call_manager
-                                                    .start_call(cid.clone(), true, media),
+                                                    .start_call(cid.clone(), true, media, crate::call_caps::call_kbps()),
                                             );
                                             self.call_start_ts = None;
                                         }
@@ -419,7 +419,7 @@ impl ChatPage {
                                             let media = self.make_capture(false);
                                             let _ = rt.block_on(
                                                 self.call_manager
-                                                    .start_call(cid.clone(), false, media),
+                                                    .start_call(cid.clone(), false, media, crate::call_caps::call_kbps()),
                                             );
                                             self.call_start_ts = None;
                                         }

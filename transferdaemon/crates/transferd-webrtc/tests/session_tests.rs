@@ -212,7 +212,7 @@ async fn test_manager_idle_by_default() {
 #[tokio::test]
 async fn test_manager_start_call() {
     let mgr = CallManager::new();
-    let call_id = mgr.start_call("conv-1".into(), false, mock_audio()).await.unwrap();
+    let call_id = mgr.start_call("conv-1".into(), false, mock_audio(), None).await.unwrap();
     assert!(!call_id.is_empty());
     assert!(matches!(mgr.state().await, CallState::Outgoing { .. }));
 }
@@ -220,7 +220,7 @@ async fn test_manager_start_call() {
 #[tokio::test]
 async fn test_manager_end_call_returns_to_idle() {
     let mgr = CallManager::new();
-    let _ = mgr.start_call("conv-1".into(), false, mock_audio()).await;
+    let _ = mgr.start_call("conv-1".into(), false, mock_audio(), None).await;
     mgr.end_call().await;
     // After ending, no session remains.
     assert!(matches!(mgr.state().await, CallState::Idle));
@@ -235,6 +235,7 @@ async fn test_manager_accept_call_is_active() {
         false,
         mock_remote_offer(),
         mock_audio(),
+        None,
     ).await.expect("accept_call failed");
     assert!(mgr.is_active().await);
 }

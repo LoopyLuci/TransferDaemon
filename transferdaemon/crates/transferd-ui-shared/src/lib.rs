@@ -1,5 +1,6 @@
 pub mod animations;
 pub mod app;
+pub mod call_caps;
 pub mod daemon;
 pub mod db;
 pub mod design;
