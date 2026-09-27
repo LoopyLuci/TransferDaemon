@@ -81,13 +81,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // apply any inbound events (acks, read receipts, unsolicited messages).
     transferd_lib::transport::spawn_transport_tick(state.clone());
 
-    // Start the inbound peer transport listener (localhost only for security,
-    // on the gRPC port + 1). Each connection completes the X25519 handshake and
-    // is wrapped in an encrypted `TcpLane`.
+    // Start the inbound peer transport listener. By default it binds localhost
+    // only (security); set TRANSFERD_BIND_ADDR=0.0.0.0 (or a LAN/Tailscale IP)
+    // to accept direct peer connections so tailnet/LAN peers can connect
+    // without a relay. The bound address is published as a direct `tcp://`
+    // endpoint.
     {
         let state_clone = state.clone();
         let tcp_port = addr.port() + 1;
-        let bind_addr: std::net::SocketAddr = match format!("127.0.0.1:{tcp_port}").parse() {
+        let bind_host = std::env::var("TRANSFERD_BIND_ADDR").unwrap_or_else(|_| "127.0.0.1".into());
+        let bind_addr: std::net::SocketAddr = match format!("{bind_host}:{tcp_port}").parse() {
             Ok(a) => a,
             Err(e) => {
                 tracing::error!("[transport] invalid peer bind address: {e}");
@@ -95,9 +98,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         };
         tokio::spawn(async move {
-            match transferd_lib::transport::spawn_inbound_listener(state_clone, bind_addr).await {
+            match transferd_lib::transport::spawn_inbound_listener(state_clone.clone(), bind_addr).await {
                 Ok(listening) => {
-                    println!("TransferDaemon peer listener on {listening} (localhost only)");
+                    println!("TransferDaemon peer listener on {listening} (bind {bind_host})");
+                    state_clone.lock().peer_listen = Some(listening);
                 }
                 Err(e) => {
                     tracing::error!("[transport] failed to bind peer listener: {e}");

@@ -208,11 +208,24 @@ mod tests {
         )
         .unwrap_or_default();
         sink.send(Message::Binary(reg.into())).await.unwrap();
-        // Drain until the register reply (a Challenge) arrives.
+        // Drain until the register reply (a Challenge) arrives. Bounded: an
+        // Error reply (stale PoW) or a dropped frame must not deadlock the
+        // test — fail fast and let the caller retry.
         for _ in 0..8 {
-            if let Some(Ok(Message::Binary(f))) = source.next().await {
+            let frame = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                source.next(),
+            )
+            .await
+            .ok()
+            .flatten()
+            .expect("register reply must arrive within 5s");
+            if let Ok(Message::Binary(f)) = frame {
                 if let Some((Tag::Challenge, _)) = split(&f) {
                     break;
+                }
+                if let Some((Tag::Error, _)) = split(&f) {
+                    panic!("relay rejected our registration (stale PoW)");
                 }
             }
         }
@@ -253,7 +266,15 @@ mod tests {
 
         // B receives the DeliveredMsg with the exact opaque blob.
         for _ in 0..8 {
-            if let Some(Ok(Message::Binary(f))) = b_source.next().await {
+            let frame = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                b_source.next(),
+            )
+            .await
+            .ok()
+            .flatten()
+            .expect("delivery must arrive within 5s");
+            if let Ok(Message::Binary(f)) = frame {
                 if let Some((Tag::Ack, body)) = split(&f) {
                     if let Ok(d) = bincode::deserialize::<DeliveredMsg>(body) {
                         assert_eq!(d.ciphertext, blob, "B must receive the exact opaque blob");

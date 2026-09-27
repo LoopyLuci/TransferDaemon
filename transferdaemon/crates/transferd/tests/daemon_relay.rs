@@ -595,3 +595,84 @@ async fn text_delivers_between_two_daemons_over_ws_relay() {
         .expect("receiver must get the WS-relayed message");
     assert!(!got.outbound);
 }
+
+/// Direct P2P discovery: a peer publishes a direct 	cp:// address (e.g. a
+/// Tailscale / LAN address); the other discovers it via the DHT and connects
+/// WITHOUT any relay — the direct lane is preferred over relays.
+#[tokio::test]
+async fn peer_discovers_direct_address_and_connects_without_a_relay() {
+    let _guard = relay_test_lock().await;
+    // No relay at all. Two DHT nodes that know each other.
+    let dht_a = Arc::new(transferd_relay::DhtNode::start("127.0.0.1:0", [0x51u8; 32]).await.unwrap());
+    let dht_b = Arc::new(transferd_relay::DhtNode::start("127.0.0.1:0", [0x52u8; 32]).await.unwrap());
+    let (da, db) = (dht_a.addr(), dht_b.addr());
+    dht_a.bootstrap(vec![db]).await;
+    dht_b.bootstrap(vec![da]).await;
+
+    // ── Bob: daemon + a peer transport listener on a reachable address ───────
+    let b_state = new_state();
+    b_state.lock().dht = Some(dht_b.clone());
+    let b_grpc = start_grpc(b_state.clone()).await;
+    let b_url = format!("http://{b_grpc}");
+    let mut b_acct = AccountServiceClient::connect(b_url.clone()).await.unwrap();
+    b_acct
+        .create_identity(CreateIdentityRequest { display_name: "Bob".into() })
+        .await
+        .unwrap();
+    // Spawn the peer transport listener (localhost for the test) + record it.
+    let b_listener = transferd_lib::transport::spawn_inbound_listener(
+        b_state.clone(),
+        "127.0.0.1:0".parse().unwrap(),
+    )
+    .await
+    .unwrap();
+    b_state.lock().peer_listen = Some(b_listener);
+    publish_endpoint_if_ready(&b_state).await;
+    let b_pk = b_acct.get_public_key_hex(Empty {}).await.unwrap().into_inner().hex;
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // ── Alice ─────────────────────────────────────────────────────────────────
+    let a_state = new_state();
+    a_state.lock().dht = Some(dht_a.clone());
+    let a_grpc = start_grpc(a_state.clone()).await;
+    let a_url = format!("http://{a_grpc}");
+    let mut a_acct = AccountServiceClient::connect(a_url.clone()).await.unwrap();
+    a_acct
+        .create_identity(CreateIdentityRequest { display_name: "Alice".into() })
+        .await
+        .unwrap();
+
+    // Bob published a DIRECT address (no relay configured at all).
+    let resolved = resolve_peer(&dht_a, &b_pk).await.expect("resolve Bob via DHT");
+    assert!(resolved.iter().any(|a| a.starts_with("tcp://")), "Bob must publish a direct tcp:// address: {resolved:?}");
+    assert!(!resolved.iter().any(|a| a.starts_with("relay://")), "no relay should be published: {resolved:?}");
+
+    a_state.lock().contacts.push(Contact {
+        id: b_pk.clone(),
+        name: "Bob".into(),
+        last_seen_ts: 0,
+        online: false,
+        blocked: false,
+        address: None,
+        hybrid_public_key: None,
+    });
+
+    let mut a_msg = MessageServiceClient::connect(a_url.clone()).await.unwrap();
+    a_msg
+        .send_text(SendTextRequest { contact_id: b_pk.clone(), text: "straight to the tailnet".into(), reply_to: String::new() })
+        .await
+        .unwrap();
+    for _ in 0..500 {
+        pump_transport(&a_state).await;
+        if b_state.lock().messages.values().flatten().any(|m| m.text == "straight to the tailnet") { break; }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    let s = b_state.lock();
+    let got = s
+        .messages
+        .values()
+        .flatten()
+        .find(|m| m.text == "straight to the tailnet")
+        .expect("receiver must get the direct-delivered message");
+    assert!(!got.outbound);
+}

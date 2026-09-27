@@ -92,7 +92,10 @@ pub fn spawn_with_config(socket_path: String, config_dir: Option<std::path::Path
             )
             .await
             {
-                Ok(_) => eprintln!("[daemon] transport listener on {transport_addr}"),
+                Ok(listening) => {
+                    eprintln!("[daemon] transport listener on {transport_addr}");
+                    state.lock().peer_listen = Some(listening);
+                }
                 Err(e) => eprintln!("[daemon] transport listener failed: {e}"),
             }
             // Background transport tick: flush queued messages over active lanes

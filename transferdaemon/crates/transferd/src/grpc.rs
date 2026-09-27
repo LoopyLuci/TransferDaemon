@@ -94,14 +94,19 @@ async fn ensure_contact_session(state: &State, contact_id: &str, address: Option
     // Policy steers which transports may be used.
     let policy = { let s = state.lock(); s.settings.get("conn.policy").cloned().unwrap_or_else(|| "auto".into()) };
 
-    // Prefer a direct address when one is known; otherwise use the relay set.
-    let direct = resolved.iter().find(|a| !a.starts_with("relay://") && !a.starts_with("wsrelay://"));
+    // Prefer a direct address when discovered — `tcp://host:port` (LAN /
+    // Tailscale P2P) or a scheme-less `host:port` (legacy Contact.address) —
+    // otherwise use the relay set.
+    let direct = resolved.iter().find(|a| {
+        a.starts_with("tcp://") || (!a.starts_with("relay://") && !a.starts_with("wsrelay://"))
+    });
+    let direct_addr = direct.map(|a| a.trim_start_matches("tcp://"));
     let relays: Vec<&String> = resolved
         .iter()
         .filter(|a| a.starts_with("relay://") || a.starts_with("wsrelay://"))
         .collect();
 
-    let session = if let Some(d) = direct {
+    let session = if let Some(d) = direct_addr {
         if policy == "relay" {
             tracing::info!("[grpc] policy=relay: skipping direct lane to {contact_id}");
             return false;

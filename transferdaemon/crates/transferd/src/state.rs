@@ -212,6 +212,11 @@ pub struct DaemonState {
 /// DHT node used for peer endpoint discovery, when configured.
     pub dht: Option<Arc<transferd_relay::DhtNode>>,
 
+    /// The address our inbound peer transport listener is bound to (set by the
+    /// daemon after spawning it). Used to publish direct `tcp://` endpoints so
+    /// tailnet/LAN peers can connect without a relay.
+    pub peer_listen: Option<std::net::SocketAddr>,
+
     /// Transient typing indicators: contact_id → unix ts until which the
     /// contact is considered "typing". Not persisted.
     pub typing_until: HashMap<String, u64>,
@@ -245,6 +250,7 @@ impl Default for DaemonState {
             transport: Arc::new(tokio::sync::Mutex::new(crate::peer_manager::PeerConnectionManager::new())),
 relay_hub:  None,
             dht:        None,
+            peer_listen: None,
             typing_until: HashMap::new(),
             store_path:   None,
             store_params: StoreParams::production(),

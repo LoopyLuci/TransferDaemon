@@ -82,14 +82,32 @@ pub fn signing_key_from_phrase(phrase: &str) -> Option<SigningKey> {
 pub async fn publish_endpoint_if_ready(
     state: &std::sync::Arc<parking_lot::Mutex<crate::state::DaemonState>>,
 ) {
-    let (pk, phrase, relay_strs) = {
+    let (pk, phrase, relay_strs, direct) = {
         let s = state.lock();
         let Some(id) = &s.identity else { return };
-        let Some(hub) = &s.relay_hub else { return };
         let Some(_dht) = &s.dht else { return };
-        (id.public_key.clone(), id.phrase.clone(), hub.relay_endpoint_strs())
+        let relay_strs = s.relay_hub
+            .as_ref()
+            .map(|hub| hub.relay_endpoint_strs())
+            .unwrap_or_default();
+        // Direct addresses: the peer transport listener is bound reachably
+        // (non-loopback bind), so publish tcp:// for every reachable IPv4
+        // address (incl. Tailscale 100.64/10) at the listener's port.
+        let direct = s.peer_listen
+            .map(|listen| {
+                if listen.ip().is_loopback() {
+                    vec![format!("tcp://{listen}")]
+                } else {
+                    reachable_ipv4()
+                        .into_iter()
+                        .map(|ip| format!("tcp://{ip}:{}", listen.port()))
+                        .collect()
+                }
+            })
+            .unwrap_or_default();
+        (id.public_key.clone(), id.phrase.clone(), relay_strs, direct)
     };
-    if relay_strs.is_empty() {
+    if relay_strs.is_empty() && direct.is_empty() {
         return;
     }
     let Some(key) = signing_key_from_phrase(&phrase) else {
@@ -103,12 +121,13 @@ pub async fn publish_endpoint_if_ready(
             (addr, hex::encode(token))
         })
         .collect();
-    let (first_addr, first_token) = &relays[0];
+    let (first_addr, first_token) = relays.first().cloned().unwrap_or_default();
     let ep = PeerEndpoint {
         public_key: pk.clone(),
-        relay_addr: first_addr.clone(),
-        token: first_token.clone(),
+        relay_addr: first_addr,
+        token: first_token,
         relays,
+        direct,
         published_at: std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
@@ -123,6 +142,17 @@ pub async fn publish_endpoint_if_ready(
     }
 }
 
+/// Every non-loopback IPv4 address on this host (LAN + Tailscale 100.64/10).
+fn reachable_ipv4() -> Vec<std::net::IpAddr> {
+    netdev::get_interfaces()
+        .iter()
+        .flat_map(|iface| iface.ipv4.iter())
+        .map(|net| net.addr())
+        .map(std::net::IpAddr::V4)
+        .filter(|ip| !ip.is_loopback())
+        .collect()
+}
+
 /// Resolve a contact's relay endpoints from the DHT. Returns all `relay://` addresses.
 pub async fn resolve_peer(
     dht: &Arc<transferd_relay::DhtNode>,
@@ -131,7 +161,7 @@ pub async fn resolve_peer(
     PeerEndpoint::resolve(dht.as_ref(), public_key_hex).await
 }
 
-/// The on-DHT record announcing where a peer can be reached over a relay.
+/// The on-DHT record announcing where a peer can be reached.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PeerEndpoint {
     /// 64-hex Ed25519 public key of the peer.
@@ -147,6 +177,11 @@ pub struct PeerEndpoint {
     /// A sender may use ANY of them — reachability never depends on one relay.
     #[serde(default)]
     pub relays: Vec<(String, String)>,
+    /// Direct addresses (`tcp://host:port`) this peer accepts peer connections
+    /// on — LAN and Tailscale (`100.64.0.0/10`) addresses when the transport
+    /// listener is bound reachably. A sender prefers these over any relay.
+    #[serde(default)]
+    pub direct: Vec<String>,
     /// Unix timestamp (secs) when the record was created.
     pub published_at: u64,
     /// Ed25519 signature over the record with this field zeroed.
@@ -232,18 +267,16 @@ impl PeerEndpoint {
         if now.saturating_sub(ep.published_at) > 600 {
             return None; // stale
         }
-        let addrs: Vec<String> = ep
-            .relay_endpoints()
-            .into_iter()
-            .map(|(addr, token)| {
-                // `ws://host:port` / `wss://host:port` publish as WS relay URIs.
-                if let Some(stripped) = addr.strip_prefix("ws://").or_else(|| addr.strip_prefix("wss://")) {
-                    format!("wsrelay://{stripped}/{token}")
-                } else {
-                    format!("relay://{addr}/{token}")
-                }
-            })
-            .collect();
+        let mut addrs: Vec<String> = Vec::new();
+        addrs.extend(ep.direct.clone());
+        for (addr, token) in ep.relay_endpoints() {
+            // `ws://host:port` / `wss://host:port` publish as WS relay URIs.
+            if let Some(stripped) = addr.strip_prefix("ws://").or_else(|| addr.strip_prefix("wss://")) {
+                addrs.push(format!("wsrelay://{stripped}/{token}"));
+            } else {
+                addrs.push(format!("relay://{addr}/{token}"));
+            }
+        }
         if addrs.is_empty() { None } else { Some(addrs) }
     }
 }
@@ -270,6 +303,7 @@ mod tests {
             relay_addr: "relay.example:7777".into(),
             token: hex::encode([7u8; 32]),
             relays: vec![("relay.example:7777".into(), hex::encode([7u8; 32]))],
+            direct: vec!["tcp://10.0.0.5:9001".into()],
             published_at: 1_000_000,
             signature: Vec::new(),
         };
@@ -287,6 +321,7 @@ mod tests {
             relay_addr: "relay.example:7777".into(),
             token: hex::encode([7u8; 32]),
             relays: vec![("relay.example:7777".into(), hex::encode([7u8; 32]))],
+            direct: vec!["tcp://10.0.0.5:9001".into()],
             published_at: 1_000_000,
             signature: Vec::new(),
         };
@@ -304,6 +339,7 @@ mod tests {
             relay_addr: "relay.example:7777".into(),
             token: hex::encode([7u8; 32]),
             relays: vec![("relay.example:7777".into(), hex::encode([7u8; 32]))],
+            direct: vec!["tcp://10.0.0.5:9001".into()],
             published_at: 1_000_000,
             signature: Vec::new(),
         };
