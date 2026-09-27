@@ -14,14 +14,14 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use futures_util::{SinkExt, StreamExt};
 use tokio::net::TcpStream;
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::{mpsc, Mutex};
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::WebSocketStream;
 
 use crate::pow::PowChallenge;
 use crate::protocol::{
-    AckMsg, ChallengeMsg, DeliveredMsg, ErrorCode, ErrorMsg, ForwardMsg, KeepaliveMsg, RegisterMsg,
-    Tag, encode, split,
+    encode, split, AckMsg, ChallengeMsg, DeliveredMsg, ErrorCode, ErrorMsg, ForwardMsg,
+    KeepaliveMsg, RegisterMsg, Tag,
 };
 
 /// Outbound channel to one connection; the drain task writes frames to the WS
@@ -50,11 +50,18 @@ impl WsRelay {
     }
 
     pub fn send_challenge(&self, out: &Out) {
-        let (bytes, expires_at, difficulty) =
-            (self.challenge.bytes, self.challenge.expires_at, self.difficulty);
+        let (bytes, expires_at, difficulty) = (
+            self.challenge.bytes,
+            self.challenge.expires_at,
+            self.difficulty,
+        );
         let frame = encode(
             Tag::Challenge,
-            &ChallengeMsg { challenge: bytes, expires_at, difficulty },
+            &ChallengeMsg {
+                challenge: bytes,
+                expires_at,
+                difficulty,
+            },
         )
         .unwrap_or_default();
         let _ = out.send(Message::Binary(frame));
@@ -98,7 +105,9 @@ pub async fn handle_connection(
     });
 
     while let Some(Ok(Message::Binary(frame))) = source.next().await {
-        let Some((tag, body)) = split(&frame) else { continue };
+        let Some((tag, body)) = split(&frame) else {
+            continue;
+        };
         let mut r = relay.lock().await;
         match tag {
             Tag::Challenge => r.send_challenge(&tx),
@@ -112,7 +121,11 @@ pub async fn handle_connection(
                     } else {
                         let e = encode(
                             Tag::Error,
-                            &ErrorMsg { code: ErrorCode::InvalidPoW, seq: msg.seq, detail: "invalid PoW".into() },
+                            &ErrorMsg {
+                                code: ErrorCode::InvalidPoW,
+                                seq: msg.seq,
+                                detail: "invalid PoW".into(),
+                            },
                         )
                         .unwrap_or_default();
                         let _ = tx.send(Message::Binary(e));
@@ -124,12 +137,21 @@ pub async fn handle_connection(
                     if let Some((_, dst)) = r.clients.get(&msg.session_token) {
                         let delivered = encode(
                             Tag::Ack,
-                            &DeliveredMsg { sender_seq: msg.sender_seq, ciphertext: msg.ciphertext },
+                            &DeliveredMsg {
+                                sender_seq: msg.sender_seq,
+                                ciphertext: msg.ciphertext,
+                            },
                         )
                         .unwrap_or_default();
                         let _ = dst.send(Message::Binary(delivered));
                     }
-                    let ack = encode(Tag::Ack, &AckMsg { sender_seq: msg.sender_seq }).unwrap_or_default();
+                    let ack = encode(
+                        Tag::Ack,
+                        &AckMsg {
+                            sender_seq: msg.sender_seq,
+                        },
+                    )
+                    .unwrap_or_default();
                     let _ = tx.send(Message::Binary(ack));
                 }
             }
@@ -148,8 +170,14 @@ pub async fn handle_connection(
 }
 
 /// Shared prune/challenge-rotation loop; call from a server task.
+///
+/// `tokio::time::interval` fires its FIRST tick immediately, which would rotate
+/// the challenge at an arbitrary point and reject clients that solved the
+/// pre-rotation challenge. Consume the immediate tick so the challenge stays
+/// stable for its first full period.
 pub async fn maintenance_loop(relay: Arc<Mutex<WsRelay>>) {
     let mut ticker = tokio::time::interval(Duration::from_secs(30));
+    ticker.tick().await; // discard the immediate first tick
     loop {
         ticker.tick().await;
         relay.lock().await.tick();
@@ -176,8 +204,13 @@ mod tests {
         addr: std::net::SocketAddr,
         token: [u8; 32],
     ) -> (
-        futures_util::stream::SplitSink<WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>, Message>,
-        futures_util::stream::SplitStream<WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>>,
+        futures_util::stream::SplitSink<
+            WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+            Message,
+        >,
+        futures_util::stream::SplitStream<
+            WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>,
+        >,
     ) {
         let req = format!("ws://{addr}/").into_client_request().unwrap();
         let (ws, _) = tokio_tungstenite::connect_async(req).await.unwrap();
@@ -185,15 +218,12 @@ mod tests {
 
         // Ask for the challenge, solve PoW, register.
         let ask = encode(Tag::Challenge, &()).unwrap_or_default();
-        sink.send(Message::Binary(ask.into())).await.unwrap();
+        sink.send(Message::Binary(ask.clone())).await.unwrap();
         let (challenge, difficulty) = loop {
-            let frame = tokio::time::timeout(
-                Duration::from_secs(5),
-                source.next(),
-            )
-            .await
-            .expect("challenge reply must arrive within 5s")
-            .expect("stream must stay open");
+            let frame = tokio::time::timeout(Duration::from_secs(5), source.next())
+                .await
+                .expect("challenge reply must arrive within 5s")
+                .expect("stream must stay open");
             if let Ok(Message::Binary(f)) = frame {
                 if let Some((Tag::Challenge, body)) = split(&f) {
                     let c: ChallengeMsg = bincode::deserialize(body).unwrap();
@@ -204,28 +234,81 @@ mod tests {
         let nonce = crate::pow::solve(&challenge, &token, difficulty, 0, 100_000).unwrap();
         let reg = encode(
             Tag::Register,
-            &RegisterMsg { session_token: token, pow_nonce: nonce, seq: 1 },
+            &RegisterMsg {
+                session_token: token,
+                pow_nonce: nonce,
+                seq: 1,
+            },
         )
         .unwrap_or_default();
         sink.send(Message::Binary(reg.into())).await.unwrap();
         // Drain until the register reply (a Challenge) arrives. Bounded: an
         // Error reply (stale PoW) or a dropped frame must not deadlock the
-        // test — fail fast and let the caller retry.
+        // test — retry the whole registration once on a stale challenge.
         for _ in 0..8 {
-            let frame = tokio::time::timeout(
-                std::time::Duration::from_secs(5),
-                source.next(),
-            )
-            .await
-            .ok()
-            .flatten()
-            .expect("register reply must arrive within 5s");
+            let frame = tokio::time::timeout(Duration::from_secs(5), source.next())
+                .await
+                .ok()
+                .flatten()
+                .expect("register reply must arrive within 5s");
             if let Ok(Message::Binary(f)) = frame {
                 if let Some((Tag::Challenge, _)) = split(&f) {
                     break;
                 }
-                if let Some((Tag::Error, _)) = split(&f) {
-                    panic!("relay rejected our registration (stale PoW)");
+                if let Some((Tag::Error, body)) = split(&f) {
+                    // Stale PoW (challenge rotated between read + register):
+                    // re-read the challenge and retry once.
+                    let e: ErrorMsg = bincode::deserialize(body).unwrap_or_else(|_| ErrorMsg {
+                        code: ErrorCode::InvalidPoW,
+                        seq: 1,
+                        detail: "".into(),
+                    });
+                    assert_eq!(
+                        e.code,
+                        ErrorCode::InvalidPoW,
+                        "unexpected relay error: {e:?}"
+                    );
+                    sink.send(Message::Binary(ask.clone().into()))
+                        .await
+                        .unwrap();
+                    let (challenge2, difficulty2) = loop {
+                        let frame = tokio::time::timeout(Duration::from_secs(5), source.next())
+                            .await
+                            .ok()
+                            .flatten()
+                            .expect("challenge reply must arrive within 5s");
+                        if let Ok(Message::Binary(f)) = frame {
+                            if let Some((Tag::Challenge, body)) = split(&f) {
+                                let c: ChallengeMsg = bincode::deserialize(body).unwrap();
+                                break (c.challenge, c.difficulty);
+                            }
+                        }
+                    };
+                    let nonce2 =
+                        crate::pow::solve(&challenge2, &token, difficulty2, 0, 100_000).unwrap();
+                    let reg2 = encode(
+                        Tag::Register,
+                        &RegisterMsg {
+                            session_token: token,
+                            pow_nonce: nonce2,
+                            seq: 2,
+                        },
+                    )
+                    .unwrap_or_default();
+                    sink.send(Message::Binary(reg2.into())).await.unwrap();
+                    // The retry must be accepted.
+                    let frame = tokio::time::timeout(Duration::from_secs(5), source.next())
+                        .await
+                        .ok()
+                        .flatten()
+                        .expect("retry register reply must arrive within 5s");
+                    let Ok(Message::Binary(f)) = frame else {
+                        continue;
+                    };
+                    if let Some((Tag::Challenge, _)) = split(&f) {
+                        break;
+                    }
+                    panic!("relay rejected the retry registration");
                 }
             }
         }
@@ -241,10 +324,14 @@ mod tests {
         let addr = listener.local_addr().unwrap();
         tokio::spawn(async move {
             loop {
-                let Ok((stream, peer)) = listener.accept().await else { break };
+                let Ok((stream, peer)) = listener.accept().await else {
+                    break;
+                };
                 let relay = relay.clone();
                 tokio::spawn(async move {
-                    let Ok(ws) = tokio_tungstenite::accept_async(stream).await else { return };
+                    let Ok(ws) = tokio_tungstenite::accept_async(stream).await else {
+                        return;
+                    };
                     handle_connection(ws, peer, relay).await;
                 });
             }
@@ -259,21 +346,23 @@ mod tests {
         let blob = vec![0xDEu8, 0xAD, 0xBE, 0xEF];
         let fwd = encode(
             Tag::Forward,
-            &ForwardMsg { session_token: token_b, pow_nonce: 0, sender_seq: 7, ciphertext: blob.clone() },
+            &ForwardMsg {
+                session_token: token_b,
+                pow_nonce: 0,
+                sender_seq: 7,
+                ciphertext: blob.clone(),
+            },
         )
         .unwrap_or_default();
         a_sink.send(Message::Binary(fwd.into())).await.unwrap();
 
         // B receives the DeliveredMsg with the exact opaque blob.
         for _ in 0..8 {
-            let frame = tokio::time::timeout(
-                std::time::Duration::from_secs(5),
-                b_source.next(),
-            )
-            .await
-            .ok()
-            .flatten()
-            .expect("delivery must arrive within 5s");
+            let frame = tokio::time::timeout(std::time::Duration::from_secs(5), b_source.next())
+                .await
+                .ok()
+                .flatten()
+                .expect("delivery must arrive within 5s");
             if let Ok(Message::Binary(f)) = frame {
                 if let Some((Tag::Ack, body)) = split(&f) {
                     if let Ok(d) = bincode::deserialize::<DeliveredMsg>(body) {
