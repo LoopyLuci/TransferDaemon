@@ -49,10 +49,11 @@ struct RelaySession {
 }
 
 /// Relay transport: UDP (`relayd`) or WebSocket (`relayd-ws` / Cloudflare).
+/// `Ws(true)` = `wss://` (TLS), `Ws(false)` = `ws://` (plaintext).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RelayKind {
     Udp,
-    Ws,
+    Ws(bool),
 }
 
 /// One configured relay: its kind, address, and a forwarder the hub uses to
@@ -60,6 +61,10 @@ pub enum RelayKind {
 pub struct HubRelay {
     pub kind: RelayKind,
     pub addr: std::net::SocketAddr,
+    /// The DNS authority (`host:port`, hostname preserved) for WS relays —
+    /// used as the TLS connect target (SNI) and the published endpoint. `None`
+    /// for UDP relays.
+    pub authority: Option<String>,
     pub forward: Arc<dyn RelayForward + Send + Sync>,
     /// The concrete WS client (Some for WS relays) — lanes need it to send.
     pub ws_client: Option<Arc<transferd_core::lanes::relay_ws_client::RelayWsClient>>,
@@ -88,21 +93,44 @@ pub fn relay_enabled() -> bool {
         .unwrap_or(false)
 }
 
+/// Parse a `host:port` into a `SocketAddr`, resolving DNS names (e.g. a
+/// Cloudflare Worker's `*.workers.dev` host). Prefers IPv4.
+pub(crate) fn resolve_addr(s: &str) -> Option<std::net::SocketAddr> {
+    if let Ok(a) = s.parse() {
+        return Some(a);
+    }
+    let (host, port) = s.rsplit_once(':')?;
+    let port: u16 = port.parse().ok()?;
+    std::net::ToSocketAddrs::to_socket_addrs(&(host, port))
+        .ok()?
+        .find(|a| a.is_ipv4())
+}
+
 /// Parse the comma-separated `TRANSFERD_RELAY_ADDR` into `(addr, kind)` pairs.
-/// Plain `host:port` entries are UDP relays; `ws://host:port` are WebSocket.
-pub fn configured_relays() -> Vec<(std::net::SocketAddr, RelayKind)> {
+/// Plain `host:port` entries are UDP relays; `ws://host:port` are WebSocket,
+/// `wss://host:port` are WebSocket over TLS (Cloudflare Worker, relayd-ws
+/// behind an HTTPS reverse proxy). DNS hostnames are resolved eagerly; the
+/// original authority (hostname:port) is returned alongside for TLS connect +
+/// publishing.
+pub fn configured_relays() -> Vec<((std::net::SocketAddr, RelayKind), Option<String>)> {
     std::env::var("TRANSFERD_RELAY_ADDR")
         .unwrap_or_default()
         .split(',')
         .filter_map(|s| {
             let s = s.trim();
-            if let Some(rest) = s.strip_prefix("ws://") {
-                rest.parse().ok().map(|a| (a, RelayKind::Ws))
-            } else if let Some(rest) = s.strip_prefix("wss://") {
-                rest.parse().ok().map(|a| (a, RelayKind::Ws))
+            let (rest, tls) = if let Some(rest) = s.strip_prefix("wss://") {
+                (rest, Some(true))
+            } else if let Some(rest) = s.strip_prefix("ws://") {
+                (rest, Some(false))
             } else {
-                s.parse().ok().map(|a| (a, RelayKind::Udp))
-            }
+                (s, None)
+            };
+            let addr = resolve_addr(rest)?;
+            let kind = match tls {
+                Some(t) => RelayKind::Ws(t),
+                None => RelayKind::Udp,
+            };
+            Some(((addr, kind), tls.map(|_| rest.to_string())))
         })
         .collect()
 }
@@ -111,10 +139,12 @@ pub fn configured_relays() -> Vec<(std::net::SocketAddr, RelayKind)> {
 /// public key to derive a stable token. No-op when no relay is configured or
 /// the daemon has no identity yet.
 pub async fn spawn_inbound_relay_listener(state: Arc<PkMutex<DaemonState>>) {
-    let relay_specs = configured_relays();
-    if relay_specs.is_empty() {
+    let configured = configured_relays();
+    if configured.is_empty() {
         return;
     }
+    let relay_specs: Vec<(std::net::SocketAddr, RelayKind)> = configured.iter().map(|(s, _)| *s).collect();
+    let authorities: Vec<Option<String>> = configured.into_iter().map(|(_, a)| a).collect();
 
     let token = {
         let s = state.lock();
@@ -137,7 +167,7 @@ pub async fn spawn_inbound_relay_listener(state: Arc<PkMutex<DaemonState>>) {
         }
     }
 
-    match RelayHub::start(state.clone(), relay_specs.clone(), token).await {
+    match RelayHub::start(state.clone(), relay_specs.clone(), authorities, token).await {
         Ok(hub) => {
             state.lock().relay_hub = Some(hub);
             tracing::info!("[relay] inbound listeners registered on {} relays", relay_specs.len());
@@ -158,6 +188,7 @@ impl RelayHub {
     pub async fn start(
         state: Arc<PkMutex<DaemonState>>,
         relay_specs: Vec<(std::net::SocketAddr, RelayKind)>,
+        authorities: Vec<Option<String>>,
         self_token: [u8; 32],
     ) -> Result<Arc<Self>, String> {
         let mut relays: Vec<HubRelay> = Vec::with_capacity(relay_specs.len());
@@ -166,7 +197,7 @@ impl RelayHub {
             Ws(tokio::sync::mpsc::Receiver<Vec<u8>>, Arc<dyn RelayForward + Send + Sync>),
         }
         let mut loops: Vec<Loop> = Vec::with_capacity(relay_specs.len());
-        for (addr, kind) in relay_specs {
+        for ((addr, kind), authority) in relay_specs.into_iter().zip(authorities) {
             match kind {
                 RelayKind::Udp => {
                     let client = Arc::new(
@@ -174,20 +205,24 @@ impl RelayHub {
                     );
                     client.register(self_token).await.map_err(|e| e.to_string())?;
                     client.spawn_keepalive_loop(self_token);
-                    relays.push(HubRelay { kind, addr, forward: client.clone(), ws_client: None });
+                    relays.push(HubRelay { kind, addr, authority: None, forward: client.clone(), ws_client: None });
                     loops.push(Loop::Udp(client));
                 }
-                RelayKind::Ws => {
+                RelayKind::Ws(tls) => {
+                    let scheme = if tls { "wss" } else { "ws" };
+                    // TLS connects by the ORIGINAL authority (hostname) so SNI
+                    // matches the relay's certificate; fall back to the addr.
+                    let connect_to = authority.clone().unwrap_or_else(|| addr.to_string());
                     let (client, rx) =
                         transferd_core::lanes::relay_ws_client::RelayWsClient::connect(
-                            &format!("ws://{addr}"),
+                            &format!("{scheme}://{connect_to}"),
                             self_token,
                         )
                         .await
                         .map_err(|e| e.to_string())?;
                     let client = Arc::new(client);
                     client.spawn_keepalive_loop(self_token);
-                    relays.push(HubRelay { kind, addr, forward: client.clone(), ws_client: Some(client.clone()) });
+                    relays.push(HubRelay { kind, addr, authority, forward: client.clone(), ws_client: Some(client.clone()) });
                     loops.push(Loop::Ws(rx, client));
                 }
             }
@@ -232,14 +267,19 @@ impl RelayHub {
         self.relays.iter().map(|r| (r.addr, r.kind)).collect()
     }
 
-    /// Relay endpoint strings for DHT publishing — `ws://host:port` for WS
-    /// relays, `host:port` for UDP.
+    /// Relay endpoint strings for DHT publishing — `ws://host:port` /
+    /// `wss://host:port` for WS relays (hostname preserved for TLS), `host:port`
+    /// for UDP.
     pub fn relay_endpoint_strs(&self) -> Vec<String> {
         self.relays
             .iter()
             .map(|r| match r.kind {
                 RelayKind::Udp => r.addr.to_string(),
-                RelayKind::Ws => format!("ws://{}", r.addr),
+                RelayKind::Ws(tls) => {
+                    let scheme = if tls { "wss" } else { "ws" };
+                    let authority = r.authority.clone().unwrap_or_else(|| r.addr.to_string());
+                    format!("{scheme}://{authority}")
+                }
             })
             .collect()
     }

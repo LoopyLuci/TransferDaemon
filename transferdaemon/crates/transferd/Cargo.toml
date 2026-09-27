@@ -49,6 +49,7 @@ netdev  = "0.31"
 
 [dev-dependencies]
 futures-core     = "0.3"
+futures-util     = "0.3"
 tempfile         = "3"
 transferd-webrtc = { path = "../transferd-webrtc", features = ["grpc-signaling"] }
 tracing-subscriber = { workspace = true }

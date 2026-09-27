@@ -217,7 +217,8 @@ async fn text_delivers_between_two_daemons_over_relay() {
     send_msg
         .send_text(SendTextRequest {
             contact_id: peer_pk.clone(),
-            text: "hello over the relay".into(),
+            text: "hello over the relay".into(),
+
             reply_to: String::new(),
         })
         .await
@@ -676,3 +677,90 @@ async fn peer_discovers_direct_address_and_connects_without_a_relay() {
         .expect("receiver must get the direct-delivered message");
     assert!(!got.outbound);
 }
+
+/// LIVE INTERNET E2E: two daemons deliver through the deployed Cloudflare
+/// Worker relay (free tier, zero servers) at
+/// wss://transferd-relay.limpidluci.workers.dev:443. The relay leg crosses
+/// the public Internet — same client code as a self-hosted relayd-ws.
+/// Ignored by default; run with -- --ignored once the Worker is deployed.
+#[tokio::test]
+#[ignore]
+async fn text_delivers_between_two_daemons_over_public_cloudflare_worker() {
+let _guard = relay_test_lock().await;
+    std::env::set_var(
+        "TRANSFERD_RELAY_ADDR",
+        "wss://transferd-relay.limpidluci.workers.dev:443",
+    );
+
+    // Two loopback DHT nodes for discovery; the RELAY is the public Worker.
+    let dht_a = Arc::new(transferd_relay::DhtNode::start("127.0.0.1:0", [0x61u8; 32]).await.unwrap());
+    let dht_b = Arc::new(transferd_relay::DhtNode::start("127.0.0.1:0", [0x62u8; 32]).await.unwrap());
+    let (da, db) = (dht_a.addr(), dht_b.addr());
+    dht_a.bootstrap(vec![db]).await;
+    dht_b.bootstrap(vec![da]).await;
+
+    // ── Bob ──────────────────────────────────────────────────────────────────
+    let b_state = new_state();
+    b_state.lock().dht = Some(dht_b.clone());
+    let b_grpc = start_grpc(b_state.clone()).await;
+    let b_url = format!("http://{b_grpc}");
+    let mut b_acct = AccountServiceClient::connect(b_url.clone()).await.unwrap();
+    b_acct.create_identity(CreateIdentityRequest { display_name: "Bob".into() }).await.unwrap();
+    for _ in 0..300 {
+        if b_state.lock().relay_hub.is_some() { break; }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(b_state.lock().relay_hub.is_some(), "Bob hub must register on the public Worker");
+    publish_endpoint_if_ready(&b_state).await;
+    let b_pk = b_acct.get_public_key_hex(Empty {}).await.unwrap().into_inner().hex;
+    tokio::time::sleep(Duration::from_millis(500)).await;
+
+    // ── Alice ────────────────────────────────────────────────────────────────
+    let a_state = new_state();
+    a_state.lock().dht = Some(dht_a.clone());
+    let a_grpc = start_grpc(a_state.clone()).await;
+    let a_url = format!("http://{a_grpc}");
+    let mut a_acct = AccountServiceClient::connect(a_url.clone()).await.unwrap();
+    a_acct.create_identity(CreateIdentityRequest { display_name: "Alice".into() }).await.unwrap();
+    for _ in 0..300 {
+        if a_state.lock().relay_hub.is_some() { break; }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(a_state.lock().relay_hub.is_some(), "Alice hub must register on the public Worker");
+
+    let resolved = resolve_peer(&dht_a, &b_pk).await.expect("resolve Bob via DHT");
+    assert!(resolved.iter().any(|a| a.starts_with("wsrelay://")), "Bob must publish a wsrelay URI: {resolved:?}");
+
+    a_state.lock().contacts.push(Contact {
+        id: b_pk.clone(),
+        name: "Bob".into(),
+        last_seen_ts: 0,
+        online: false,
+        blocked: false,
+        address: None,
+        hybrid_public_key: None,
+    });
+
+    let mut a_msg = MessageServiceClient::connect(a_url.clone()).await.unwrap();
+    a_msg
+        .send_text(SendTextRequest { contact_id: b_pk.clone(), text: "across the internet via the cloudflare worker".into(), reply_to: String::new() })
+        .await
+        .unwrap();
+    for _ in 0..600 {
+        pump_transport(&a_state).await;
+        if b_state.lock().messages.values().flatten().any(|m| m.text == "across the internet via the cloudflare worker") { break; }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let s = b_state.lock();
+    let got = s
+        .messages
+        .values()
+        .flatten()
+        .find(|m| m.text == "across the internet via the cloudflare worker")
+        .expect("receiver must get the Internet-relayed message");
+    assert!(!got.outbound);
+}
+
+
+
+

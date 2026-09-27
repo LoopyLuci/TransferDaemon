@@ -19,10 +19,16 @@
 // rate-limits + the per-IP bucket below are the abuse barrier on the free
 // tier); full BLAKE3 PoW lives on self-hosted relayd/relayd-ws.
 //
+// NOTE (SQLite-backed Durable Objects enable WebSocket HIBERNATION): the DO
+// must NOT call `ws.accept()` manually — `state.acceptWebSocket()` is enough,
+// and messages/closes arrive via the `webSocketMessage`/`webSocketClose`
+// handler methods (which survive hibernation). Calling `accept()` throws.
+//
 // Deploy:  npm i -D wrangler && npx wrangler deploy (see wrangler.toml)
 
-const TAG = { Register: 0x01, Forward: 0x02, Challenge: 0x03, Keepalive: 0x04, Ack: 0x05, Error: 0x06 };
-const TOKEN = { Register: 0, Forward: 0, Keepalive: 0 }; // token offset in each body
+// Byte values MUST match relayd::protocol::Tag (crates/relayd/src/protocol.rs):
+// Register 0x01, Forward 0x02, Keepalive 0x03, Challenge 0x04, Error 0x05, Ack 0x06.
+const TAG = { Register: 0x01, Forward: 0x02, Keepalive: 0x03, Challenge: 0x04, Error: 0x05, Ack: 0x06 };
 
 export default {
   async fetch(request, env) {
@@ -47,11 +53,9 @@ export class TRANSFERD_RELAY {
     }
     const pair = new WebSocketPair();
     const [server, client] = Object.values(pair);
+    // Hibernation is on (SQLite DO): acceptWebSocket() is the accept; do NOT
+    // call server.accept() — that throws.
     this.state.acceptWebSocket(server);
-    server.accept();
-    server.addEventListener('message', (ev) => this.onMessage(server, ev));
-    server.addEventListener('close', () => this.onClose(server));
-    server.addEventListener('error', () => this.onClose(server));
     return new Response(null, { status: 101, webSocket: client });
   }
 
@@ -64,13 +68,20 @@ export class TRANSFERD_RELAY {
     return r.hits > 30;
   }
 
-  onMessage(ws, ev) {
-    const data = ev.data;
+  // Hibernation message handler: `message` is the raw payload.
+  async webSocketMessage(ws, message) {
+    // The message may arrive as an ArrayBuffer or a wrapper object; normalize.
+    let data = message;
+    if (data && typeof data === 'object' && data.data !== undefined) {
+      data = data.data;
+    }
     if (!(data instanceof ArrayBuffer)) return;
     const frame = new Uint8Array(data);
     const tag = frame[0];
     const body = frame.subarray(1);
-    if (body.length < 32) return;
+    // Register/Forward/Keepalive carry a 32-byte token; a Challenge ask is a
+    // bare 1-byte frame (matching relayd's wire format) and needs no token.
+    if (body.length < 32 && tag !== TAG.Challenge) return;
 
     const ip = (ws && ws._meta && ws._meta.ip) || 'unknown';
     if (this.limited(ip)) { ws.send(frame); return; }
@@ -104,7 +115,13 @@ export class TRANSFERD_RELAY {
     }
   }
 
-  onClose(ws) {
+  async webSocketClose(ws, code, reason) {
+    for (const [token, c] of this.clients) {
+      if (c.ws === ws) this.clients.delete(token);
+    }
+  }
+
+  async webSocketError(ws, error) {
     for (const [token, c] of this.clients) {
       if (c.ws === ws) this.clients.delete(token);
     }

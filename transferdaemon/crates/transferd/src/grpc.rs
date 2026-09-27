@@ -130,12 +130,13 @@ async fn ensure_contact_session(state: &State, contact_id: &str, address: Option
         let mut shared: Vec<std::net::SocketAddr> = Vec::new();
         let mut token = String::new();
         for r in &relays {
-            // Both `relay://host:port/token` and `wsrelay://host:port/token`.
+            // Both `relay://host:port/token` and `wsrelay://host:port/token`;
+            // the host may be a DNS name (e.g. a Cloudflare Worker).
             let rest = r
                 .strip_prefix("relay://")
                 .or_else(|| r.strip_prefix("wsrelay://"));
             if let Some((a, t)) = rest.and_then(|r| r.split_once('/')) {
-                if let Ok(addr) = a.parse::<std::net::SocketAddr>() {
+                if let Some(addr) = crate::relay_hub::resolve_addr(a) {
                     if hub.as_ref().map(|h| h.has_relay(addr)).unwrap_or(false) {
                         shared.push(addr);
                         token = t.to_string();

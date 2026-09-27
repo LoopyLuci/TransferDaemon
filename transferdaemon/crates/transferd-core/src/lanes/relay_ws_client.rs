@@ -132,11 +132,13 @@ impl RelayWsClient {
     }
 }
 
-/// Read the next `ChallengeMsg` reply frame (bounded).
+/// Read the next `ChallengeMsg` reply frame (bounded). The timeout is generous
+/// (30 s): a Cloudflare Durable Object relay hibernates when idle and can take
+/// several seconds to cold-start its first challenge reply.
 async fn read_challenge_reply(
     source: &mut futures_util::stream::SplitStream<Ws>,
 ) -> Result<([u8; 16], u32), std::io::Error> {
-    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+    tokio::time::timeout(std::time::Duration::from_secs(30), async {
         loop {
             let Some(frame) = source.next().await else {
                 return Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "ws closed"));

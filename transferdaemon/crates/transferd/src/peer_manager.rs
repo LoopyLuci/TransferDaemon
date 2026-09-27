@@ -518,7 +518,7 @@ pub async fn establish_relay_session(
                     .await
                     .map_err(|e| format!("Failed to create relay lane: {e}"))?)
                 }
-                Some(crate::relay_hub::RelayKind::Ws) => {
+                Some(crate::relay_hub::RelayKind::Ws(_)) => {
                     let ws_client = hub
                         .ws_client_for(*relay_addr)
                         .ok_or_else(|| "ws client missing".to_string())?;
