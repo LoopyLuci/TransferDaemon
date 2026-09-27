@@ -130,3 +130,36 @@ identity token on every relay and publishes all of them to the DHT; a session
 builds one lane per relay it shares with the peer, and the ATE fails over
 between them when a relay dies (see docs/NODE_SYSTEM.md). A peer reachable
 through relays A, B, C stays connected while any one of them is alive.
+
+## The full stack in Docker (relayd + relayd-ws + dhtd)
+
+`deploy/docker-compose.yml` now runs all three: `relayd` (UDP 5901), `relayd-ws`
+(TCP 5902) and `dhtd` (UDP 7901) from one image. Standalone binary install:
+
+```sh
+cargo build --release -p relayd -p transferd-relay --bin relayd --bin relayd-ws --bin dhtd
+RELAYD_PORT=5901 ./target/release/relayd
+RELAYD_WS_PORT=5902 ./target/release/relayd-ws
+DHTD_BIND=0.0.0.0:7901 DHTD_ADVERTISE=<public-ip>:7901 ./target/release/dhtd
+```
+
+## NGINX reverse proxy (one host, one TLS cert)
+
+`deploy/nginx/relay-streams.conf` fronts the whole stack behind NGINX `stream`
+(UDP relay, UDP DHT, TLS'd WebSocket relay, optional TLS'd gRPC) and
+`deploy/nginx/grpc-http2.conf` terminates daemon gRPC over HTTP/2. With one DNS
+name + Let's Encrypt, peers configure:
+
+```
+TRANSFERD_RELAY_ADDR=relay.example.com:5901
+TRANSFERD_RELAY_ADDR=wss://relay.example.com:5902      # second entry
+TRANSFERD_DHT_BOOTSTRAP=relay.example.com:7901
+```
+
+## Tailscale / direct lanes (no relay for tailnet peers)
+
+When a daemon binds its peer transport reachably (`TRANSFERD_BIND_ADDR=0.0.0.0`
+or a LAN/Tailscale IP), it publishes `tcp://<ip>:<port>` **direct** addresses to
+the DHT. Peers on the same tailnet or LAN discover those and connect directly —
+no relay at all (see CONTEXT.md #29). The relay stack remains the fallback for
+peers with no shared network.

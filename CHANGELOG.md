@@ -11,11 +11,21 @@
   The handshake routes through the first relay that responds.
 - **WebSocket relay (`relayd-ws`)**: the same blind, PoW-authenticated relay
   over WebSocket frames (same wire format) — traverses any NAT/firewall.
-- **WS relay client lane**: the daemon now routes through a WebSocket relay —
-  `TRANSFERD_RELAY_ADDR` accepts `ws://` entries, `RelayWsClient`/`RelayWsLane`
-  carry the daemon's traffic over `relayd-ws` or the Cloudflare Worker,
-  endpoints publish `ws://` addresses, and sessions build a WS lane per shared
-  WS relay (proven end-to-end by `text_delivers_between_two_daemons_over_ws_relay`).
+- **WS relay client lane**: `TRANSFERD_RELAY_ADDR` accepts `ws://` entries,
+  `RelayWsClient`/`RelayWsLane` carry the daemon's traffic over `relayd-ws` or
+  the Cloudflare Worker, endpoints publish `ws://` addresses, and sessions build
+  a WS lane per shared WS relay (proven end-to-end by
+  `text_delivers_between_two_daemons_over_ws_relay`).
+- **Tailscale / direct-lane P2P**: the daemon detects LAN + Tailscale
+  (100.64/10) addresses, binds its peer transport reachably via
+  `TRANSFERD_BIND_ADDR`, and publishes `tcp://` direct endpoints to the DHT.
+  Discovery PREFERS the direct address over any relay, so peers sharing a
+  tailnet/LAN connect directly — no relay involved (proven by
+  `peer_discovers_direct_address_and_connects_without_a_relay`).
+- **Ops matrix**: `relayd-ws` added to the Docker image + compose stack,
+  NGINX reverse-proxy configs (UDP relay, UDP DHT, TLS'd WebSocket relay,
+  HTTP/2 gRPC), Android node-mode doc (`docs/ANDROID_NODE.md`) and router
+  (OpenWrt) cross-compile guide (`docs/OPENWRT.md`).
 - **Cloudflare free-tier Worker** (`deploy/cloudflare-worker/`): the relay as a
   Durable Object on Cloudflare's edge, zero servers, byte-level bincode
   compatible with the Rust client. PoW delegated to Cloudflare edge protections;

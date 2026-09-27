@@ -1,11 +1,13 @@
-# Hosted TransferDaemon relay stack: `relayd` (blind UDP relay) + `dhtd`
-# (DHT bootstrap node) for peers on the public Internet.
+# Hosted TransferDaemon relay stack: `relayd` (blind UDP relay), `relayd-ws`
+# (blind WebSocket relay) + `dhtd` (DHT bootstrap node) for peers on the
+# public Internet.
 #
 #   docker compose -f deploy/docker-compose.yml up -d
 #
 # Set PUBLIC_IP to the VPS's public address so the DHT bootstrap advertises a
 # reachable address (and so clients can publish relay:// endpoints that work).
-# Open UDP 5901 (relay) and 7901 (DHT) on the host firewall.
+# Open UDP 5901 (relay), TCP 5902 (relayd-ws) and UDP 7901 (DHT) on the host
+# firewall. Optionally front 5902 + 5903 with the NGINX configs in deploy/nginx/.
 
 services:
   relayd:
@@ -22,6 +24,17 @@ services:
       RELAYD_PORT: "5901"
       RELAYD_DIFFICULTY: "20"
       RELAYD_TTL: "90"
+
+  relayd-ws:
+    image: transferd-relay
+    restart: unless-stopped
+    command: ["/usr/local/bin/relayd-ws"]
+    ports:
+      - "5902:5902/tcp"
+    environment:
+      RELAYD_WS_PORT: "5902"
+      RELAYD_WS_DIFFICULTY: "20"
+      RELAYD_WS_TTL: "90"
 
   dhtd:
     image: transferd-relay
