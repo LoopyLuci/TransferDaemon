@@ -1,0 +1,20 @@
+[package]
+name = "harbor-core"
+description = "Capability model, policy engine, audit log, sessions, redaction — the protocol-forward core of Harbor"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde        = { workspace = true }
+serde_json   = { workspace = true }
+thiserror    = { workspace = true }
+regex        = { workspace = true }
+globset      = { workspace = true }
+sha2         = { workspace = true }
+rand         = { workspace = true }
+async-trait  = { workspace = true }
+tracing      = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

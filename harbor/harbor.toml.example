@@ -1,0 +1,61 @@
+# Harbor configuration — FAIL CLOSED.
+#
+# Nothing runs unless an explicit rule below allows it. Keep this file next to
+# the binary (or pass it with `harbor --config <path>`). Env vars override a
+# few fields: HARBOR_POLICY_DEFAULT, HARBOR_AUDIT_PATH, HARBOR_APPROVAL_PORT,
+# HARBOR_APPROVAL_TTL, HARBOR_FS_MAX_READ, HARBOR_SECRETS (comma-separated).
+
+[policy]
+# allow | deny | ask  (ask = human must approve via a loopback URL first)
+default = "deny"
+
+# Rules are evaluated last-match-wins: broad rules first, narrow overrides last.
+# Pattern = "<capability-id>:<resource-glob>"  (or just "<capability-id>").
+[[policy.rules]]
+pattern = "fs.read:Z:/Projects/**"
+decision = "allow"
+
+[[policy.rules]]
+pattern = "fs.read:Z:/Projects/**/.ssh/**"
+decision = "deny"
+
+[[policy.rules]]
+pattern = "fs.write:Z:/Projects/**"
+decision = "ask"          # writes need a human click
+
+[[policy.rules]]
+pattern = "pwsh.run:Get-*"     # read-only PowerShell commands
+decision = "allow"
+
+[[policy.rules]]
+pattern = "pwsh.run"
+decision = "ask"               # everything else in pwsh needs approval
+
+# ── PowerShell provider ────────────────────────────────────────────────────
+[pwsh]
+binary = "pwsh"                # path to pwsh (or on PATH)
+constrained = false            # run in Constrained Language Mode by default
+env_remove = ["AWS_SECRET_ACCESS_KEY", "GH_TOKEN"]   # strip from child env
+
+# ── File system provider ───────────────────────────────────────────────────
+[fs]
+# Empty roots ⇒ the fs capabilities deny everything. Use absolute paths.
+roots = ["Z:/Projects", "C:/Users/me/Documents/work"]
+# Denied even inside a root (glob on the canonical path).
+deny = ["**/.ssh/**", "**/*.pem", "**/*.key"]
+max_read_bytes = 4194304
+
+# ── Sandbox ────────────────────────────────────────────────────────────────
+[sandbox]
+cwd = "Z:/Projects"            # default working dir for pwsh.run
+scratch_dir = "%TEMP%/harbor"  # per-session scratch
+
+# ── Human approval (the Ask decision) ──────────────────────────────────────
+[approval]
+enabled = true
+port = 0                       # 0 = ephemeral port on 127.0.0.1
+ttl_secs = 60                  # how long a pending approval stays valid
+
+# ── Audit ──────────────────────────────────────────────────────────────────
+[audit]
+path = "%TEMP%/harbor-audit.log"   # append-only, hash-chained JSON lines

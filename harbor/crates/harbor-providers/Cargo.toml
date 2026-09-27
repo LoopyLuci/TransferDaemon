@@ -1,0 +1,20 @@
+[package]
+name = "harbor-providers"
+description = "Harbor capability providers: pwsh (PowerShell) and fs (file system), all path/process confined"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+harbor-core = { workspace = true }
+serde        = { workspace = true }
+serde_json   = { workspace = true }
+thiserror    = { workspace = true }
+globset      = { workspace = true }
+base64       = { workspace = true }
+tokio        = { workspace = true }
+async-trait  = { workspace = true }
+tracing      = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"

@@ -1,0 +1,58 @@
+name: harbor
+
+on:
+  push:
+    paths: ["harbor/**", ".github/workflows/harbor.yml"]
+  pull_request:
+    paths: ["harbor/**", ".github/workflows/harbor.yml"]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  check:
+    name: check + test + clippy
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: harbor
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: harbor
+
+      - name: fmt
+        run: cargo fmt --all -- --check
+
+      - name: check
+        run: cargo check --workspace --all-targets
+
+      - name: clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: test
+        run: cargo test --workspace
+
+  pwsh:
+    name: pwsh provider (real PowerShell)
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: harbor
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: harbor
+      - name: install pwsh (runs on GitHub runners by default)
+        run: pwsh -NoProfile -Command "Get-Command pwsh | Select-Object Source"
+      - name: test pwsh provider
+        run: cargo test -p harbor-providers pwsh::tests
