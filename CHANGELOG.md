@@ -2,6 +2,21 @@
 
 ## v2.2.0 - 2026-09-27
 
+### WS relay resilience (from the on-device E2E)
+
+- **Self-healing WS client**: `RelayWsClient` is now a connection manager —
+  reconnects + re-registers with backoff on a dropped socket, feeds a stable
+  inbound channel, and re-registers every 45s so registrations survive relay
+  hibernation. A dead relay link no longer lapses a registration forever.
+- **Worker hibernation recovery**: the DO rebuilds its token→socket map from
+  `state.getWebSockets()` on every message (token persisted on `_meta`), so
+  forwards route again after a free-tier hibernation wake.
+- **Authority-based relay matching**: `ensure_contact_session` matches relays
+  by hostname:port (not resolved IP), fixing DNS round-robin breaking sessions
+  on DNS-named relays (Cloudflare Worker).
+- `mobile_identity` example (create/fetch an on-device identity via adb
+  forward) + an ignored desktop→real-Kindle E2E test. 250 tests, clippy clean.
+
 ### Data-transfer limits (presets + custom) at every layer
 
 - **Limits model** (`relayd::limits`): `Preset` quick-picks (1 MB → 5 GB +
