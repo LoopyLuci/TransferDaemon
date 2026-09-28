@@ -2,6 +2,39 @@
 
 ## Unreleased
 
+### Cloudflare Worker DO-map fixes (live ground truth)
+
+Diagnosed live with `wrangler tail` (HARBOR logs): the desktop↔desktop path is
+healthy (Register ×2, Forward both ways, `dst=yes`), and a desktop→Kindle
+forward showed `dst=NO` — the Kindle's socket was never in the Worker's
+routing map. The root causes were staleness + destructive rebuild:
+
+- **Expiry pruning (new)**: entries whose 90s TTL lapsed are now pruned. Mobile
+  sockets routinely drop WITHOUT a close frame (silent network loss), so a dead
+  entry previously lingered forever and silently swallowed every forward to
+  that token → "pending" forever.
+- **Message-derived mapping (new)**: Register/Keepalive (which carry the
+  sender's OWN token) now re-assert that socket as the live owner — the map
+  self-heals on the next keepalive after a hibernation wake, with no reliance
+  on `_meta` persistence. Forward carries the DESTINATION's token, so it never
+  remaps the sender onto it.
+- **Non-destructive rebuild**: `rebuildClients` no longer deletes `reg:`
+  markers it cannot correlate (a missing `_meta` is not a reason to destroy a
+  registration); it only drops entries whose socket is actually closed.
+- **TokenNotFound error to the sender** when the destination is gone/lapsed, so
+  the ATE fails the lane over to another relay instead of silently dropping.
+- HARBOR logs on Keepalive/Close/Prune for visibility.
+
+### Honest relay tests
+
+The live relay/direct-lane tests now require **"delivered"** (destination
+received), not "sent" (relay merely acked the forward). The old `sent`
+assertion masked the Kindle failure — the Worker never had the Kindle's token
+in its map, yet the test passed on the sender-side ack. Now:
+`desktop_sends_to_real_kindle_over_public_worker`,
+`desktop_sends_to_xiaomi_over_public_worker`, and both tailnet direct-lane
+tests fail unless the message reaches the device.
+
 ### Polished scaling controls + larger defaults
 
 - **Preset quick-picks** for both UI scaling and Text size: a segmented row of
