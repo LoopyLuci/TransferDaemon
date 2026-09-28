@@ -101,10 +101,14 @@ export class TRANSFERD_RELAY {
 
   // Rebuild the in-memory token→socket map after a hibernation wake. SQLite
   // Durable Objects re-instantiate the class on every wake (the `clients` Map
-  // is in-memory), but the accepted WebSockets (with their `_meta.token`) and
-  // the persisted registration markers survive. This restores every socket it
-  // can correlate; the client ALSO re-registers every 15 s, which re-adds any
-  // token whose socket metadata was lost.
+  // is in-memory), but the accepted WebSockets (with their `_meta.token`, when
+  // that survived) are still queryable. This restores every socket it can
+  // correlate.
+  //
+  // NOTE: it must NOT delete `reg:` markers it cannot correlate — `_meta` may
+  // not survive hibernation, but the entry self-heals from the next message
+  // (webSocketMessage derives the mapping from the frame's own token), so a
+  // missing `_meta` is never a reason to destroy the registration.
   async rebuildClients() {
     let restored = 0;
     for (const ws of this.state.getWebSockets()) {
@@ -118,19 +122,29 @@ export class TRANSFERD_RELAY {
         restored++;
       }
     }
-    // Prune persisted markers whose socket is gone (their close event may have
-    // been missed during hibernation).
-    if (restored > 0) {
-      const markers = await this.state.storage.list({ prefix: 'reg:' });
-      for (const [k] of markers) {
-        const token = k.slice(4);
-        const entry = this.clients.get(token);
-        if (!entry || entry.ws.readyState !== 1) {
-          await this.state.storage.delete(k);
-          this.clients.delete(token);
-        }
+    // Drop map entries whose socket is actually closed; keep everything else.
+    for (const [token, c] of this.clients) {
+      if (c.ws.readyState !== 1) {
+        this.clients.delete(token);
+        await this.state.storage.delete('reg:' + token);
       }
     }
+  }
+
+  // Remove entries whose 90s TTL lapsed. Mobile sockets often drop WITHOUT a
+  // close frame (silent network loss), so a dead entry would otherwise linger
+  // forever and silently swallow forwards to that token.
+  async pruneExpired() {
+    const now = Date.now();
+    let pruned = 0;
+    for (const [token, c] of this.clients) {
+      if (c.expires < now) {
+        this.clients.delete(token);
+        await this.state.storage.delete('reg:' + token);
+        pruned++;
+      }
+    }
+    if (pruned > 0) console.log('HARBOR Prune ' + pruned + ' expired, clients=' + this.clients.size);
   }
 
   // Hibernation message handler: `message` is the raw payload.
@@ -154,11 +168,19 @@ export class TRANSFERD_RELAY {
     if (this.limited(ip)) { ws.send(frame); return; }
 
     const token = toHex(body.subarray(0, 32));
+    // AUTHORITATIVE MAPPING for Register/Keepalive below: the socket that
+    // speaks while carrying its OWN token IS the live owner of that token
+    // (the client uses exactly one WS per token). Deriving the map from those
+    // frames heals any hibernation loss on the next keepalive — no `_meta`
+    // persistence required. Forward carries the DESTINATION's token, so it
+    // must never remap the sender's socket onto it.
+    // Prune lapsed entries occasionally (cheap on the tiny map).
+    if (this.clients.size % 8 === 0) await this.pruneExpired();
+
     switch (tag) {
       case TAG.Register:
-        // Persist the token on the socket's metadata so rebuildClients() can
-        // restore the mapping across hibernation, and in DO storage so the
-        // registration marker survives even if socket metadata is lost.
+        // Persist the token on the socket's metadata (when it survives) and in
+        // DO storage as a registration marker.
         ws._meta = ws._meta || {};
         ws._meta.token = token;
         ws._meta.ip = ip;
@@ -171,7 +193,8 @@ export class TRANSFERD_RELAY {
         // sender_seq = bytes 40..42 (after 32-byte token + 8-byte pow_nonce).
         // DeliveredMsg body == ForwardMsg body[40..] (u16 seq + varint ciphertext).
         const blobBytes = body.length - 40;
-        console.log('HARBOR Forward ' + token.slice(0, 8) + ' blob=' + blobBytes + ' dst=' + (this.clients.has(token) ? 'yes' : 'NO') + ' clients=' + this.clients.size);
+        const dst = this.clients.get(token);
+        console.log('HARBOR Forward ' + token.slice(0, 8) + ' blob=' + blobBytes + ' dst=' + (dst && dst.ws.readyState === 1 ? 'yes' : 'NO') + ' clients=' + this.clients.size);
         if (this.limits.maxBlobBytes && blobBytes > this.limits.maxBlobBytes) {
           ws.send(errorFrame(ErrorCode.PAYLOAD_TOO_LARGE, 0, 'blob exceeds node limit'));
           break;
@@ -180,18 +203,23 @@ export class TRANSFERD_RELAY {
           ws.send(errorFrame(ErrorCode.BANDWIDTH_EXCEEDED, 0, 'token bandwidth budget exceeded'));
           break;
         }
-        const dst = this.clients.get(token);
         if (dst && dst.ws.readyState === 1) {
           dst.ws.send(prefix(TAG.Ack, body.subarray(40)));
+        } else {
+          // Destination gone/lapsed: tell the sender so its ATE fails the lane
+          // over to another relay instead of silently swallowing the message.
+          ws.send(errorFrame(ErrorCode.TOKEN_NOT_FOUND, 0, 'destination token not registered'));
+          break;
         }
         ws.send(prefix(TAG.Ack, body.subarray(40, 42)));
         break;
       }
-      case TAG.Keepalive: {
-        const c = this.clients.get(token);
-        if (c) c.expires = Date.now() + 90_000;
+      case TAG.Keepalive:
+        // Own-token frame: (re)assert this socket as the live owner and
+        // refresh the 90s TTL — this is what heals a hibernated map.
+        this.clients.set(token, { ws, ip, expires: Date.now() + 90_000 });
+        console.log('HARBOR Keepalive ' + token.slice(0, 8) + ' clients=' + this.clients.size);
         break;
-      }
       case TAG.Challenge:
         ws.send(challengeFrame());
         break;
@@ -205,13 +233,17 @@ export class TRANSFERD_RELAY {
       if (c.ws === ws) {
         this.clients.delete(token);
         await this.state.storage.delete('reg:' + token);
+        console.log('HARBOR Close ' + token.slice(0, 8) + ' clients=' + this.clients.size);
       }
     }
   }
 
   async webSocketError(ws, error) {
     for (const [token, c] of this.clients) {
-      if (c.ws === ws) this.clients.delete(token);
+      if (c.ws === ws) {
+        this.clients.delete(token);
+        await this.state.storage.delete('reg:' + token);
+      }
     }
   }
 }

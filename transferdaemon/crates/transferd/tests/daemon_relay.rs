@@ -831,28 +831,28 @@ a_state.lock().contacts.push(Contact {
         }
     }
 
-    let mut a_msg = MessageServiceClient::connect(a_url.clone()).await.unwrap();
+let mut a_msg = MessageServiceClient::connect(a_url.clone()).await.unwrap();
     a_msg
         .send_text(SendTextRequest { contact_id: kindle_pk.to_string(), text: "across the internet to the kindle via the cloudflare worker".into(), reply_to: String::new() })
         .await
         .expect("send must be accepted");
-    for _ in 0..120 {
+    for _ in 0..300 {
         pump_transport(&a_state).await;
         let sent = a_state.lock().messages.values().flatten()
-            .any(|m| m.text == "across the internet to the kindle via the cloudflare worker" && m.status == "sent");
+            .any(|m| m.text == "across the internet to the kindle via the cloudflare worker" && m.status == "delivered");
         if sent { break; }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     let s = a_state.lock();
     let m = s.messages.values().flatten()
         .find(|m| m.text == "across the internet to the kindle via the cloudflare worker")
-        .expect("message must reach 'sent' (relay acked the forward)");
+        .expect("message must be found");
 let hub = a_state.lock().relay_hub.clone();
     if let Some(hub) = hub {
         let tok = relay_token_for(kindle_pk.as_str());
         eprintln!("[diag] desktop hub has_session(kindle)={} root={:?}", hub.has_session(tok).await, hub.session_root(tok).await.map(|r| format!("{r:02x?}")));
     }
-    assert_eq!(m.status, "sent", "relay must ack the forward to the Kindle: {:?}", m.status);
+    assert_eq!(m.status, "delivered", "relay must DELIVER to the Kindle (not just ack): {:?}", m.status);
 }
 
 /// Compute relay tokens for a set of historical Kindle pks to identify a
@@ -915,15 +915,15 @@ async fn desktop_sends_to_kindle_over_tailnet_direct_lane() {
     for _ in 0..300 {
         pump_transport(&a_state).await;
         let sent = a_state.lock().messages.values().flatten()
-            .any(|m| m.text == "over the tailnet direct lane (no relay)" && m.status == "sent");
+            .any(|m| m.text == "over the tailnet direct lane (no relay)" && m.status == "delivered");
         if sent { break; }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    let s = a_state.lock();
+let s = a_state.lock();
     let m = s.messages.values().flatten()
         .find(|m| m.text == "over the tailnet direct lane (no relay)")
-        .expect("message must reach 'sent' (tailnet direct lane acked)");
-    assert!(m.status == "sent" || m.status == "delivered", "direct lane must deliver over the tailnet: {:?}", m.status);
+        .expect("message must reach 'delivered' (tailnet direct lane acked)");
+    assert_eq!(m.status, "delivered", "tailnet direct lane must deliver: {:?}", m.status);
 }
 
 /// LIVE TAILNET DIRECT-LANE E2E to the XIAOMI (Redmi Note 12 Pro 5G,
@@ -960,7 +960,7 @@ async fn desktop_sends_to_xiaomi_over_tailnet_direct_lane() {
     for _ in 0..300 {
         pump_transport(&a_state).await;
         let sent = a_state.lock().messages.values().flatten()
-            .any(|m| m.text == "over the tailnet to the xiaomi (no relay)" && (m.status == "sent" || m.status == "delivered"));
+.any(|m| m.text == "over the tailnet to the xiaomi (no relay)" && m.status == "delivered");
         if sent { break; }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
@@ -968,7 +968,7 @@ async fn desktop_sends_to_xiaomi_over_tailnet_direct_lane() {
     let m = s.messages.values().flatten()
         .find(|m| m.text == "over the tailnet to the xiaomi (no relay)")
         .expect("message must reach sent/delivered (tailnet direct lane)");
-    assert!(m.status == "sent" || m.status == "delivered", "direct lane must deliver over the tailnet: {:?}", m.status);
+    assert_eq!(m.status, "delivered", "tailnet direct lane must deliver: {:?}", m.status);
 }
 
 /// LIVE RELAY-PATH E2E to the XIAOMI: the desktop routes to the Xiaomi through
@@ -1010,16 +1010,16 @@ async fn desktop_sends_to_xiaomi_over_public_worker() {
         .send_text(SendTextRequest { contact_id: xiaomi_pk.clone(), text: "to the xiaomi via the cloudflare worker relay".into(), reply_to: String::new() })
         .await
         .expect("send must be accepted");
-    for _ in 0..300 {
+for _ in 0..300 {
         pump_transport(&a_state).await;
         let sent = a_state.lock().messages.values().flatten()
-            .any(|m| m.text == "to the xiaomi via the cloudflare worker relay" && (m.status == "sent" || m.status == "delivered"));
+            .any(|m| m.text == "to the xiaomi via the cloudflare worker relay" && m.status == "delivered");
         if sent { break; }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     let s = a_state.lock();
     let m = s.messages.values().flatten()
         .find(|m| m.text == "to the xiaomi via the cloudflare worker relay")
-        .expect("message must reach sent/delivered (relay path)");
-    assert!(m.status == "sent" || m.status == "delivered", "relay path must deliver: {:?}", m.status);
+        .expect("message must be found");
+    assert_eq!(m.status, "delivered", "relay path must DELIVER to the Xiaomi (not just ack): {:?}", m.status);
 }
