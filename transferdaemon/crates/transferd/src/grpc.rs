@@ -60,7 +60,7 @@ type BoxStream<T> = Pin<Box<dyn futures::Stream<Item = Result<T, Status>> + Send
 ///   `<host>:<port>` → direct TCP session
 ///
 /// Returns `true` if a session exists (or was just established).
-async fn ensure_contact_session(state: &State, contact_id: &str, address: Option<&str>) -> bool {
+pub async fn ensure_contact_session(state: &State, contact_id: &str, address: Option<&str>) -> bool {
     let transport = state.lock().transport.clone();
     if transport.lock().await.has_session(contact_id) {
         return true;

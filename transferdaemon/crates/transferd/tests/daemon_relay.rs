@@ -134,6 +134,10 @@ async fn pump_transport(state: &Arc<Mutex<DaemonState>>) {
         }
         s.try_save();
     }
+    // Mirrors the transport tick's retry loop: re-establish sessions for
+    // contacts with pending outbound messages (a relay map-gap must not leave
+    // a message "pending" forever).
+    transferd_lib::transport::retry_pending_sessions(state).await;
 }
 
 // ---------------------------------------------------------------------------

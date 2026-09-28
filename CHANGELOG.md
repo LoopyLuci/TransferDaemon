@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### LIVE: the FULL transport matrix is proven (3 devices + relays)
+
+The pending-session retry closed the last gap: the sender now re-establishes a
+session every 2s for any contact with outbound messages stuck in "pending"
+(transport tick retry loop, mirrored in the tests' pump). A relay map-gap can
+no longer strand a message forever. All live legs deliver:
+
+- desktop to Kindle, Tailscale direct lane: delivered
+- desktop to Xiaomi, Tailscale direct lane: delivered
+- desktop to Kindle, local relayd-ws over the tailnet: delivered
+- desktop to Xiaomi, public Cloudflare Worker: delivered (Worker tail:
+  Register both sides, Forward dst=yes, delivery + ack)
+- desktop to desktop, public Cloudflare Worker: delivered
+
 ### LIVE: mobile relay-path delivery proven (desktop → relay → Kindle over the tailnet)
 
 `relayd-ws` is now a real standalone binary (`crates/relayd/src/bin/relayd-ws.rs` —
