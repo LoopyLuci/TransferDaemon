@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### Polished scaling controls + larger defaults
+
+- **Preset quick-picks** for both UI scaling and Text size: a segmented row of
+  5 options (Compact / Normal / Comfortable / Large / Extra, and Small /
+  Normal / Comfortable / Large / Extra) with the active preset highlighted.
+- **Slider + manual input side by side**: each control pairs the slider with an
+  editable `DragValue` (type a precise value, ±0.01), so there are three ways
+  to set it — preset, slider, or direct entry.
+- **Bigger defaults**: fresh installs now ship at `ui_scale = 1.1` and
+  `font_scale = 1.1` (combined ≈ 1.21× the platform density), so the app reads
+  comfortably out of the box. Ranges widened to 0.8–1.5 for both. Existing
+  installs keep their persisted values.
+- Each control has a "Default" reset (back to 1.1) and hover tooltips showing
+  the exact multiplier.
+
 ### Appearance settings — theme, accent color, UI scaling, text size
 
 - **Theme**: OLED / Dark / Light / High Contrast (was already present).

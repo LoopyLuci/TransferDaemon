@@ -471,44 +471,14 @@ impl SettingsPage {
                 ui.add_space(tokens.spacing.sm);
 
                 // ── UI scaling ─────────────────────────────────────────────
-                ui.horizontal(|ui| {
-                    ui.label(
-                        RichText::new("UI scaling")
-                            .size(14.0)
-                            .strong()
-                            .color(tokens.palette.text_primary),
-                    );
-                    if ui
-                        .small_button("Reset")
-                        .on_hover_text("Back to 100%")
-                        .clicked()
-                    {
-                        prefs.ui_scale = 1.0;
-                    }
-                });
-                ui.add_space(tokens.spacing.xs);
-                ui.horizontal(|ui| {
-                    ui.label(
-                        RichText::new("A")
-                            .size(12.0)
-                            .color(tokens.palette.text_tertiary),
-                    );
-                    ui.add(
-                        egui::Slider::new(&mut prefs.ui_scale, UiPreferences::UI_SCALE_RANGE)
-                            .step_by(0.05)
-                            .fixed_decimals(2)
-                            .show_value(true),
-                    );
-                    ui.label(
-                        RichText::new("A")
-                            .size(18.0)
-                            .color(tokens.palette.text_tertiary),
-                    );
-                });
-                ui.label(
-                    RichText::new("Zooms the whole interface — layouts, buttons and spacing.")
-                        .size(11.0)
-                        .color(tokens.palette.text_tertiary),
+                self.scale_control(
+                    ui,
+                    &tokens,
+                    "UI scaling",
+                    "Zooms the whole interface — layouts, buttons and spacing.",
+                    &mut prefs.ui_scale,
+                    &UiPreferences::UI_SCALE_PRESETS,
+                    UiPreferences::UI_SCALE_RANGE,
                 );
 
                 ui.add_space(tokens.spacing.md);
@@ -516,44 +486,14 @@ impl SettingsPage {
                 ui.add_space(tokens.spacing.sm);
 
                 // ── Text size ──────────────────────────────────────────────
-                ui.horizontal(|ui| {
-                    ui.label(
-                        RichText::new("Text size")
-                            .size(14.0)
-                            .strong()
-                            .color(tokens.palette.text_primary),
-                    );
-                    if ui
-                        .small_button("Reset")
-                        .on_hover_text("Back to 100%")
-                        .clicked()
-                    {
-                        prefs.font_scale = 1.0;
-                    }
-                });
-                ui.add_space(tokens.spacing.xs);
-                ui.horizontal(|ui| {
-                    ui.label(
-                        RichText::new("A")
-                            .size(11.0)
-                            .color(tokens.palette.text_tertiary),
-                    );
-                    ui.add(
-                        egui::Slider::new(&mut prefs.font_scale, UiPreferences::FONT_SCALE_RANGE)
-                            .step_by(0.05)
-                            .fixed_decimals(2)
-                            .show_value(true),
-                    );
-                    ui.label(
-                        RichText::new("A")
-                            .size(16.0)
-                            .color(tokens.palette.text_tertiary),
-                    );
-                });
-                ui.label(
-                    RichText::new("Makes text larger without changing the layout density.")
-                        .size(11.0)
-                        .color(tokens.palette.text_tertiary),
+                self.scale_control(
+                    ui,
+                    &tokens,
+                    "Text size",
+                    "Makes text larger without changing the layout density.",
+                    &mut prefs.font_scale,
+                    &UiPreferences::FONT_SCALE_PRESETS,
+                    UiPreferences::FONT_SCALE_RANGE,
                 );
             });
 
@@ -783,6 +723,117 @@ impl SettingsPage {
                 .color(tokens.palette.text_disabled),
         );
         ui.add_space(tokens.spacing.xs);
+    }
+
+    /// A polished scaling control: title + "Default" reset, a row of preset
+    /// quick-picks, then a slider with a manual numeric input beside it.
+    #[allow(clippy::too_many_arguments)]
+    fn scale_control(
+        &self,
+        ui: &mut Ui,
+        tokens: &DesignTokens,
+        title: &str,
+        hint: &str,
+        value: &mut f32,
+        presets: &[(&'static str, f32)],
+        range: std::ops::RangeInclusive<f32>,
+    ) {
+        // Title + Default reset.
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new(title)
+                    .size(14.0)
+                    .strong()
+                    .color(tokens.palette.text_primary),
+            );
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui
+                    .small_button("Default")
+                    .on_hover_text("Back to the comfortable default")
+                    .clicked()
+                {
+                    *value = 1.1;
+                }
+            });
+        });
+        ui.add_space(tokens.spacing.xs);
+
+        // Preset quick-picks (segmented).
+        ui.horizontal_wrapped(|ui| {
+            let active = UiPreferences::active_preset(*value, presets);
+            for (label, v) in presets {
+                let is_active = active == Some(*label);
+                let bg = if is_active {
+                    tokens.palette.accent
+                } else {
+                    tokens.palette.surface
+                };
+                let text_color = if is_active {
+                    tokens.palette.text_inverse
+                } else {
+                    tokens.palette.text_primary
+                };
+                let btn = egui::Button::new(
+                    RichText::new(*label)
+                        .size(11.0)
+                        .strong()
+                        .color(text_color),
+                )
+                .fill(bg)
+                .stroke(egui::Stroke::new(
+                    1.0_f32,
+                    if is_active {
+                        tokens.palette.accent
+                    } else {
+                        tokens.palette.border_subtle
+                    },
+                ))
+                .rounding(8.0)
+                .min_size(egui::vec2(0.0, 30.0));
+                if ui
+                    .add_sized([72.0, 30.0], btn)
+                    .on_hover_text(format!("{title}: {v:.2}\u{00d7}"))
+                    .clicked()
+                {
+                    *value = *v;
+                }
+            }
+        });
+        ui.add_space(tokens.spacing.xs);
+
+        // Slider + manual input.
+        ui.horizontal(|ui| {
+            ui.label(
+                RichText::new("A")
+                    .size(11.0)
+                    .color(tokens.palette.text_tertiary),
+            );
+            ui.add(
+                egui::Slider::new(value, range.clone())
+                    .step_by(0.05)
+                    .fixed_decimals(2)
+                    .show_value(false),
+            );
+            ui.add(
+                egui::DragValue::new(value)
+                    .range(range)
+                    .speed(0.01)
+                    .fixed_decimals(2)
+                    .suffix("\u{00d7}"),
+            );
+            ui.label(
+                RichText::new("A")
+                    .size(17.0)
+                    .color(tokens.palette.text_tertiary),
+            );
+        });
+        ui.add_space(tokens.spacing.xxs);
+        ui.label(
+            RichText::new(hint)
+                .size(11.0)
+                .color(tokens.palette.text_tertiary),
+        );
+        ui.add_space(tokens.spacing.md);
     }
 }
 
