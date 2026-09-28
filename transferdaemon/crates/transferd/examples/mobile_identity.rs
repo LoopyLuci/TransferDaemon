@@ -6,6 +6,8 @@
 //!   cargo run --release -p transferd --example mobile_identity -- create "Bob"
 //!   cargo run --release -p transferd --example mobile_identity -- get
 
+use std::str::FromStr;
+use tonic::transport::Endpoint;
 use transferd_api::{
     AccountServiceClient, CreateIdentityRequest, Empty,
 };
@@ -14,14 +16,9 @@ use transferd_api::{
 async fn main() {
     let mut args = std::env::args().skip(1);
     let cmd = args.next().unwrap_or_else(|| "get".into());
-    let url = "http://127.0.0.1:50051";
-    let mut acct = match AccountServiceClient::connect(url).await {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("cannot connect to {url}: {e}");
-            std::process::exit(1);
-        }
-    };
+    let url = std::env::var("TRANSFERD_URL").unwrap_or_else(|_| "http://127.0.0.1:50051".into());
+    let channel = Endpoint::from_str(&url).expect("valid endpoint").connect_lazy();
+    let mut acct = AccountServiceClient::new(channel);
     match cmd.as_str() {
         "create" => {
             let name = args.next().unwrap_or_else(|| "Bob".into());

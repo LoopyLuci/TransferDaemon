@@ -925,3 +925,101 @@ async fn desktop_sends_to_kindle_over_tailnet_direct_lane() {
         .expect("message must reach 'sent' (tailnet direct lane acked)");
     assert!(m.status == "sent" || m.status == "delivered", "direct lane must deliver over the tailnet: {:?}", m.status);
 }
+
+/// LIVE TAILNET DIRECT-LANE E2E to the XIAOMI (Redmi Note 12 Pro 5G,
+/// 100.69.125.51) — the desktop delivers over the mesh, no relay.
+#[tokio::test]
+#[ignore]
+async fn desktop_sends_to_xiaomi_over_tailnet_direct_lane() {
+    let _guard = relay_test_lock().await;
+    let xiaomi_pk = std::env::var("XIAOMI_PK").unwrap_or_default();
+    let xiaomi_addr = "tcp://100.69.125.51:50052".to_string();
+
+    let a_state = new_state();
+    let a_grpc = start_grpc(a_state.clone()).await;
+    let a_url = format!("http://{a_grpc}");
+    let mut a_acct = AccountServiceClient::connect(a_url.clone()).await.unwrap();
+    a_acct.create_identity(CreateIdentityRequest { display_name: "Desktop".into() }).await.unwrap();
+
+    a_state.lock().contacts.push(Contact {
+        id: xiaomi_pk.clone(),
+        name: "Xiaomi".into(),
+        last_seen_ts: 0,
+        online: false,
+        blocked: false,
+        address: Some(xiaomi_addr),
+        hybrid_public_key: None,
+        limits: None,
+    });
+
+    let mut a_msg = MessageServiceClient::connect(a_url.clone()).await.unwrap();
+    a_msg
+        .send_text(SendTextRequest { contact_id: xiaomi_pk.clone(), text: "over the tailnet to the xiaomi (no relay)".into(), reply_to: String::new() })
+        .await
+        .expect("send must be accepted");
+    for _ in 0..300 {
+        pump_transport(&a_state).await;
+        let sent = a_state.lock().messages.values().flatten()
+            .any(|m| m.text == "over the tailnet to the xiaomi (no relay)" && (m.status == "sent" || m.status == "delivered"));
+        if sent { break; }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let s = a_state.lock();
+    let m = s.messages.values().flatten()
+        .find(|m| m.text == "over the tailnet to the xiaomi (no relay)")
+        .expect("message must reach sent/delivered (tailnet direct lane)");
+    assert!(m.status == "sent" || m.status == "delivered", "direct lane must deliver over the tailnet: {:?}", m.status);
+}
+
+/// LIVE RELAY-PATH E2E to the XIAOMI: the desktop routes to the Xiaomi through
+/// the deployed Cloudflare Worker (wss://) — proving the relay path works for a
+/// device on a different LAN (192.168.0.x vs the Kindle's 192.168.69.x).
+#[tokio::test]
+#[ignore]
+async fn desktop_sends_to_xiaomi_over_public_worker() {
+    let _guard = relay_test_lock().await;
+    std::env::set_var("TRANSFERD_RELAY_ADDR", "wss://transferd-relay.limpidluci.workers.dev:443");
+    let xiaomi_pk = std::env::var("XIAOMI_PK").unwrap_or_default();
+    let token = hex::encode(relay_token_for(xiaomi_pk.as_str()));
+    let xiaomi_addr = format!("wsrelay://transferd-relay.limpidluci.workers.dev:443/{token}");
+
+    let a_state = new_state();
+    let a_grpc = start_grpc(a_state.clone()).await;
+    let a_url = format!("http://{a_grpc}");
+    let mut a_acct = AccountServiceClient::connect(a_url.clone()).await.unwrap();
+    a_acct.create_identity(CreateIdentityRequest { display_name: "Desktop".into() }).await.unwrap();
+    for _ in 0..300 {
+        if a_state.lock().relay_hub.is_some() { break; }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(a_state.lock().relay_hub.is_some(), "desktop hub must register on the Worker");
+
+    a_state.lock().contacts.push(Contact {
+        id: xiaomi_pk.clone(),
+        name: "Xiaomi".into(),
+        last_seen_ts: 0,
+        online: false,
+        blocked: false,
+        address: Some(xiaomi_addr),
+        hybrid_public_key: None,
+        limits: None,
+    });
+
+    let mut a_msg = MessageServiceClient::connect(a_url.clone()).await.unwrap();
+    a_msg
+        .send_text(SendTextRequest { contact_id: xiaomi_pk.clone(), text: "to the xiaomi via the cloudflare worker relay".into(), reply_to: String::new() })
+        .await
+        .expect("send must be accepted");
+    for _ in 0..300 {
+        pump_transport(&a_state).await;
+        let sent = a_state.lock().messages.values().flatten()
+            .any(|m| m.text == "to the xiaomi via the cloudflare worker relay" && (m.status == "sent" || m.status == "delivered"));
+        if sent { break; }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let s = a_state.lock();
+    let m = s.messages.values().flatten()
+        .find(|m| m.text == "to the xiaomi via the cloudflare worker relay")
+        .expect("message must reach sent/delivered (relay path)");
+    assert!(m.status == "sent" || m.status == "delivered", "relay path must deliver: {:?}", m.status);
+}

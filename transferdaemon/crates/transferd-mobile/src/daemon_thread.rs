@@ -20,22 +20,33 @@ const CONFIG_KEYS: &[&str] = &[
 /// Read `<config_dir>/TransferDaemon/daemon.config` (`KEY=VALUE` lines) and
 /// apply it as env defaults. The explicit process env wins; a missing file is
 /// a no-op.
+///
+/// On Android 13+/MIUI, SELinux marks adb-pushed files under the app's EXTERNAL
+/// files dir as `media_rw_data_file`, which the app cannot read — so the config
+/// is also looked up at `/data/local/tmp/daemon.config` (an adb-friendly,
+/// app-readable location). The first readable file wins.
 fn apply_config(config_dir: &Option<std::path::PathBuf>) {
-    let Some(dir) = config_dir else { return };
-    let path = dir.join("TransferDaemon").join("daemon.config");
-    let Ok(content) = std::fs::read_to_string(&path) else { return };
-    for line in content.lines() {
-        let line = line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        if let Some((k, v)) = line.split_once('=') {
-            let (k, v) = (k.trim(), v.trim());
-            if CONFIG_KEYS.contains(&k) && !std::env::var(k).is_ok() {
-                std::env::set_var(k, v);
-                eprintln!("[daemon] config: {k}={v}");
+    let mut candidates: Vec<std::path::PathBuf> = Vec::new();
+    if let Some(dir) = config_dir {
+        candidates.push(dir.join("TransferDaemon").join("daemon.config"));
+    }
+    candidates.push(std::path::PathBuf::from("/data/local/tmp/daemon.config"));
+    for path in &candidates {
+        let Ok(content) = std::fs::read_to_string(path) else { continue };
+        for line in content.lines() {
+            let line = line.trim();
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            if let Some((k, v)) = line.split_once('=') {
+                let (k, v) = (k.trim(), v.trim());
+                if CONFIG_KEYS.contains(&k) && !std::env::var(k).is_ok() {
+                    std::env::set_var(k, v);
+                    eprintln!("[daemon] config: {k}={v}");
+                }
             }
         }
+        return;
     }
 }
 
