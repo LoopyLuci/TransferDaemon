@@ -3,7 +3,7 @@
 //! Redesigned with the new design system for a modern, responsive experience.
 
 use crate::app::{AppState, Page};
-use crate::design::{self, DesignTokens};
+use crate::design::{self, DesignTokens, LayoutMode};
 use crate::pages::{chat::ChatPage, settings::SettingsPage, telemetry::TelemetryPage};
 use crate::widgets::transfer_bar::{transfer_bar, TransferActionKind};
 use egui::{Color32, Context, RichText, ScrollArea, Vec2};
@@ -47,6 +47,9 @@ pub struct HomePage {
     contact_menu_for: Option<String>,
     /// Two-step confirmation for contact removal.
     confirm_remove: bool,
+    /// Tab to auto-reveal (center) in the scrollable nav bar next frame.
+    /// Set when the active tab changes so the strip scrolls it into view.
+    pending_nav_scroll: Option<Tab>,
     // Sub-pages
     settings: SettingsPage,
     telemetry: TelemetryPage,
@@ -69,6 +72,7 @@ impl Default for HomePage {
             pending_nickname_save: None,
             contact_menu_for: None,
             confirm_remove: false,
+            pending_nav_scroll: None,
             settings: SettingsPage::default(),
             telemetry: TelemetryPage::default(),
             groups: crate::pages::groups::GroupsPage::default(),
@@ -78,64 +82,97 @@ impl Default for HomePage {
 }
 
 impl HomePage {
-    pub fn show(&mut self, ctx: &Context, state: &mut AppState, chat: &mut ChatPage) {
+    pub fn show(
+        &mut self,
+        ctx: &Context,
+        state: &mut AppState,
+        chat: &mut ChatPage,
+        layout_mode: LayoutMode,
+    ) {
         let tokens = DesignTokens::current();
+        let tabs = [
+            (Tab::Chats, "💬", "Chats"),
+            (Tab::Groups, "👥", "Groups"),
+            (Tab::Contacts, "📇", "Contacts"),
+            (Tab::Transfers, "⬆⬇", "Transfers"),
+            (Tab::Settings, "⚙", "Settings"),
+            (Tab::Connections, "🌐", "Network"),
+            (Tab::Telemetry, "📊", "Metrics"),
+        ];
 
-        // ── Bottom tab bar ────────────────────────────────────────────────────
-        egui::TopBottomPanel::bottom("bottom_tabs")
-            .min_height(60.0)
-            .frame(
-                egui::Frame::none()
-                    .fill(tokens.palette.tab_bar_bg)
-                    .stroke(egui::Stroke::new(0.5_f32, tokens.palette.border_subtle))
-                    .inner_margin(egui::Margin::symmetric(0.0, 4.0)),
-            )
-            .show(ctx, |ui| {
-                ui.horizontal(|ui| {
-                    let tabs = [
-                        (Tab::Chats, "💬", "Chats"),
-                        (Tab::Groups, "👥", "Groups"),
-                        (Tab::Contacts, "📇", "Contacts"),
-                        (Tab::Transfers, "⬆⬇", "Transfers"),
-                        (Tab::Settings, "⚙", "Settings"),
-                        (Tab::Connections, "🌐", "Network"),
-                        (Tab::Telemetry, "📊", "Metrics"),
-                    ];
-                    let tab_width = ui.available_width() / tabs.len() as f32;
-                    for (t, icon, label) in tabs {
-                        let active = self.tab == t;
-                        let text_color = if active {
-                            tokens.palette.tab_active
-                        } else {
-                            tokens.palette.tab_inactive
-                        };
-                        let bg = if active {
-                            tokens.palette.surface_hover
-                        } else {
-                            Color32::TRANSPARENT
-                        };
-
-                        let btn = egui::Button::new(
-                            RichText::new(format!("{icon}\n{label}"))
-                                .size(10.0)
-                                .color(text_color),
+        if layout_mode == LayoutMode::Compact {
+            // ── Phone: bottom tab bar (horizontally scrollable strip) ──────
+            // Each tab is a fixed, comfortable width; tabs that don't fit are
+            // reached by side-scrolling (touch drag, mouse drag, or shift+wheel).
+            // The active tab auto-reveals (centers itself) when it changes.
+            egui::TopBottomPanel::bottom("bottom_tabs")
+                .min_height(64.0)
+                .frame(
+                    egui::Frame::none()
+                        .fill(tokens.palette.tab_bar_bg)
+                        .stroke(egui::Stroke::new(0.5_f32, tokens.palette.border_subtle))
+                        .inner_margin(egui::Margin::symmetric(8.0, 6.0)),
+                )
+                .show(ctx, |ui| {
+                    egui::ScrollArea::horizontal()
+                        .id_source("home_nav_scroll")
+                        .auto_shrink([false, false])
+                        .scroll_bar_visibility(
+                            egui::scroll_area::ScrollBarVisibility::AlwaysHidden,
                         )
-                        .fill(bg)
-                        .rounding(8.0)
-                        .frame(true)
-                        .min_size(egui::vec2(tab_width, 48.0));
-
-                        if ui
-                            .add_sized(egui::vec2(tab_width, 48.0), btn)
-                            .clicked()
-                        {
-                            self.tab = t;
-                            // Cancel any inline nickname edit when switching tabs.
-                            self.editing_nickname_for = None;
-                        }
-                    }
+                        .drag_to_scroll(true)
+                        .max_height(54.0)
+                        .show(ui, |ui| {
+                            ui.set_min_height(50.0);
+                            ui.horizontal(|ui| {
+                                for (t, icon, label) in tabs {
+                                    let active = self.tab == t;
+                                    let (clicked, response) =
+                                        Self::nav_button(ui, &tokens, icon, label, active, 88.0, 46.0);
+                                    if clicked {
+                                        self.select_tab(t);
+                                    }
+                                    if active && self.pending_nav_scroll == Some(t) {
+                                        response
+                                            .scroll_to_me(Some(egui::Align::Center));
+                                    }
+                                }
+                            });
+                        });
+                    // One-shot reveal has been consumed for this frame.
+                    self.pending_nav_scroll = None;
                 });
-            });
+        } else {
+            // ── Tablet/Desktop: left navigation rail ────────────────────────
+            egui::SidePanel::left("nav_rail")
+                .exact_width(96.0)
+                .frame(
+                    egui::Frame::none()
+                        .fill(tokens.palette.tab_bar_bg)
+                        .stroke(egui::Stroke::new(0.5_f32, tokens.palette.border_subtle))
+                        .inner_margin(egui::Margin::symmetric(6.0, 10.0)),
+                )
+                .show(ctx, |ui| {
+                    egui::ScrollArea::vertical()
+                        .id_source("nav_rail_scroll")
+                        .auto_shrink([false, false])
+                        .scroll_bar_visibility(
+                            egui::scroll_area::ScrollBarVisibility::AlwaysHidden,
+                        )
+                        .show(ui, |ui| {
+                            ui.set_min_height(ui.available_height());
+                            for (t, icon, label) in tabs {
+                                let active = self.tab == t;
+                                let (clicked, _) =
+                                    Self::nav_button(ui, &tokens, icon, label, active, 84.0, 54.0);
+                                if clicked {
+                                    self.select_tab(t);
+                                }
+                            }
+                        });
+                });
+        }
+        self.pending_nav_scroll = None;
 
         // ── Top bar (title) ───────────────────────────────────────────────────
         if self.tab != Tab::Settings && self.tab != Tab::Telemetry {
@@ -243,6 +280,50 @@ impl HomePage {
                     });
             }
         }
+    }
+
+    /// Switch the active nav tab, cancelling any inline edit and scheduling a
+    /// reveal of the newly-active tab in the scrollable strip.
+    fn select_tab(&mut self, t: Tab) {
+        if self.tab != t {
+            self.tab = t;
+            self.editing_nickname_for = None;
+            self.pending_nav_scroll = Some(t);
+        }
+    }
+
+    /// Render a single nav tab (icon + label). Returns `(clicked, response)`.
+    fn nav_button(
+        ui: &mut egui::Ui,
+        tokens: &DesignTokens,
+        icon: &str,
+        label: &str,
+        active: bool,
+        w: f32,
+        h: f32,
+    ) -> (bool, egui::Response) {
+        let text_color = if active {
+            tokens.palette.text_inverse
+        } else {
+            tokens.palette.tab_inactive
+        };
+        let bg = if active {
+            tokens.palette.accent
+        } else {
+            Color32::TRANSPARENT
+        };
+        let btn = egui::Button::new(
+            RichText::new(format!("{icon}\n{label}"))
+                .size(11.0)
+                .strong()
+                .color(text_color),
+        )
+        .fill(bg)
+        .stroke(egui::Stroke::new(0.5_f32, tokens.palette.border_subtle))
+        .rounding(egui::Rounding::same(12.0))
+        .min_size(egui::vec2(w, h));
+        let response = ui.add_sized(egui::vec2(w, h), btn);
+        (response.clicked(), response)
     }
 
     fn show_chats(&mut self, ctx: &Context, state: &mut AppState, _chat: &mut ChatPage) {
