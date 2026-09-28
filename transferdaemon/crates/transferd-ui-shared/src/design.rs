@@ -644,10 +644,10 @@ impl Accent {
 pub struct UiPreferences {
     pub theme: Theme,
     pub accent: Accent,
-    /// Whole-UI zoom multiplier (0.8..=1.4) applied on top of the platform
+    /// Whole-UI zoom multiplier (0.8..=1.5) applied on top of the platform
     /// pixel density.
     pub ui_scale: f32,
-    /// Text-size multiplier (0.85..=1.4), also applied on top of the density.
+    /// Text-size multiplier (0.8..=1.5), also applied on top of the density.
     pub font_scale: f32,
 }
 
@@ -656,15 +656,36 @@ impl Default for UiPreferences {
         Self {
             theme: Theme::Oled,
             accent: Accent::Blue,
-            ui_scale: 1.0,
-            font_scale: 1.0,
+            // Larger-than-unity defaults: the app ships reading comfortably.
+            // Both fold into pixels_per_point, so the combined default is
+            // ~1.21x the platform density.
+            ui_scale: 1.1,
+            font_scale: 1.1,
         }
     }
 }
 
 impl UiPreferences {
-    pub const UI_SCALE_RANGE: std::ops::RangeInclusive<f32> = 0.8..=1.4;
-    pub const FONT_SCALE_RANGE: std::ops::RangeInclusive<f32> = 0.85..=1.4;
+    pub const UI_SCALE_RANGE: std::ops::RangeInclusive<f32> = 0.8..=1.5;
+    pub const FONT_SCALE_RANGE: std::ops::RangeInclusive<f32> = 0.8..=1.5;
+
+    /// Preset pickers for UI scaling. `Comfortable` matches the default.
+    pub const UI_SCALE_PRESETS: [(&'static str, f32); 5] = [
+        ("Compact", 0.9),
+        ("Normal", 1.0),
+        ("Comfortable", 1.1),
+        ("Large", 1.25),
+        ("Extra", 1.4),
+    ];
+
+    /// Preset pickers for text size. `Comfortable` matches the default.
+    pub const FONT_SCALE_PRESETS: [(&'static str, f32); 5] = [
+        ("Small", 0.9),
+        ("Normal", 1.0),
+        ("Comfortable", 1.1),
+        ("Large", 1.25),
+        ("Extra", 1.4),
+    ];
 
     pub fn with_theme(mut self, theme: Theme) -> Self {
         self.theme = theme;
@@ -674,6 +695,14 @@ impl UiPreferences {
     pub fn with_accent(mut self, accent: Accent) -> Self {
         self.accent = accent;
         self
+    }
+
+    /// The preset whose value matches `v` (within rounding tolerance), if any.
+    pub fn active_preset<'a>(value: f32, presets: &'a [(&'static str, f32)]) -> Option<&'a str> {
+        presets
+            .iter()
+            .find(|(_, v)| (*v - value).abs() < 0.01)
+            .map(|(name, _)| *name)
     }
 
     /// Load preferences from a `LocalDb`-backed settings map (already-read
