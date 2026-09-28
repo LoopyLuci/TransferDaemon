@@ -876,3 +876,52 @@ async fn identify_mystery_token() {
         eprintln!("{} -> {}", &pk[..8], hex::encode(relay_token_for(pk)));
     }
 }
+
+/// LIVE TAILNET DIRECT-LANE E2E: the desktop daemon connects to the real
+/// Kindle over the Tailscale mesh (its transport listener binds 0.0.0.0 and
+/// the mesh routes the direct TCP lane — falling back to DERP if direct UDP
+/// fails). No relay involved. Ignored; run with KINDLE_PK + the Kindle on the
+/// tailnet.
+#[tokio::test]
+#[ignore]
+async fn desktop_sends_to_kindle_over_tailnet_direct_lane() {
+    let _guard = relay_test_lock().await;
+    // The Kindle's tailnet IP + public key.
+    let kindle_pk = std::env::var("KINDLE_PK").unwrap_or_default();
+    let kindle_addr = "tcp://100.66.5.49:50052".to_string();
+
+    let a_state = new_state();
+    let a_grpc = start_grpc(a_state.clone()).await;
+    let a_url = format!("http://{a_grpc}");
+    let mut a_acct = AccountServiceClient::connect(a_url.clone()).await.unwrap();
+    a_acct.create_identity(CreateIdentityRequest { display_name: "Desktop".into() }).await.unwrap();
+
+    a_state.lock().contacts.push(Contact {
+        id: kindle_pk.clone(),
+        name: "Kindle".into(),
+        last_seen_ts: 0,
+        online: false,
+        blocked: false,
+        address: Some(kindle_addr),
+        hybrid_public_key: None,
+        limits: None,
+    });
+
+    let mut a_msg = MessageServiceClient::connect(a_url.clone()).await.unwrap();
+    a_msg
+        .send_text(SendTextRequest { contact_id: kindle_pk.clone(), text: "over the tailnet direct lane (no relay)".into(), reply_to: String::new() })
+        .await
+        .expect("send must be accepted");
+    for _ in 0..300 {
+        pump_transport(&a_state).await;
+        let sent = a_state.lock().messages.values().flatten()
+            .any(|m| m.text == "over the tailnet direct lane (no relay)" && m.status == "sent");
+        if sent { break; }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let s = a_state.lock();
+    let m = s.messages.values().flatten()
+        .find(|m| m.text == "over the tailnet direct lane (no relay)")
+        .expect("message must reach 'sent' (tailnet direct lane acked)");
+    assert!(m.status == "sent" || m.status == "delivered", "direct lane must deliver over the tailnet: {:?}", m.status);
+}
