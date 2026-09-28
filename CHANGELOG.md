@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+### Appearance settings — theme, accent color, UI scaling, text size
+
+- **Theme**: OLED / Dark / Light / High Contrast (was already present).
+- **Accent color** (new): 8 presets (blue, green, orange, purple, red, teal,
+  pink, amber) — swatch picker in Settings. The accent re-themes buttons,
+  active tabs, outbound bubbles, focus borders and selection globally.
+- **UI scaling** (new): 0.8–1.4 slider — zooms the whole interface (layouts,
+  spacing, touch targets) on top of the platform density.
+- **Text size** (new): 0.85–1.4 slider — scales text further without changing
+  layout density.
+- Both sliders have a "Reset" (100%) button; every control has hover help.
+- **Persistence**: all four preferences are saved to the local DB
+  (`appearance.*`) and restored on next launch (legacy `theme` key still read).
+- **Scaling model**: `pixels_per_point = base_density × ui_scale × font_scale`.
+  On Android the base is the device density (so Display-size changes still
+  re-track); on desktop it is the OS-DPI value captured on first frame. The
+  multiplier model means every element — including explicitly-sized text —
+  scales globally on any screen.
+- Refactor: `UiPreferences` is the single appearance struct; `DesignTokens`
+  derives palette (with accent override), scaled typography and theme from it.
+
 ### High-quality responsive UI (Android + Desktop)
 
 - **Scrollable bottom nav bar (phone)**: each tab is a fixed comfortable width;

@@ -20,6 +20,27 @@ pub enum Theme {
     Oled,
 }
 
+/// Stable name for a theme, used when persisting to the local DB.
+pub fn theme_name(theme: Theme) -> &'static str {
+    match theme {
+        Theme::Dark => "dark",
+        Theme::Light => "light",
+        Theme::HighContrast => "high_contrast",
+        Theme::Oled => "oled",
+    }
+}
+
+/// Parse a theme back from its persisted name.
+pub fn theme_from_name(s: &str) -> Option<Theme> {
+    match s {
+        "dark" => Some(Theme::Dark),
+        "light" => Some(Theme::Light),
+        "high_contrast" => Some(Theme::HighContrast),
+        "oled" => Some(Theme::Oled),
+        _ => None,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Color Palette
 // ---------------------------------------------------------------------------
@@ -99,6 +120,20 @@ impl Palette {
             Theme::HighContrast => Self::high_contrast(),
             Theme::Oled => Self::oled(),
         }
+    }
+
+    /// Override the accent-family colors (and every token derived from the
+    /// accent: active tabs, outbound bubbles, focus borders) with a preset.
+    pub fn with_accent(mut self, accent: Accent) -> Self {
+        let c = accent.color();
+        self.accent = c;
+        self.accent_hover = c.gamma_multiply(1.18);
+        self.accent_active = c.gamma_multiply(1.34);
+        self.accent_subtle = c.gamma_multiply(1.08);
+        self.tab_active = c;
+        self.bubble_outbound = c;
+        self.border_focus = c;
+        self
     }
 
     fn dark() -> Self {
@@ -317,6 +352,23 @@ impl Default for Typography {
     }
 }
 
+impl Typography {
+    /// Return a copy with every font size multiplied by `scale`.
+    pub fn scaled(&self, scale: f32) -> Self {
+        Self {
+            display: FontId::proportional(self.display.size * scale),
+            heading: FontId::proportional(self.heading.size * scale),
+            title: FontId::proportional(self.title.size * scale),
+            body_large: FontId::proportional(self.body_large.size * scale),
+            body: FontId::proportional(self.body.size * scale),
+            body_small: FontId::proportional(self.body_small.size * scale),
+            caption: FontId::proportional(self.caption.size * scale),
+            mono: FontId::monospace(self.mono.size * scale),
+            mono_small: FontId::monospace(self.mono_small.size * scale),
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Spacing
 // ---------------------------------------------------------------------------
@@ -515,6 +567,139 @@ impl LayoutMode {
 // Global Design Tokens (singleton)
 // ---------------------------------------------------------------------------
 
+/// Preset accent colors — user-selectable brand color for buttons, selection,
+/// active tabs and outbound bubbles.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Accent {
+    Blue,
+    Green,
+    Orange,
+    Purple,
+    Red,
+    Teal,
+    Pink,
+    Amber,
+}
+
+impl Accent {
+    pub const ALL: [Accent; 8] = [
+        Accent::Blue,
+        Accent::Green,
+        Accent::Orange,
+        Accent::Purple,
+        Accent::Red,
+        Accent::Teal,
+        Accent::Pink,
+        Accent::Amber,
+    ];
+
+    pub fn color(self) -> Color32 {
+        match self {
+            Accent::Blue => Color32::from_rgb(0, 122, 255),
+            Accent::Green => Color32::from_rgb(34, 170, 90),
+            Accent::Orange => Color32::from_rgb(255, 140, 0),
+            Accent::Purple => Color32::from_rgb(146, 82, 255),
+            Accent::Red => Color32::from_rgb(232, 66, 66),
+            Accent::Teal => Color32::from_rgb(0, 180, 172),
+            Accent::Pink => Color32::from_rgb(236, 64, 150),
+            Accent::Amber => Color32::from_rgb(255, 179, 0),
+        }
+    }
+
+    /// Stable, persisted name.
+    pub fn name(self) -> &'static str {
+        match self {
+            Accent::Blue => "blue",
+            Accent::Green => "green",
+            Accent::Orange => "orange",
+            Accent::Purple => "purple",
+            Accent::Red => "red",
+            Accent::Teal => "teal",
+            Accent::Pink => "pink",
+            Accent::Amber => "amber",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Accent::Blue => "Blue",
+            Accent::Green => "Green",
+            Accent::Orange => "Orange",
+            Accent::Purple => "Purple",
+            Accent::Red => "Red",
+            Accent::Teal => "Teal",
+            Accent::Pink => "Pink",
+            Accent::Amber => "Amber",
+        }
+    }
+
+    pub fn from_name(s: &str) -> Option<Accent> {
+        Accent::ALL.into_iter().find(|a| a.name() == s)
+    }
+}
+
+/// User-tunable appearance preferences — theme, accent color, UI scale and
+/// text size. Persisted to the local DB and applied globally.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct UiPreferences {
+    pub theme: Theme,
+    pub accent: Accent,
+    /// Whole-UI zoom multiplier (0.8..=1.4) applied on top of the platform
+    /// pixel density.
+    pub ui_scale: f32,
+    /// Text-size multiplier (0.85..=1.4), also applied on top of the density.
+    pub font_scale: f32,
+}
+
+impl Default for UiPreferences {
+    fn default() -> Self {
+        Self {
+            theme: Theme::Oled,
+            accent: Accent::Blue,
+            ui_scale: 1.0,
+            font_scale: 1.0,
+        }
+    }
+}
+
+impl UiPreferences {
+    pub const UI_SCALE_RANGE: std::ops::RangeInclusive<f32> = 0.8..=1.4;
+    pub const FONT_SCALE_RANGE: std::ops::RangeInclusive<f32> = 0.85..=1.4;
+
+    pub fn with_theme(mut self, theme: Theme) -> Self {
+        self.theme = theme;
+        self
+    }
+
+    pub fn with_accent(mut self, accent: Accent) -> Self {
+        self.accent = accent;
+        self
+    }
+
+    /// Load preferences from a `LocalDb`-backed settings map (already-read
+    /// `get_setting` results). Missing keys keep their defaults.
+    pub fn from_settings(theme: Option<String>, accent: Option<String>, ui_scale: Option<f32>, font_scale: Option<f32>) -> Self {
+        let mut prefs = Self::default();
+        if let Some(t) = theme.and_then(|s| theme_from_name(&s)) {
+            prefs.theme = t;
+        }
+        if let Some(a) = accent.and_then(|s| Accent::from_name(&s)) {
+            prefs.accent = a;
+        }
+        if let Some(v) = ui_scale {
+            if UiPreferences::UI_SCALE_RANGE.contains(&v) {
+                prefs.ui_scale = v;
+            }
+        }
+        if let Some(v) = font_scale {
+            if UiPreferences::FONT_SCALE_RANGE.contains(&v) {
+                prefs.font_scale = v;
+            }
+        }
+        prefs
+    }
+}
+
 /// Global design tokens — accessed via `DesignTokens::current()`.
 #[derive(Clone)]
 pub struct DesignTokens {
@@ -523,17 +708,21 @@ pub struct DesignTokens {
     pub spacing: Spacing,
     pub breakpoints: Breakpoints,
     pub theme: Theme,
+    pub accent: Accent,
+    pub font_scale: f32,
 }
 
 impl DesignTokens {
-    /// Create tokens for the given theme.
-    pub fn new(theme: Theme) -> Self {
+    /// Create tokens for the given preferences.
+    pub fn new(prefs: &UiPreferences) -> Self {
         Self {
-            palette: Palette::for_theme(theme),
-            typography: Typography::default(),
+            palette: Palette::for_theme(prefs.theme).with_accent(prefs.accent),
+            typography: Typography::default().scaled(prefs.font_scale),
             spacing: Spacing::default(),
             breakpoints: Breakpoints::default(),
-            theme,
+            theme: prefs.theme,
+            accent: prefs.accent,
+            font_scale: prefs.font_scale,
         }
     }
 
@@ -543,15 +732,15 @@ impl DesignTokens {
     }
 
     /// Initialize the global tokens. Must be called once at startup.
-    pub fn init(theme: Theme) {
+    pub fn init(prefs: &UiPreferences) {
         DESIGN_TOKENS.with(|t| {
-            *t.borrow_mut() = Some(Self::new(theme));
+            *t.borrow_mut() = Some(Self::new(prefs));
         });
     }
 
-    /// Switch theme at runtime.
-    pub fn set_theme(theme: Theme) {
-        Self::init(theme);
+    /// Switch appearance (theme/accent/font size) at runtime.
+    pub fn set_appearance(prefs: &UiPreferences) {
+        Self::init(prefs);
     }
 }
 
@@ -604,12 +793,15 @@ pub fn panel_frame(tokens: &DesignTokens) -> egui::Frame {
         .rounding(tokens.spacing.panel_rounding)
 }
 
-/// Apply the global theme to an egui context.
-pub fn apply_theme(ctx: &egui::Context, theme: Theme) {
-    DesignTokens::init(theme);
+/// Apply the full appearance (theme + accent + text size) to an egui context.
+/// UI scaling is applied by the app each frame on top of the platform pixel
+/// density (`ui_scale` and `font_scale` both fold into `pixels_per_point` so
+/// every element — including explicitly-sized text — scales globally).
+pub fn apply_prefs(ctx: &egui::Context, prefs: &UiPreferences) {
+    DesignTokens::init(prefs);
     let tokens = DesignTokens::current();
 
-    let mut visuals = match theme {
+    let mut visuals = match prefs.theme {
         Theme::Light => egui::Visuals::light(),
         _ => egui::Visuals::dark(),
     };
@@ -656,5 +848,15 @@ pub fn apply_theme(ctx: &egui::Context, theme: Theme) {
         s.spacing.item_spacing = Vec2::new(8.0, 6.0);
         s.spacing.button_padding = tokens.spacing.button_padding;
         s.spacing.indent = tokens.spacing.md;
+        // Scale egui's default text styles so widget text follows text size.
+        for font in s.text_styles.values_mut() {
+            font.size *= prefs.font_scale;
+        }
     });
+}
+
+/// Compatibility wrapper: apply a theme with default accent + scale.
+pub fn apply_theme(ctx: &egui::Context, theme: Theme) {
+    let prefs = UiPreferences::default().with_theme(theme);
+    apply_prefs(ctx, &prefs);
 }
