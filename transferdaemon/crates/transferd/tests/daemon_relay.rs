@@ -815,6 +815,8 @@ a_state.lock().contacts.push(Contact {
     {
         let s = a_state.lock();
         if let Some(hub) = &s.relay_hub {
+            eprintln!("[diag] desktop self_token = {}", hex::encode(hub.self_token()));
+            eprintln!("[diag] kindle token       = {}", hex::encode(relay_token_for(kindle_pk.as_str())));
             let id = s.hybrid_signing_key().expect("desktop identity");
             let spec = hub.relay_specs()[0];
             let result = hub.initiate(relay_token_for(kindle_pk.as_str()), &id, spec.0).await;
@@ -846,4 +848,26 @@ let hub = a_state.lock().relay_hub.clone();
         eprintln!("[diag] desktop hub has_session(kindle)={} root={:?}", hub.has_session(tok).await, hub.session_root(tok).await.map(|r| format!("{r:02x?}")));
     }
     assert_eq!(m.status, "sent", "relay must ack the forward to the Kindle: {:?}", m.status);
+}
+
+/// Compute relay tokens for a set of historical Kindle pks to identify a
+/// mystery Worker registration.
+#[tokio::test]
+#[ignore]
+async fn identify_mystery_token() {
+    use transferd_lib::relay_hub::relay_token_for;
+    let pks = [
+        "26da5db79219f42b9d30965cbcf7805e8ba0d044dca624108d49236e678fd818",
+        "2ae694d3b31e629aece3b4f07d3f31292951398b14188e2288cfaf3a5b2a8a47",
+        "b4e2ac3e4d03e8e969fa3cad84364b00901893fca1fd06e46de662469d797fc3",
+        "e2e507c37fd11feec3b7ddadfa065faeefd64402a8cdefea000cd55c7cb185a3",
+        "db77920a2171926f295e11600cdf226da8e6b1729330f4b37b0667371a5ea0b9",
+        "78dc9e9db7e19c62782e5f06b7974bdfe5011c50db487c52f4140ef4f9691916",
+        "b5f107c0287cf31f341239d1dae38b8bc37519ea268a3d8cfb78eab188717a78",
+        "f955dd810e7873cacf3579fabd8866cc4fab01f822053b2194ae4841e02e8789",
+        "04a6ddefd9b5d2e15836d1fa105d918406d3d499e13627a64a55e95f98b1e451",
+    ];
+    for pk in pks {
+        eprintln!("{} -> {}", &pk[..8], hex::encode(relay_token_for(pk)));
+    }
 }

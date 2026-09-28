@@ -144,12 +144,14 @@ export class TRANSFERD_RELAY {
         ws._meta.token = token;
         ws._meta.ip = ip;
         this.clients.set(token, { ws, ip, expires: Date.now() + 90_000 });
+        console.log('HARBOR Register ' + token.slice(0, 8) + ' clients=' + this.clients.size);
         ws.send(challengeFrame()); // register accepted (ChallengeMsg reply)
         break;
       case TAG.Forward: {
         // sender_seq = bytes 40..42 (after 32-byte token + 8-byte pow_nonce).
         // DeliveredMsg body == ForwardMsg body[40..] (u16 seq + varint ciphertext).
         const blobBytes = body.length - 40;
+        console.log('HARBOR Forward ' + token.slice(0, 8) + ' blob=' + blobBytes + ' dst=' + (this.clients.has(token) ? 'yes' : 'NO') + ' clients=' + this.clients.size);
         if (this.limits.maxBlobBytes && blobBytes > this.limits.maxBlobBytes) {
           ws.send(errorFrame(ErrorCode.PAYLOAD_TOO_LARGE, 0, 'blob exceeds node limit'));
           break;
