@@ -61,7 +61,9 @@ impl RelayWsClient {
             let mut stream = stream;
             loop {
                 // Read inbound; re-register on a ticker (through the shared sink).
-                let mut ka = tokio::time::interval(std::time::Duration::from_secs(45));
+                // 15 s: short enough that the relay's in-memory registration map
+                // is refreshed well before its TTL / hibernation-wake window.
+                let mut ka = tokio::time::interval(std::time::Duration::from_secs(15));
                 ka.tick().await; // consume the immediate tick
                 let mut dead = false;
                 let mut re_register_pending = false;

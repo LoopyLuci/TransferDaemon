@@ -820,7 +820,12 @@ a_state.lock().contacts.push(Contact {
             let id = s.hybrid_signing_key().expect("desktop identity");
             let spec = hub.relay_specs()[0];
             let result = hub.initiate(relay_token_for(kindle_pk.as_str()), &id, spec.0).await;
-            eprintln!("[diag] hub.initiate(kindle) via {} = {:?}", spec.0, result.map(|pk| format!("{}..", hex::encode(&pk[..4]))));
+            eprintln!("[diag] hub.initiate(kindle) via {} = {:?}", spec.0, result.as_ref().map(|pk| format!("{}..", hex::encode(&pk[..4]))));
+            // Probe-only: if the handshake didn't establish, skip the send/pump.
+            if result.is_err() {
+                eprintln!("[diag] handshake failed — skipping send/pump");
+                return;
+            }
         } else {
             eprintln!("[diag] no desktop hub");
         }

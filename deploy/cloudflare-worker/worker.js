@@ -100,9 +100,13 @@ export class TRANSFERD_RELAY {
   }
 
   // Rebuild the in-memory token→socket map after a hibernation wake. SQLite
-  // Durable Objects hibernate after seconds idle; the `clients` Map is NOT
-  // persisted, but the accepted WebSockets (with their `_meta.token`) survive.
-  rebuildClients() {
+  // Durable Objects re-instantiate the class on every wake (the `clients` Map
+  // is in-memory), but the accepted WebSockets (with their `_meta.token`) and
+  // the persisted registration markers survive. This restores every socket it
+  // can correlate; the client ALSO re-registers every 15 s, which re-adds any
+  // token whose socket metadata was lost.
+  async rebuildClients() {
+    let restored = 0;
     for (const ws of this.state.getWebSockets()) {
       const t = ws._meta && ws._meta.token;
       if (t && !this.clients.has(t)) {
@@ -111,6 +115,20 @@ export class TRANSFERD_RELAY {
           ip: (ws._meta && ws._meta.ip) || 'unknown',
           expires: Date.now() + 90_000,
         });
+        restored++;
+      }
+    }
+    // Prune persisted markers whose socket is gone (their close event may have
+    // been missed during hibernation).
+    if (restored > 0) {
+      const markers = await this.state.storage.list({ prefix: 'reg:' });
+      for (const [k] of markers) {
+        const token = k.slice(4);
+        const entry = this.clients.get(token);
+        if (!entry || entry.ws.readyState !== 1) {
+          await this.state.storage.delete(k);
+          this.clients.delete(token);
+        }
       }
     }
   }
@@ -118,7 +136,7 @@ export class TRANSFERD_RELAY {
   // Hibernation message handler: `message` is the raw payload.
   async webSocketMessage(ws, message) {
     // Any message may follow a hibernation wake — rebuild the routing map.
-    this.rebuildClients();
+    await this.rebuildClients();
     // The message may arrive as an ArrayBuffer or a wrapper object; normalize.
     let data = message;
     if (data && typeof data === 'object' && data.data !== undefined) {
@@ -139,11 +157,13 @@ export class TRANSFERD_RELAY {
     switch (tag) {
       case TAG.Register:
         // Persist the token on the socket's metadata so rebuildClients() can
-        // restore the mapping across hibernation.
+        // restore the mapping across hibernation, and in DO storage so the
+        // registration marker survives even if socket metadata is lost.
         ws._meta = ws._meta || {};
         ws._meta.token = token;
         ws._meta.ip = ip;
         this.clients.set(token, { ws, ip, expires: Date.now() + 90_000 });
+        await this.state.storage.put('reg:' + token, 1);
         console.log('HARBOR Register ' + token.slice(0, 8) + ' clients=' + this.clients.size);
         ws.send(challengeFrame()); // register accepted (ChallengeMsg reply)
         break;
@@ -182,7 +202,10 @@ export class TRANSFERD_RELAY {
 
   async webSocketClose(ws, code, reason) {
     for (const [token, c] of this.clients) {
-      if (c.ws === ws) this.clients.delete(token);
+      if (c.ws === ws) {
+        this.clients.delete(token);
+        await this.state.storage.delete('reg:' + token);
+      }
     }
   }
 
