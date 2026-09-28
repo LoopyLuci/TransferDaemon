@@ -71,6 +71,7 @@ pub async fn spawn_inbound_listener(
 /// and apply any inbound events (acks, read receipts, unsolicited messages).
 /// Every 50 ms; marks dispatched messages "sent" and applies inbound WireMsgs.
 pub fn spawn_transport_tick(state: Arc<PkMutex<DaemonState>>) {
+    let state_retry = state.clone();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_millis(50));
         loop {
@@ -89,6 +90,50 @@ pub fn spawn_transport_tick(state: Arc<PkMutex<DaemonState>>) {
             }
         }
     });
+
+    // Retry session establishment for any contact with pending outbound
+    // messages. A relay can temporarily fail to route (e.g. its Durable Object
+    // hibernated and its registration map was lost, or the peer's registration
+    // lapsed), so a one-shot establish on send leaves the message "pending"
+    // forever. Retrying until a lane exists is what makes delivery eventual.
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(2));
+        loop {
+            interval.tick().await;
+            retry_pending_sessions(&state_retry).await;
+        }
+    });
+}
+
+/// Establish sessions for contacts that have outbound messages stuck in
+/// "pending" (queued but no live lane). Called periodically by the transport
+/// tick's retry loop, and by tests' pump loop.
+pub async fn retry_pending_sessions(state: &Arc<PkMutex<DaemonState>>) {
+    let pending: Vec<(String, Option<String>)> = {
+        let s = state.lock();
+        let mut out = Vec::new();
+        for (cid, msgs) in &s.messages {
+            if msgs.iter().any(|m| m.outbound && m.status == "pending") {
+                let addr = s
+                    .contacts
+                    .iter()
+                    .find(|c| c.id == *cid)
+                    .and_then(|c| c.address.clone());
+                out.push((cid.clone(), addr));
+            }
+        }
+        out
+    };
+    if pending.is_empty() {
+        return;
+    }
+    for (cid, addr) in pending {
+        let transport = state.lock().transport.clone();
+        if transport.lock().await.has_session(&cid) {
+            continue;
+        }
+        crate::grpc::ensure_contact_session(state, &cid, addr.as_deref()).await;
+    }
 }
 
 /// Handle one inbound peer connection: handshake → lane → message loop.
