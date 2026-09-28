@@ -229,6 +229,10 @@ pub struct DaemonState {
     /// Path to the encrypted user data file.  `None` → persistence disabled
     /// (default for in-memory / test mode).
     pub store_path:   Option<PathBuf>,
+    /// Path to a plaintext recovery-phrase cache used to auto-restore the
+    /// identity on boot without user input (mobile daemon; mirrors the desktop
+    /// UI's cached-phrase restore). `None` → the phrase is never cached.
+    pub phrase_path:  Option<PathBuf>,
     /// Argon2 parameters used for key derivation.
     pub store_params: StoreParams,
     /// Cached store credentials (derived AES-256 key + salt), set on
@@ -257,6 +261,7 @@ relay_hub:  None,
             peer_listen: None,
             typing_until: HashMap::new(),
             store_path:   None,
+            phrase_path:  None,
             store_params: StoreParams::production(),
             store_key:    None,
         }
@@ -267,6 +272,18 @@ impl DaemonState {
     /// Create a state that persists to `path` using `params`.
     pub fn with_store(path: PathBuf, params: StoreParams) -> Self {
         Self { store_path: Some(path), store_params: params, ..Default::default() }
+    }
+
+    /// Like [`Self::with_store`], but also caches the recovery phrase at
+    /// `phrase_path` (written by `set_phrase`) so a later boot can auto-restore
+    /// the identity without user input. Used by the mobile daemon.
+    pub fn with_store_and_phrase(path: PathBuf, params: StoreParams, phrase_path: PathBuf) -> Self {
+        Self {
+            store_path: Some(path),
+            phrase_path: Some(phrase_path),
+            store_params: params,
+            ..Default::default()
+        }
     }
 
     pub fn next_id(&mut self) -> String {
@@ -421,6 +438,14 @@ status:       m.status,
             match transferd_store::StoreCredentials::derive(path, phrase, &self.store_params) {
                 Ok(creds) => self.store_key = Some(creds),
                 Err(e) => tracing::error!("transferd: key derivation failed: {e}"),
+            }
+        }
+        // Cache the phrase for auto-restore on a later boot (mobile daemon).
+        // The file lives in the app-private data dir; the encrypted store
+        // remains the canonical backup.
+        if let Some(p) = &self.phrase_path {
+            if let Err(e) = std::fs::write(p, phrase) {
+                tracing::error!("transferd: phrase cache write failed: {e}");
             }
         }
         // Also record the phrase in the identity for snapshot().

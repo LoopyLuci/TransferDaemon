@@ -141,6 +141,9 @@ pub fn configured_relays() -> Vec<((std::net::SocketAddr, RelayKind), Option<Str
 pub async fn spawn_inbound_relay_listener(state: Arc<PkMutex<DaemonState>>) {
     let configured = configured_relays();
     if configured.is_empty() {
+        tracing::debug!(
+            "[relay] no relays configured (TRANSFERD_RELAY_ADDR unset/unresolvable); inbound relay off"
+        );
         return;
     }
     let relay_specs: Vec<(std::net::SocketAddr, RelayKind)> = configured.iter().map(|(s, _)| *s).collect();

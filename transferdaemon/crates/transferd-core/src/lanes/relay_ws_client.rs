@@ -191,9 +191,16 @@ async fn connect_and_register(
     let req = ws_url
         .into_client_request()
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, e))?;
-    let (ws, _) = tokio_tungstenite::connect_async(req)
-        .await
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::ConnectionRefused, e))?;
+    // Bound the whole TCP connect + TLS handshake: on a hung network (e.g. a
+    // device whose outbound TLS is blocked/suspended) an unbounded connect
+    // would hang RelayHub::start forever, silently skipping registration.
+    let (ws, _) = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        tokio_tungstenite::connect_async(req),
+    )
+    .await
+    .map_err(|_| std::io::Error::new(std::io::ErrorKind::TimedOut, "relay WS connect timed out"))?
+    .map_err(|e| std::io::Error::new(std::io::ErrorKind::ConnectionRefused, e))?;
     let (mut sink, mut source) = ws.split();
 
     // 1. Ask for the current challenge.

@@ -2,6 +2,37 @@
 
 ## Unreleased
 
+### Mobile daemon: inbound relay registration + identity auto-restore
+
+Three real gaps found while chasing the live desktop→Kindle relay E2E (the
+Kindle never showed up in the Worker's routing map — `dst=NO`):
+
+- **Mobile daemon never started its inbound relay listener**: `daemon_thread.rs`
+  started the transport listener + tick + gRPC but, unlike the desktop binary,
+  omitted `relay_hub::spawn_inbound_relay_listener`. A relay-configured mobile
+  daemon therefore never registered its token → contacts could never reach it
+  via the relay. Now spawned at startup (defers until an identity exists; the
+  gRPC create/restore path re-triggers it).
+- **Identity did not survive app restarts**: `with_store` persisted state but
+  nothing ever restored the identity on boot (the store is phrase-encrypted and
+  the mobile had no cached phrase). Added `DaemonState::with_store_and_phrase` +
+  `phrase_path`: `set_phrase` now writes a phrase cache next to the store, and
+  the mobile daemon auto-restores from it at boot. Verified live: the Kindle
+  logs `identity restored from cached phrase` after a restart.
+- **Unbounded WS connect hung registration forever**: `connect_and_register`
+  called `tokio_tungstenite::connect_async` with no timeout, so a blocked/hung
+  TLS handshake (Fire OS suspending outbound Cloudflare TLS) left
+  `RelayHub::start` stuck and the daemon silently unregistered. The connect is
+  now bounded (30s) and surfaces `relay WS connect timed out` as a proper error.
+- Diagnostic: `spawn_inbound_relay_listener` now logs when no relays are
+  configured/unresolvable (was a silent return).
+
+### Honest relay tests
+
+- `desktop_sends_to_real_kindle_over_public_worker` no longer `return`s
+  (passes) when the relay handshake fails — it panics with the error. Relay +
+  direct-lane tests require **"delivered"**, not "sent".
+
 ### Cloudflare Worker DO-map fixes (live ground truth)
 
 Diagnosed live with `wrangler tail` (HARBOR logs): the desktop↔desktop path is
