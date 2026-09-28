@@ -821,10 +821,10 @@ a_state.lock().contacts.push(Contact {
             let spec = hub.relay_specs()[0];
             let result = hub.initiate(relay_token_for(kindle_pk.as_str()), &id, spec.0).await;
             eprintln!("[diag] hub.initiate(kindle) via {} = {:?}", spec.0, result.as_ref().map(|pk| format!("{}..", hex::encode(&pk[..4]))));
-            // Probe-only: if the handshake didn't establish, skip the send/pump.
+            // Probe-only: if the handshake didn't establish, FAIL loudly — this is an
+            // E2E test, not a diagnostic tool.
             if result.is_err() {
-                eprintln!("[diag] handshake failed — skipping send/pump");
-                return;
+                panic!("relay handshake to the Kindle failed: {result:?} — is the device online and registered on the Worker?");
             }
         } else {
             eprintln!("[diag] no desktop hub");

@@ -93,13 +93,33 @@ pub fn spawn_with_config(socket_path: String, config_dir: Option<std::path::Path
             let state = match &config_dir {
                 Some(dir) => {
                     let store = dir.join("TransferDaemon").join("user_data.enc");
+                    let phrase_path = dir.join("TransferDaemon").join("user_data.phrase");
                     eprintln!("[daemon] persistent store: {}", store.display());
-                    Arc::new(parking_lot::Mutex::new(
-                        transferd_lib::state::DaemonState::with_store(
+                    let st = Arc::new(parking_lot::Mutex::new(
+                        transferd_lib::state::DaemonState::with_store_and_phrase(
                             store,
                             transferd_store::StoreParams::production(),
+                            phrase_path.clone(),
                         ),
-                    ))
+                    ));
+                    // Auto-restore the identity from the cached phrase so a
+                    // restarted app keeps its identity (and therefore its relay
+                    // token + registrations). The phrase file is written by
+                    // create/restore_identity via set_phrase.
+                    if phrase_path.exists() {
+                        match std::fs::read_to_string(&phrase_path) {
+                            Ok(phrase) => {
+                                let mut s = st.lock();
+                                if s.try_load(phrase.trim()) {
+                                    eprintln!("[daemon] identity restored from cached phrase");
+                                } else {
+                                    eprintln!("[daemon] identity restore failed (stale phrase cache)");
+                                }
+                            }
+                            Err(e) => eprintln!("[daemon] could not read phrase cache: {e}"),
+                        }
+                    }
+                    st
                 }
                 None => transferd_lib::new_state(),
             };
@@ -132,6 +152,11 @@ pub fn spawn_with_config(socket_path: String, config_dir: Option<std::path::Path
             // Background transport tick: flush queued messages over active lanes
             // and apply inbound events (acks, read receipts, unsolicited).
             transferd_lib::transport::spawn_transport_tick(state.clone());
+            // Register the inbound relay token(s) (UDP/WS) so contacts can reach
+            // us via the relay. Mirrors the desktop binary's startup; defers
+            // when no identity exists yet (a later identity creation re-triggers
+            // it via the gRPC create_identity path).
+            tokio::spawn(transferd_lib::relay_hub::spawn_inbound_relay_listener(state.clone()));
             if let Err(e) = transferd_lib::grpc::add_all_services(
                 tonic::transport::Server::builder(), state)
                 .serve(addr)
