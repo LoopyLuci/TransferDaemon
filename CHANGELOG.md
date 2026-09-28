@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+### LIVE: mobile relay-path delivery proven (desktop → relay → Kindle over the tailnet)
+
+`relayd-ws` is now a real standalone binary (`crates/relayd/src/bin/relayd-ws.rs` —
+the self-hosted twin of the Cloudflare Worker relay, `RELAYD_WS_BIND` /
+`RELAYD_WS_*` limits). Running it on the desktop + pointing the Kindle at
+`ws://100.101.98.77:18081` over the Tailscale mesh, the first mobile relay
+delivery happened:
+
+- Kindle daemon: `[relay] inbound listeners registered on 1 relays` →
+  `responder session token=3015.. root=d1a2..` → `inbound chunk (2108 bytes)`.
+- `desktop_sends_to_kindle_over_local_tailnet_ws_relay` passes (0.51s) with the
+  message **"delivered"** — the honest assertion.
+
+This closes the last unproven transport leg: a **mobile daemon** registering on
+a WS relay + receiving. It also validated the three mobile fixes (relay
+listener at startup, identity auto-restore, bounded WS connect) end-to-end.
+
+One Windows gotcha captured for the guide: Hyper-V/WinNAT reserves the
+7981–8180 TCP range (`netsh interface ipv4 show excludedportrange`) — binding a
+relay there fails with WSAEACCES (10013). Use a port outside it.
+
 ### Mobile daemon: inbound relay registration + identity auto-restore
 
 Three real gaps found while chasing the live desktop→Kindle relay E2E (the

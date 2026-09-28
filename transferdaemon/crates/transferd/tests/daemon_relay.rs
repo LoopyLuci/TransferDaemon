@@ -1023,3 +1023,59 @@ for _ in 0..300 {
         .expect("message must be found");
     assert_eq!(m.status, "delivered", "relay path must DELIVER to the Xiaomi (not just ack): {:?}", m.status);
 }
+
+/// LIVE TAILNET WS-RELAY E2E: the desktop delivers to the real Kindle through
+/// a self-hosted relayd-ws running on the desktop (100.101.98.77:18081),
+/// reached over the Tailscale mesh. This proves the MOBILE daemon's inbound
+/// relay registration + delivery path (the Kindle connects to the relay over
+/// the tailnet — no Cloudflare TLS involved).
+#[tokio::test]
+#[ignore]
+async fn desktop_sends_to_kindle_over_local_tailnet_ws_relay() {
+    let _guard = relay_test_lock().await;
+    std::env::set_var("TRANSFERD_RELAY_ADDR", "ws://100.101.98.77:18081");
+    let kindle_pk = std::env::var("KINDLE_PK").unwrap_or_default();
+    let token_hex = hex::encode(relay_token_for(kindle_pk.as_str()));
+    let kindle_addr = format!("wsrelay://100.101.98.77:18081/{token_hex}");
+    eprintln!("[diag] kindle relay token: {token_hex}");
+
+    let a_state = new_state();
+    let a_grpc = start_grpc(a_state.clone()).await;
+    let a_url = format!("http://{a_grpc}");
+    let mut a_acct = AccountServiceClient::connect(a_url.clone()).await.unwrap();
+    a_acct.create_identity(CreateIdentityRequest { display_name: "Desktop".into() }).await.unwrap();
+    for _ in 0..300 {
+        if a_state.lock().relay_hub.is_some() { break; }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(a_state.lock().relay_hub.is_some(), "desktop hub must register on the local relay");
+
+    a_state.lock().contacts.push(Contact {
+        id: kindle_pk.clone(),
+        name: "Kindle".into(),
+        last_seen_ts: 0,
+        online: false,
+        blocked: false,
+        address: Some(kindle_addr),
+        hybrid_public_key: None,
+        limits: None,
+    });
+
+    let mut a_msg = MessageServiceClient::connect(a_url.clone()).await.unwrap();
+    a_msg
+        .send_text(SendTextRequest { contact_id: kindle_pk.clone(), text: "to the kindle via the local tailnet ws relay".into(), reply_to: String::new() })
+        .await
+        .expect("send must be accepted");
+    for _ in 0..300 {
+        pump_transport(&a_state).await;
+        let sent = a_state.lock().messages.values().flatten()
+            .any(|m| m.text == "to the kindle via the local tailnet ws relay" && m.status == "delivered");
+        if sent { break; }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let s = a_state.lock();
+    let m = s.messages.values().flatten()
+        .find(|m| m.text == "to the kindle via the local tailnet ws relay")
+        .expect("message must be found");
+    assert_eq!(m.status, "delivered", "must DELIVER to the Kindle via the local relay: {:?}", m.status);
+}
