@@ -850,7 +850,8 @@ impl eframe::App for TransferDaemonApp {
             }
 
             Page::Home => {
-                self.home.show(ctx, &mut self.state, &mut self.chat);
+                let layout_mode = self.state.layout_mode;
+                self.home.show(ctx, &mut self.state, &mut self.chat, layout_mode);
                 // Persist any nickname saved by the inline editor.
                 if let Some((id, nick)) = self.home.take_pending_nickname_save() {
                     self.set_contact_nickname(&id, nick);

@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+### High-quality responsive UI (Android + Desktop)
+
+- **Scrollable bottom nav bar (phone)**: each tab is a fixed comfortable width;
+  tabs that don't fit are reached by side-scrolling (touch drag, mouse drag, or
+  shift+wheel). No more squeezing 7 tabs into whatever width is available.
+- **Auto-reveal**: when the active tab changes, the strip scrolls the tab into
+  view (centers it) — one-shot, so manual side-scrolling is never overridden.
+- **Left nav rail (tablet/desktop)**: at widths >= 600pt the bottom strip
+  becomes a vertical navigation rail on the left edge — the standard desktop
+  pattern — so the app scales from a phone up to a maximized desktop window.
+- **Polish**: active tab renders as an accent pill with inverse text + subtle
+  border stroke; consistent touch targets.
+
 ## v2.2.0 - 2026-09-27
 
 ### WS relay resilience (from the on-device E2E)
