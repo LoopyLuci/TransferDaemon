@@ -14,6 +14,7 @@ const CONFIG_KEYS: &[&str] = &[
     "TRANSFERD_DHT_BIND",
     "TRANSFERD_DHT_BOOTSTRAP",
     "TRANSFERD_DIFFICULTY",
+    "TRANSFERD_BIND_ADDR",
 ];
 
 /// Read `<config_dir>/TransferDaemon/daemon.config` (`KEY=VALUE` lines) and
@@ -96,9 +97,13 @@ pub fn spawn_with_config(socket_path: String, config_dir: Option<std::path::Path
                 crate::notifications::notify_incoming(sender, text, contact_id);
             });
             // Accept direct TCP peer connections on the port after gRPC, exactly
-            // like the desktop daemon binary (address + 1).
+            // like the desktop daemon binary (address + 1). TRANSFERD_BIND_ADDR
+            // (default 127.0.0.1) controls the bind: 0.0.0.0 accepts direct
+            // LAN/Tailscale peer connections so peers can reach us without a
+            // relay (the Tailscale mesh + its DERP fallback carry the traffic).
+            let bind_host = std::env::var("TRANSFERD_BIND_ADDR").unwrap_or_else(|_| "127.0.0.1".into());
             let transport_addr = std::net::SocketAddr::from((
-                [127, 0, 0, 1],
+                bind_host.parse::<std::net::IpAddr>().unwrap_or([127, 0, 0, 1].into()),
                 port.saturating_add(1),
             ));
             match transferd_lib::transport::spawn_inbound_listener(
