@@ -3,9 +3,9 @@
 //! Redesigned with the new design system for a modern, accessible experience.
 
 use crate::app::AppState;
-use crate::design::{self, DesignTokens, Theme};
+use crate::design::{self, Accent, DesignTokens, Theme, UiPreferences};
 use crate::widgets::qr_widget::QrWidget;
-use egui::{Context, RichText, Ui, Vec2};
+use egui::{Color32, Context, RichText, Ui, Vec2};
 
 #[derive(Default)]
 pub struct SettingsPage {
@@ -29,7 +29,7 @@ pub struct SettingsPage {
 }
 
 impl SettingsPage {
-    pub fn show(&mut self, ui: &mut Ui, ctx: &Context, state: &AppState) {
+    pub fn show(&mut self, ui: &mut Ui, ctx: &Context, state: &mut AppState) {
         let tokens = DesignTokens::current();
 
         egui::ScrollArea::vertical().show(ui, |ui| {
@@ -370,26 +370,33 @@ impl SettingsPage {
             ui.separator();
             ui.add_space(tokens.spacing.sm);
 
-            // ── Theme Section ──────────────────────────────────────────────────
+            // ── Appearance Section ─────────────────────────────────────────────────
             self.section_header(ui, "Appearance", &tokens);
 
+            // The settings page edits a copy of the prefs; any change is
+            // pushed back as a `pending_appearance` that the app applies +
+            // persists next frame.
+            let mut prefs = state.prefs;
+
             design::card_frame(&tokens).show(ui, |ui| {
+                ui.set_min_width(ui.available_width());
+
+                // ── Theme ──────────────────────────────────────────────────
                 ui.label(
                     RichText::new("Theme")
                         .size(14.0)
+                        .strong()
                         .color(tokens.palette.text_primary),
                 );
                 ui.add_space(tokens.spacing.xs);
-
-                let current_theme = state.theme;
-                ui.horizontal(|ui| {
+                ui.horizontal_wrapped(|ui| {
                     for (theme, label) in [
                         (Theme::Oled, "OLED"),
                         (Theme::Dark, "Dark"),
                         (Theme::Light, "Light"),
                         (Theme::HighContrast, "High Contrast"),
                     ] {
-                        let is_active = current_theme == theme;
+                        let is_active = prefs.theme == theme;
                         let bg = if is_active {
                             tokens.palette.accent
                         } else {
@@ -402,7 +409,7 @@ impl SettingsPage {
                         };
                         if ui
                             .add_sized(
-                                [80.0, 32.0],
+                                [82.0, 34.0],
                                 egui::Button::new(
                                     RichText::new(label)
                                         .size(11.0)
@@ -413,14 +420,153 @@ impl SettingsPage {
                             )
                             .clicked()
                         {
-                            // Theme change is handled by the app
-                            ctx.data_mut(|d| {
-                                d.insert_persisted(egui::Id::new("pending_theme"), theme as usize);
-                            });
+                            prefs = prefs.with_theme(theme);
                         }
                     }
                 });
+
+                ui.add_space(tokens.spacing.md);
+                ui.separator();
+                ui.add_space(tokens.spacing.sm);
+
+                // ── Accent color ───────────────────────────────────────────
+                ui.label(
+                    RichText::new("Accent color")
+                        .size(14.0)
+                        .strong()
+                        .color(tokens.palette.text_primary),
+                );
+                ui.add_space(tokens.spacing.xs);
+                ui.horizontal_wrapped(|ui| {
+                    for accent in Accent::ALL {
+                        let is_active = prefs.accent == accent;
+                        let c = accent.color();
+                        let fill = if is_active {
+                            c
+                        } else {
+                            c.gamma_multiply(0.45)
+                        };
+                        let ring = if is_active {
+                            tokens.palette.text_primary
+                        } else {
+                            Color32::TRANSPARENT
+                        };
+                        let r = ui
+                            .add_sized(
+                                [34.0, 34.0],
+                                egui::Button::new("")
+                                    .fill(fill)
+                                    .stroke(egui::Stroke::new(2.0_f32, ring))
+                                    .rounding(17.0),
+                            )
+                            .on_hover_text(accent.label());
+                        if r.clicked() {
+                            prefs = prefs.with_accent(accent);
+                        }
+                    }
+                });
+
+                ui.add_space(tokens.spacing.md);
+                ui.separator();
+                ui.add_space(tokens.spacing.sm);
+
+                // ── UI scaling ─────────────────────────────────────────────
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new("UI scaling")
+                            .size(14.0)
+                            .strong()
+                            .color(tokens.palette.text_primary),
+                    );
+                    if ui
+                        .small_button("Reset")
+                        .on_hover_text("Back to 100%")
+                        .clicked()
+                    {
+                        prefs.ui_scale = 1.0;
+                    }
+                });
+                ui.add_space(tokens.spacing.xs);
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new("A")
+                            .size(12.0)
+                            .color(tokens.palette.text_tertiary),
+                    );
+                    ui.add(
+                        egui::Slider::new(&mut prefs.ui_scale, UiPreferences::UI_SCALE_RANGE)
+                            .step_by(0.05)
+                            .fixed_decimals(2)
+                            .show_value(true),
+                    );
+                    ui.label(
+                        RichText::new("A")
+                            .size(18.0)
+                            .color(tokens.palette.text_tertiary),
+                    );
+                });
+                ui.label(
+                    RichText::new("Zooms the whole interface — layouts, buttons and spacing.")
+                        .size(11.0)
+                        .color(tokens.palette.text_tertiary),
+                );
+
+                ui.add_space(tokens.spacing.md);
+                ui.separator();
+                ui.add_space(tokens.spacing.sm);
+
+                // ── Text size ──────────────────────────────────────────────
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new("Text size")
+                            .size(14.0)
+                            .strong()
+                            .color(tokens.palette.text_primary),
+                    );
+                    if ui
+                        .small_button("Reset")
+                        .on_hover_text("Back to 100%")
+                        .clicked()
+                    {
+                        prefs.font_scale = 1.0;
+                    }
+                });
+                ui.add_space(tokens.spacing.xs);
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new("A")
+                            .size(11.0)
+                            .color(tokens.palette.text_tertiary),
+                    );
+                    ui.add(
+                        egui::Slider::new(&mut prefs.font_scale, UiPreferences::FONT_SCALE_RANGE)
+                            .step_by(0.05)
+                            .fixed_decimals(2)
+                            .show_value(true),
+                    );
+                    ui.label(
+                        RichText::new("A")
+                            .size(16.0)
+                            .color(tokens.palette.text_tertiary),
+                    );
+                });
+                ui.label(
+                    RichText::new("Makes text larger without changing the layout density.")
+                        .size(11.0)
+                        .color(tokens.palette.text_tertiary),
+                );
             });
+
+            // Push any change back to the app (applies + persists next frame).
+            if prefs != state.prefs {
+                state.prefs = prefs;
+                ctx.data_mut(|d| {
+                    d.insert_persisted(
+                        egui::Id::new("pending_appearance"),
+                        prefs,
+                    );
+                });
+            }
 
             ui.add_space(tokens.spacing.lg);
             ui.separator();

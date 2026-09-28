@@ -5,7 +5,7 @@
 use crate::animations::ToastManager;
 use crate::daemon::{DaemonApi, MockDaemon};
 use crate::db::LocalDb;
-use crate::design::{self, DesignTokens, LayoutMode, Theme};
+use crate::design::{self, DesignTokens, LayoutMode, Theme, UiPreferences};
 use crate::notifications::{self, NotificationLevel};
 use crate::pages::{chat::ChatPage, home::HomePage, home::Tab, onboarding::OnboardingPage};
 use crate::tray_channel::{TrayCommand, TrayUpdate};
@@ -53,8 +53,8 @@ pub struct AppState {
     pub drafts: HashMap<String, String>,
     /// Current layout mode (responsive).
     pub layout_mode: LayoutMode,
-    /// Current theme.
-    pub theme: Theme,
+    /// Current appearance preferences (theme, accent, scale, text size).
+    pub prefs: UiPreferences,
     /// App-lock: when `locked`, a PIN screen gates the UI. `pin_hash` is the
     /// BLAKE3 hash of the PIN (stored via daemon settings).
     pub locked: bool,
@@ -84,7 +84,7 @@ impl AppState {
             contact_colors: HashMap::new(),
             drafts: HashMap::new(),
             layout_mode: LayoutMode::Compact,
-            theme: Theme::Oled,
+            prefs: UiPreferences::default(),
             locked: false,
             pin_hash: None,
             lock_input: String::new(),
@@ -94,27 +94,6 @@ impl AppState {
 
     pub fn rebuild_conversations(&mut self) {
         self.conversations = build_conversations(&self.contacts, &self.message_previews);
-    }
-}
-
-/// Stable name for a theme, used when persisting to the local DB.
-fn theme_name(theme: Theme) -> &'static str {
-    match theme {
-        Theme::Dark => "dark",
-        Theme::Light => "light",
-        Theme::HighContrast => "high_contrast",
-        Theme::Oled => "oled",
-    }
-}
-
-/// Parse a theme back from its persisted name.
-fn theme_from_name(s: &str) -> Option<Theme> {
-    match s {
-        "dark" => Some(Theme::Dark),
-        "light" => Some(Theme::Light),
-        "high_contrast" => Some(Theme::HighContrast),
-        "oled" => Some(Theme::Oled),
-        _ => None,
     }
 }
 
@@ -165,7 +144,7 @@ pub struct TransferDaemonApp {
     pub db: Option<LocalDb>,
     /// True once we've applied the local DB identity cache (prevents repeated attempts).
     db_identity_loaded: bool,
-    /// True once we've restored the persisted theme from the DB (prevents repeated attempts).
+    /// True once we've restored the persisted appearance from the DB (prevents repeated attempts).
     db_theme_loaded: bool,
     /// True once we've applied the local DB contact colors (prevents repeated attempts).
     db_colors_loaded: bool,
@@ -176,6 +155,10 @@ pub struct TransferDaemonApp {
     pub toasts: ToastManager,
     /// Last frame time for animation updates.
     last_frame_time: Instant,
+    /// Base pixels-per-point (platform density) before user scaling. Captured
+    /// once on the first frame (desktop: the OS DPI value; Android: the raw
+    /// device density). User `ui_scale`/`font_scale` multiply on top.
+    base_pixels_per_point: f32,
 
     // ── System tray ──────────────────────────────────────────────────────────
     /// Sender for updating the tray icon (badge, tooltip).
@@ -206,8 +189,9 @@ impl TransferDaemonApp {
         daemon: Arc<dyn DaemonApi>,
         is_live: bool,
     ) -> Self {
-        // Initialize design system with OLED theme (default)
-        design::apply_theme(&cc.egui_ctx, Theme::Oled);
+        // Initialize design system with default appearance (OLED + blue).
+        // The persisted appearance is restored once the DB loads (update()).
+        design::apply_prefs(&cc.egui_ctx, &UiPreferences::default());
 
         let (tx, rx) = tokio::sync::oneshot::channel::<LoadResult>();
         let d = Arc::clone(&daemon);
@@ -246,6 +230,7 @@ impl TransferDaemonApp {
             keyboard_was_wanted: false,
             toasts: ToastManager::new(),
             last_frame_time: Instant::now(),
+            base_pixels_per_point: 0.0,
             tray_tx: None,
             tray_rx: None,
             prev_online: HashMap::new(),
@@ -352,14 +337,21 @@ impl TransferDaemonApp {
         self.state.rebuild_conversations();
     }
 
-    /// Switch theme at runtime and persist the choice to the local DB.
-    pub fn set_theme(&mut self, theme: Theme, ctx: &Context) {
-        self.state.theme = theme;
-        design::apply_theme(ctx, theme);
+    /// Switch appearance (theme/accent/scale/text size) at runtime and persist
+    /// the choice to the local DB.
+    pub fn set_appearance(&mut self, prefs: UiPreferences, ctx: &Context) {
+        let changed = prefs != self.state.prefs;
+        self.state.prefs = prefs;
+        design::apply_prefs(ctx, &prefs);
         if let Some(db) = &self.db {
-            let _ = db.set_setting("theme", theme_name(theme));
+            let _ = db.set_setting("appearance.theme", design::theme_name(prefs.theme));
+            let _ = db.set_setting("appearance.accent", prefs.accent.name());
+            let _ = db.set_setting("appearance.ui_scale", &format!("{}", prefs.ui_scale));
+            let _ = db.set_setting("appearance.font_scale", &format!("{}", prefs.font_scale));
         }
-        self.toasts.info(format!("Theme switched to {:?}", theme));
+        if changed {
+            self.toasts.info("Appearance updated");
+        }
     }
 
     // ── System tray integration ────────────────────────────────────────────────
@@ -493,17 +485,44 @@ impl eframe::App for TransferDaemonApp {
             self.state.layout_mode = new_mode;
         }
 
-        // ── Android: apply device density so scale tracks Display-size changes ─
-        #[cfg(target_os = "android")]
+        // ── Apply user scaling on top of the platform pixel density ───────────
+        // The base density is the raw device/OS value (Android: DEVICE_PPP;
+        // desktop: eframe's DPI-derived ppp). User ui_scale * font_scale zoom
+        // every element — including explicitly-sized text — globally, so the
+        // whole UI scales on any screen.
         {
-            use crate::platform_hooks::DEVICE_PPP;
-            use std::sync::atomic::Ordering;
-            let bits = DEVICE_PPP.load(Ordering::Relaxed);
-            if bits != 0 {
-                let device_ppp = f32::from_bits(bits);
-                if (device_ppp - ctx.pixels_per_point()).abs() > 0.005 {
-                    ctx.set_pixels_per_point(device_ppp);
+            #[cfg(target_os = "android")]
+            let device_ppp = {
+                use crate::platform_hooks::DEVICE_PPP;
+                use std::sync::atomic::Ordering;
+                let bits = DEVICE_PPP.load(Ordering::Relaxed);
+                if bits != 0 {
+                    f32::from_bits(bits)
+                } else {
+                    0.0
                 }
+            };
+            #[cfg(not(target_os = "android"))]
+            let device_ppp = 0.0_f32;
+
+            if self.base_pixels_per_point == 0.0 {
+                // First frame: capture the platform density as the base.
+                self.base_pixels_per_point = if device_ppp > 0.0 {
+                    device_ppp
+                } else {
+                    ctx.pixels_per_point()
+                };
+            } else if device_ppp > 0.0
+                && (device_ppp - self.base_pixels_per_point).abs() > 0.005
+            {
+                // Android: re-tracks the device Display-size density if it
+                // changes (or arrives late), keeping user scale applied on top.
+                self.base_pixels_per_point = device_ppp;
+            }
+            let prefs = self.state.prefs;
+            let ppp = self.base_pixels_per_point * prefs.ui_scale * prefs.font_scale;
+            if (ppp - ctx.pixels_per_point()).abs() > 0.005 {
+                ctx.set_pixels_per_point(ppp);
             }
         }
 
@@ -637,32 +656,30 @@ impl eframe::App for TransferDaemonApp {
             }
         }
 
-        // ── Restore the persisted theme once the DB is available ──────────────
+        // ── Restore the persisted appearance once the DB is available ─────────
         if !self.db_theme_loaded {
             if let Some(db) = &self.db {
-                if let Ok(Some(name)) = db.get_setting("theme") {
-                    if let Some(theme) = theme_from_name(&name) {
-                        self.set_theme(theme, ctx);
-                    }
-                }
+                let theme = db.get_setting("appearance.theme").ok().flatten()
+                    .or_else(|| db.get_setting("theme").ok().flatten()); // legacy key
+                let accent = db.get_setting("appearance.accent").ok().flatten();
+                let ui_scale = db.get_setting("appearance.ui_scale").ok().flatten()
+                    .and_then(|s| s.parse::<f32>().ok());
+                let font_scale = db.get_setting("appearance.font_scale").ok().flatten()
+                    .and_then(|s| s.parse::<f32>().ok());
+                let prefs = UiPreferences::from_settings(theme, accent, ui_scale, font_scale);
+                self.set_appearance(prefs, ctx);
                 self.db_theme_loaded = true;
             }
         }
 
-        // ── Apply a pending theme selection from the settings page ────────────
-        let pending_theme = ctx.data_mut(|d| d.get_persisted::<usize>(egui::Id::new("pending_theme")));
-        if let Some(pending) = pending_theme {
-            let theme = match pending {
-                0 => Theme::Dark,
-                1 => Theme::Light,
-                2 => Theme::HighContrast,
-                _ => Theme::Oled,
-            };
-            if theme != self.state.theme {
-                self.set_theme(theme, ctx);
-            }
+        // ── Apply a pending appearance change from the settings page ────────
+        let pending = ctx.data_mut(|d| {
+            d.get_persisted::<UiPreferences>(egui::Id::new("pending_appearance"))
+        });
+        if let Some(prefs) = pending {
+            self.set_appearance(prefs, ctx);
             ctx.data_mut(|d| {
-                d.remove::<usize>(egui::Id::new("pending_theme"));
+                d.remove::<UiPreferences>(egui::Id::new("pending_appearance"));
             });
         }
 
