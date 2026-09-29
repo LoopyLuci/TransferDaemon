@@ -321,11 +321,9 @@ impl GroupChatPage {
             .frame(design::panel_frame(&tokens).fill(tokens.palette.bg_primary))
             .show_inside(ui, |ui| {
                 let bubble_max_w = ui.available_width() * 0.78;
-                let mut scroll = ScrollArea::vertical().auto_shrink([false, false]);
-                if self.scroll_to_bottom {
-                    scroll = scroll.vertical_scroll_offset(f32::MAX);
-                    self.scroll_to_bottom = false;
-                }
+                let scroll = ScrollArea::vertical().auto_shrink([false, false]);
+                // Scroll to the newest message after laying the list out (see chat.rs).
+                let jump_to_bottom = std::mem::take(&mut self.scroll_to_bottom);
                 scroll.show(ui, |ui| {
                     ui.add_space(tokens.spacing.sm);
                     if self.messages.is_empty() {
@@ -355,6 +353,9 @@ impl GroupChatPage {
                         ui.add_space(tokens.spacing.xxs);
                     }
                     ui.add_space(tokens.spacing.sm);
+                    if jump_to_bottom {
+                        ui.scroll_to_cursor(Some(egui::Align::BOTTOM));
+                    }
                 });
 
                 // Composer.

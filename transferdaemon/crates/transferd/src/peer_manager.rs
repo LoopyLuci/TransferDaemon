@@ -339,6 +339,15 @@ impl PeerConnectionManager {
         self.sessions.contains_key(contact_id)
     }
 
+    /// Message ids with chunks queued on a contact's session but not yet dispatched (so the outbox does not queue
+    /// them twice).
+    pub fn queued_msg_ids(&self, contact_id: &str) -> std::collections::HashSet<String> {
+        self.sessions
+            .get(contact_id)
+            .map(|s| s.outbound_gsns.iter().map(|(_, id)| id.clone()).collect())
+            .unwrap_or_default()
+    }
+
     /// Send a message to a contact. The message is queued in the peer session
     /// and flushed by the next `process_all_sessions` tick.
     pub fn send_message(

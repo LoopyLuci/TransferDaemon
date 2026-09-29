@@ -19,7 +19,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Generate a per-install gRPC auth token and persist it for UIs/launcher.
     // Loopback-only binding limits exposure, but local processes should not be
     // able to inject messages into the daemon.
-    {
+    let grpc_token = {
         use rand::RngCore as _;
         let mut token_bytes = [0u8; 32];
         rand::rngs::OsRng.fill_bytes(&mut token_bytes);
@@ -34,12 +34,41 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         } else {
             println!("TransferDaemon auth token: {token_path:?}");
         }
-    }
+        token
+    };
+
+    // The control hub: every operation over local HTTP and MCP, and the place the GUI and TUI attach so they can be
+    // driven from outside (transferd-cli, ABP, any MCP client). TRANSFERD_CONTROL=off leaves it out.
+    let control_facts = std::sync::Arc::new(std::sync::Mutex::new(serde_json::Map::new()));
+    let hub = if std::env::var("TRANSFERD_CONTROL").map(|v| v == "off" || v == "0").unwrap_or(false) {
+        None
+    } else {
+        let bind: std::net::SocketAddr = std::env::var("TRANSFERD_CONTROL_ADDR")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or_else(|| std::net::SocketAddr::from(([127, 0, 0, 1], 50060)));
+        let host = if addr.ip().is_unspecified() { "127.0.0.1".to_string() } else { addr.ip().to_string() };
+        let hub = transferd_control::hub::Hub::new(transferd_control::hub::HubConfig {
+            grpc_url: format!("http://{host}:{}", addr.port()),
+            grpc_token: Some(grpc_token.clone()),
+            bind,
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            facts: control_facts.clone(),
+        });
+        match transferd_control::hub::serve(hub.clone()).await {
+            Ok(bound) => {
+                println!("TransferDaemon control hub on http://{bound} (operations, MCP at /mcp)");
+                Some(hub)
+            }
+            Err(e) => {
+                tracing::error!("[control] could not start the control hub on {bind}: {e}");
+                None
+            }
+        }
+    };
 
     // Start the telemetry collector and wire the global ATE hook.
-    let telemetry_dir = dirs::data_local_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join("transferdaemon")
+    let telemetry_dir = transferd_control::client::data_dir()
         .join("telemetry");
     std::fs::create_dir_all(&telemetry_dir)?;
 
@@ -88,6 +117,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // endpoint.
     {
         let state_clone = state.clone();
+        let facts = control_facts.clone();
         let tcp_port = addr.port() + 1;
         let bind_host = std::env::var("TRANSFERD_BIND_ADDR").unwrap_or_else(|_| "127.0.0.1".into());
         let bind_addr: std::net::SocketAddr = match format!("{bind_host}:{tcp_port}").parse() {
@@ -102,6 +132,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Ok(listening) => {
                     println!("TransferDaemon peer listener on {listening} (bind {bind_host})");
                     state_clone.lock().peer_listen = Some(listening);
+                    if let Ok(mut f) = facts.lock() {
+                        f.insert("peer_listener".into(), serde_json::json!(listening.to_string()));
+                        f.insert("peer_bind".into(), serde_json::json!(bind_host));
+                    }
                 }
                 Err(e) => {
                     tracing::error!("[transport] failed to bind peer listener: {e}");
@@ -152,9 +186,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("TransferDaemon gRPC server listening on {addr}");
 
-    transferd_lib::grpc::add_all_services(tonic::transport::Server::builder(), state)
-        .serve(addr)
-        .await?;
+    let server = transferd_lib::grpc::add_all_services(tonic::transport::Server::builder(), state).serve(addr);
+    match &hub {
+        Some(hub) => {
+            let stop = hub.stop.clone();
+            tokio::select! {
+                r = server => r?,
+                _ = stop.notified() => println!("TransferDaemon stopping (asked through the control hub)"),
+                _ = tokio::signal::ctrl_c() => println!("TransferDaemon stopping"),
+            }
+            hub.shutdown();
+        }
+        None => server.await?,
+    }
 
     Ok(())
 }

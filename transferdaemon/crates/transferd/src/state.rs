@@ -444,7 +444,7 @@ status:       m.status,
         // The file lives in the app-private data dir; the encrypted store
         // remains the canonical backup.
         if let Some(p) = &self.phrase_path {
-            if let Err(e) = std::fs::write(p, phrase) {
+            if let Err(e) = crate::phrase_cache::write(p, phrase) {
                 tracing::error!("transferd: phrase cache write failed: {e}");
             }
         }
@@ -731,6 +731,7 @@ status: "received".into(),
             }
             WireMsg::Ack { msg_id } => {
                 self.mark_status(msg_id, "delivered");
+                self.note_delivered(msg_id);
                 None
             }
             WireMsg::Read { msg_id } => {

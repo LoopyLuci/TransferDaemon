@@ -7,9 +7,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             std::env::set_var("PROTOC", p);
         }
     }
+    // serde on every message lets the control plane (transferd-control) turn JSON into requests and replies into
+    // JSON without a hand-written mapping per RPC; #[serde(default)] makes every field optional, as in proto3.
     tonic_build::configure()
         .build_server(true)
         .build_client(true)
+        .message_attribute(".", "#[derive(serde::Serialize, serde::Deserialize)] #[serde(default)]")
+        .enum_attribute(".", "#[derive(serde::Serialize, serde::Deserialize)]")
         .compile(
             &["proto/transferd.proto"],
             &["proto"],

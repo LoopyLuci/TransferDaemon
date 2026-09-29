@@ -1,0 +1,17 @@
+[package]
+name = "transferd-cli"
+version = "0.1.0"
+edition = "2021"
+description = "TransferDaemon from the command line, scripts and MCP clients (through the daemon's control hub)"
+
+[[bin]]
+name = "transferd-cli"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+transferd-control = { path = "../transferd-control", default-features = false }
+serde_json = "1"
+tokio      = { workspace = true }

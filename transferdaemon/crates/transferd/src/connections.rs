@@ -35,15 +35,19 @@ impl ConnectionServiceImpl {
         let mut out = Vec::new();
         for iface in netdev::get_interfaces() {
                 let name = iface.name.clone();
+                // Windows names adapters by GUID; show the name people know ("Ethernet", "Wi-Fi") and keep the
+                // GUID as the stable id.
+                let label = iface.friendly_name.clone().filter(|f| !f.is_empty()).unwrap_or_else(|| name.clone());
                 let up = iface.is_up();
                 let has_addr = !iface.ipv4.is_empty() || !iface.ipv6.is_empty();
                 out.push(Connection {
                     id: format!("if:{name}"),
-                    name: name.clone(),
-                    kind: classify_interface(&name).into(),
+                    name: label.clone(),
+                    kind: classify_interface(&label).into(),
                     enabled: up,
                     online: up && has_addr,
-                    link_speed_bps: iface.transmit_speed.unwrap_or(0),
+                    // u64::MAX is how an adapter without a link reports its speed: say unknown (0) instead.
+                    link_speed_bps: iface.transmit_speed.filter(|s| *s != u64::MAX).unwrap_or(0),
                     rtt_ms: 0.0,
                     bandwidth_bps: 0,
                     policy: String::new(),

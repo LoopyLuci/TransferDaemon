@@ -2,6 +2,54 @@
 
 ## Unreleased
 
+### Control from anywhere: the control hub, `transferd-cli`, MCP, and the GUI and TUI driven from outside
+
+See [docs/CONTROL.md](docs/CONTROL.md).
+
+- **The control hub.** A new crate, `transferd-control`, runs inside `transferd`. It offers every operation over
+  local HTTP (`/v1/call/{op}`) and MCP (`/mcp`), and writes `control.json` so tools find it.
+  - The operations are the daemon's 47 gRPC calls, each with a JSON Schema read from `transferd.proto`, plus
+    `daemon.*`, `gui.*`, `tui.*` and `relay.*`.
+  - Every route but health needs the token, requests from web pages are refused, and changes are audited.
+- **`transferd-cli`.** A new command-line client for all of it: contacts by name, send and send-file, messages,
+  transfers, groups, settings, relays, gui/tui actions, `daemon start|stop`, and `mcp` (a stdio MCP server).
+- **The window can be driven from outside.** Widgets are read from egui's AccessKit tree, and real pointer and
+  keyboard input is injected. Also: screenshots, and window commands (focus, resize, close...).
+- **The terminal UI can be driven from outside,** including a new `--headless` mode (drawn in memory).
+- **Relays from the hub.** Start and stop local `relayd`, `relayd-ws` and `dhtd`, and probe any relay.
+
+### Delivery and transfers
+
+- **The outbox.** A message or file sent while the peer was unreachable used to stay "pending" forever. The retry
+  loop re-created the session but nothing put the message back on the wire. Now it goes out once a session exists,
+  even after a restart. File paths are kept in the encrypted settings, so the store format is unchanged.
+- **Contact addresses.** `AddContactRequest.address`, `ContactReply.address` and a new `SetContactAddress` RPC. The
+  window's Address field used to be ignored, so direct-address contacts could not be reached.
+- **Transfers:**
+  - the sender's progress now counts dispatched chunks and completes on the receiver's ack; the receiver shows
+    progress too;
+  - transfers are named after the contact;
+  - pause and resume work for a transfer that has not started (they used to be stubs);
+  - cancel stops a waiting file and marks it failed.
+
+### Desktop daemon
+
+- **Auto-unlock.** After a restart the daemon unlocks its store with an OS-protected phrase cache: DPAPI on Windows,
+  0600 elsewhere. Before, a desktop daemon lost its identity and contacts until a UI restored them.
+  `TRANSFERD_AUTO_UNLOCK=off` turns it off.
+- **One data folder.** `TRANSFERD_DATA_DIR` now moves the store, telemetry and downloads too, not only the token, so a
+  second or portable daemon no longer shares the first one's data.
+- **Connection names.** Connections show adapter names ("Ethernet") rather than GUIDs, and an unknown link speed is 0
+  rather than 18446744073709551615.
+
+### Window fixes
+
+- The chat no longer freezes while a peer is being reached: sending and the typing indicator ran on the UI thread.
+- Arrows, check marks and the send glyph render; they were empty boxes. The platform's symbol font is now a fallback.
+- The message box no longer pushes the send button off the window.
+- Debug builds no longer crash on the accent color (`gamma_multiply` above 1) or on scrolling to the newest message
+  (`f32::MAX` offset).
+
 ### LIVE: the FULL transport matrix is proven (3 devices + relays)
 
 The pending-session retry closed the last gap: the sender now re-establishes a

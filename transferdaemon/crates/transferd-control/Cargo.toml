@@ -1,0 +1,35 @@
+[package]
+name = "transferd-control"
+version = "0.1.0"
+edition = "2021"
+description = "TransferDaemon's control plane: the operation catalog, the local HTTP/MCP hub, and a small client"
+
+[lints]
+workspace = true
+
+[features]
+default = ["hub"]
+# The hub (runs inside the daemon) and the gRPC-backed catalog. Without it, only the client and the MCP handler are
+# built: enough for the CLI, the GUI and the TUI to find and use a running hub.
+hub = ["dep:axum", "dep:tonic", "dep:transferd-api", "dep:tokio", "dep:rand", "dep:hex", "dep:http", "dep:prost",
+       "dep:tokio-tungstenite", "dep:tracing"]
+
+[dependencies]
+serde      = { workspace = true }
+serde_json = "1"
+thiserror  = { workspace = true }
+dirs       = { workspace = true }
+
+axum        = { version = "0.6", optional = true }
+tonic       = { workspace = true, optional = true }
+prost       = { workspace = true, optional = true }
+http        = { version = "0.2", optional = true }
+transferd-api = { path = "../transferd-api", optional = true }
+tokio       = { workspace = true, optional = true }
+rand        = { workspace = true, optional = true }
+hex         = { workspace = true, optional = true }
+tokio-tungstenite = { version = "0.24", optional = true }
+tracing     = { workspace = true, optional = true }
+
+[dev-dependencies]
+tokio = { workspace = true }

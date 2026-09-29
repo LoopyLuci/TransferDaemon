@@ -254,7 +254,12 @@ fn decrypt(key: &[u8; KEY_LEN], nonce_bytes: &[u8; NONCE_LEN], ciphertext: &[u8]
 ///
 /// Creates the directory if it does not yet exist.
 pub fn default_store_path() -> Result<PathBuf, StoreError> {
-    let base = dirs::data_local_dir().ok_or(StoreError::NoDataDir)?;
+    // TRANSFERD_DATA_DIR moves everything the daemon keeps (store, token, control file, telemetry, downloads), for
+    // portable installs and for running a second daemon beside the first.
+    let base = match std::env::var_os("TRANSFERD_DATA_DIR") {
+        Some(d) => PathBuf::from(d),
+        None => dirs::data_local_dir().ok_or(StoreError::NoDataDir)?,
+    };
     let dir  = base.join("transferdaemon");
     fs::create_dir_all(&dir)?;
     Ok(dir.join("user_data.enc"))

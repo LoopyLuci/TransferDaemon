@@ -40,6 +40,7 @@ service FriendService {
     rpc BlockContact  (BlockContactRequest)  returns (ContactReply);
     rpc UnblockContact (BlockContactRequest) returns (ContactReply);
     rpc GetSafetyNumber (SafetyNumberRequest) returns (SafetyNumberReply);
+    rpc SetContactAddress (SetContactAddressRequest) returns (ContactReply);
 }
 
 message SafetyNumberRequest { string contact_id = 1; }
@@ -60,6 +61,8 @@ message ContactReply {
     bool   blocked      = 5;
     // Whether the contact is currently typing (live indicator).
     bool   typing       = 6;
+    // The contact's direct address (host:port, tcp://..., ws://...), if one is known.
+    string address      = 7;
 }
 
 message ContactList { repeated ContactReply contacts = 1; }
@@ -67,6 +70,15 @@ message ContactList { repeated ContactReply contacts = 1; }
 message AddContactRequest {
     string public_key = 1;
     string name       = 2;
+    // Optional direct address (host:port of the peer's listener, e.g. a LAN or Tailscale IP). Without it the peer is
+    // found through the DHT or a shared relay.
+    string address    = 3;
+}
+
+message SetContactAddressRequest {
+    string contact_id = 1;
+    // host:port, tcp://host:port or ws(s)://host[:port]; empty clears it.
+    string address    = 2;
 }
 
 message RenameContactRequest {

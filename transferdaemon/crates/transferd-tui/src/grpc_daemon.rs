@@ -139,7 +139,7 @@ impl DaemonApi for GrpcDaemon {
 
     async fn add_contact(&self, public_key: String, name: String) -> Result<Contact, DaemonError> {
         self.friends()
-            .add_contact(AddContactRequest { public_key, name })
+            .add_contact(AddContactRequest { public_key, name, ..Default::default() })
             .await
             .map(|r| proto_contact(r.into_inner()))
             .map_err(|e| {

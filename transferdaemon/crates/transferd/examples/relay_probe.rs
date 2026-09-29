@@ -92,7 +92,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Desktop adds the Kindle (no address → DHT discovery fills it in) + sends.
     let mut fc = FriendServiceClient::connect("http://127.0.0.1:55051").await?;
-    fc.add_contact(AddContactRequest { public_key: kindle_pk.clone(), name: "Kindle".into() })
+    fc.add_contact(AddContactRequest { public_key: kindle_pk.clone(), name: "Kindle".into(), ..Default::default() })
         .await?;
     let mut mc = MessageServiceClient::connect("http://127.0.0.1:55051").await?;
     mc.send_text(SendTextRequest {
@@ -126,7 +126,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // and send a reply. This exercises the mobile daemon's transport tick
     // (flush path) + the responder's outbound relay lane.
     let mut kfc = FriendServiceClient::connect("http://127.0.0.1:50051").await?;
-    kfc.add_contact(AddContactRequest { public_key: desktop_pk.clone(), name: "Desktop".into() })
+    kfc.add_contact(AddContactRequest { public_key: desktop_pk.clone(), name: "Desktop".into(), ..Default::default() })
         .await?;
     let mut kmc = MessageServiceClient::connect("http://127.0.0.1:50051").await?;
     kmc.send_text(SendTextRequest {

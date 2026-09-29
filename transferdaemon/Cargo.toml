@@ -18,6 +18,8 @@ members = [
     "crates/transferd-tui-video",
     "crates/transferd-relay",
     "crates/transferd-telemetry",
+    "crates/transferd-control",
+    "crates/transferd-cli",
 ]
 exclude = ["fuzz"]
 resolver = "2"

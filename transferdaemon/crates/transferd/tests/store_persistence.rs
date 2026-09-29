@@ -77,7 +77,7 @@ async fn data_persists_across_restarts() {
 
     // Add a contact.
     let bob_key = "b".repeat(64);
-    fc1.add_contact(AddContactRequest { public_key: bob_key.clone(), name: "Bob".into() })
+    fc1.add_contact(AddContactRequest { public_key: bob_key.clone(), name: "Bob".into(), ..Default::default() })
         .await.unwrap();
 
     // Send a message.

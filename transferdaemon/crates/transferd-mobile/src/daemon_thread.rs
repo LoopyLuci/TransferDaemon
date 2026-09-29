@@ -107,16 +107,10 @@ pub fn spawn_with_config(socket_path: String, config_dir: Option<std::path::Path
                     // token + registrations). The phrase file is written by
                     // create/restore_identity via set_phrase.
                     if phrase_path.exists() {
-                        match std::fs::read_to_string(&phrase_path) {
-                            Ok(phrase) => {
-                                let mut s = st.lock();
-                                if s.try_load(phrase.trim()) {
-                                    eprintln!("[daemon] identity restored from cached phrase");
-                                } else {
-                                    eprintln!("[daemon] identity restore failed (stale phrase cache)");
-                                }
-                            }
-                            Err(e) => eprintln!("[daemon] could not read phrase cache: {e}"),
+                        if transferd_lib::unlock_from_cache(&st) {
+                            eprintln!("[daemon] identity restored from cached phrase");
+                        } else {
+                            eprintln!("[daemon] identity restore failed (stale or unreadable phrase cache)");
                         }
                     }
                     st

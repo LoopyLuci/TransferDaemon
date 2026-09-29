@@ -82,6 +82,7 @@ pub fn spawn_transport_tick(state: Arc<PkMutex<DaemonState>>) {
                 let mut s = state.lock();
                 for id in &events.sent_msg_ids {
                     s.mark_status(id, "sent");
+                    s.note_dispatched(id);
                 }
                 for (_, msg) in events.inbound {
                     let _ = s.apply_inbound(&msg);
@@ -129,10 +130,12 @@ pub async fn retry_pending_sessions(state: &Arc<PkMutex<DaemonState>>) {
     }
     for (cid, addr) in pending {
         let transport = state.lock().transport.clone();
-        if transport.lock().await.has_session(&cid) {
-            continue;
+        let connected = transport.lock().await.has_session(&cid)
+            || crate::grpc::ensure_contact_session(state, &cid, addr.as_deref()).await;
+        if connected {
+            // Messages sent while the peer was unreachable go out now.
+            crate::outbox::flush(state, &cid).await;
         }
-        crate::grpc::ensure_contact_session(state, &cid, addr.as_deref()).await;
     }
 }
 
@@ -233,8 +236,12 @@ pub async fn handle_inbound_connection(
                 chunks: HashMap::new(),
             });
             entry.chunks.insert(*seq, data.clone());
+            let complete = entry.chunks.len() as u32 >= entry.total_chunks;
+            if let WireMsg::File { sender, .. } = &msg {
+                state.lock().note_inbound_chunk(sender, msg_id, file_name, *file_size, data.len(), complete);
+            }
 
-            if entry.chunks.len() as u32 >= entry.total_chunks {
+            if complete {
                 if let Some(f) = files.remove(msg_id) {
                     if let Some(path) = write_inbound_file(&f) {
                         tracing::info!(
@@ -325,7 +332,9 @@ fn downloads_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("TRANSFERD_DOWNLOADS_DIR") {
         return PathBuf::from(dir);
     }
-    dirs::data_local_dir()
+    std::env::var_os("TRANSFERD_DATA_DIR")
+        .map(PathBuf::from)
+        .or_else(dirs::data_local_dir)
         .unwrap_or_else(|| PathBuf::from("."))
         .join("transferdaemon")
         .join("downloads")
