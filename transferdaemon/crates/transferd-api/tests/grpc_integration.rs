@@ -19,7 +19,7 @@ use transferd_api::{
     SettingsService, SettingsServiceServer,
     AddContactRequest, ContactList, ContactReply,
     RenameContactRequest, RemoveContactRequest, BlockContactRequest,
-    SafetyNumberRequest, SafetyNumberReply,
+    SafetyNumberRequest, SafetyNumberReply, SetContactAddressRequest,
     CreateIdentityRequest, Empty,
     GetMessagesRequest, GetSettingRequest, IdentityReply, MessageList, MessageReply,
     PublicKeyReply, RecoveryPhraseReply, RestoreIdentityRequest, SendFileRequest,
@@ -145,6 +145,7 @@ impl FriendService for TestFriendService {
             online: false,
             blocked: false,
             typing: false,
+            address: r.address,
         };
         self.0.lock().unwrap().contacts.push(contact.clone());
         Ok(Response::new(contact))
@@ -190,6 +191,16 @@ impl FriendService for TestFriendService {
             safety_number: String::new(),
             verified: false,
         }))
+    }
+
+    async fn set_contact_address(
+        &self, req: Request<SetContactAddressRequest>,
+    ) -> Result<Response<ContactReply>, Status> {
+        let r = req.into_inner();
+        let mut state = self.0.lock().unwrap();
+        let c = state.contacts.iter_mut().find(|c| c.id == r.contact_id).ok_or_else(|| Status::not_found("contact not found"))?;
+        c.address = r.address;
+        Ok(Response::new(c.clone()))
     }
 }
 
@@ -419,7 +430,7 @@ async fn test_friend_add_and_list() {
     let key = "a".repeat(64);
     let contact = fc.add_contact(AddContactRequest {
         public_key: key.clone(),
-        name: "Eve".into(),
+        name: "Eve".into(), ..Default::default()
     }).await.unwrap().into_inner();
     assert_eq!(contact.name, "Eve");
     assert_eq!(contact.id, key);
@@ -507,7 +518,7 @@ async fn test_add_contact_bad_key_rejected() {
     let mut fc = transferd_api::FriendServiceClient::connect(url).await.unwrap();
     let err = fc.add_contact(AddContactRequest {
         public_key: "tooshort".into(),
-        name: "Hacker".into(),
+        name: "Hacker".into(), ..Default::default()
     }).await;
     assert!(err.is_err());
     assert_eq!(err.unwrap_err().code(), tonic::Code::InvalidArgument);

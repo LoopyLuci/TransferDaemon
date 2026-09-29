@@ -13,7 +13,7 @@ pub mod proto {
 pub use proto::{
     AddContactRequest, ContactList, ContactReply,
     RenameContactRequest, RemoveContactRequest, BlockContactRequest,
-    SafetyNumberRequest, SafetyNumberReply,
+    SafetyNumberRequest, SafetyNumberReply, SetContactAddressRequest,
     CreateIdentityRequest, Empty,
     GetMessagesRequest, GetSettingRequest, IdentityReply,
     SearchMessagesRequest,

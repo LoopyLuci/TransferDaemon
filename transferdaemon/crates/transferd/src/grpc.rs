@@ -17,7 +17,7 @@ use transferd_api::{
     FriendService,
     AddContactRequest, ContactReply, ContactList,
     RenameContactRequest, RemoveContactRequest, BlockContactRequest,
-    SafetyNumberRequest, SafetyNumberReply,
+    SafetyNumberRequest, SetContactAddressRequest, SafetyNumberReply,
     UpdateService, UpdateServiceServer, UpdateReply,
     // Messages
     MessageService,
@@ -353,6 +353,7 @@ impl FriendService for FriendServiceImpl {
             online:       c.online,
             blocked:      c.blocked,
             typing:       s.is_typing(&c.id),
+            address:      c.address.clone().unwrap_or_default(),
         }).collect();
         Ok(Response::new(ContactList { contacts }))
     }
@@ -367,13 +368,14 @@ impl FriendService for FriendServiceImpl {
         if r.name.trim().is_empty() {
             return Err(Status::invalid_argument("name required"));
         }
+        let address = normalize_address(&r.address)?;
         let contact = Contact {
             id:           r.public_key.clone(),
             name:         r.name.clone(),
             last_seen_ts: 0,
             online:       false,
             blocked:      false,
-            address:      None,
+            address:      address.clone(),
             hybrid_public_key: None,
             limits:      None,
         };
@@ -391,7 +393,32 @@ impl FriendService for FriendServiceImpl {
             online:       false,
             blocked:      false,
             typing:       false,
+            address:      address.unwrap_or_default(),
         }))
+    }
+
+    async fn set_contact_address(
+        &self, req: Request<SetContactAddressRequest>,
+    ) -> Result<Response<ContactReply>, Status> {
+        let r = req.into_inner();
+        let address = normalize_address(&r.address)?;
+        let mut s = self.0.lock();
+        let typing = s.is_typing(&r.contact_id);
+        let Some(c) = s.contacts.iter_mut().find(|c| c.id == r.contact_id) else {
+            return Err(Status::not_found("contact not found"));
+        };
+        c.address = address;
+        let reply = ContactReply {
+            id:           c.id.clone(),
+            name:         c.name.clone(),
+            last_seen_ts: c.last_seen_ts,
+            online:       c.online,
+            blocked:      c.blocked,
+            typing,
+            address:      c.address.clone().unwrap_or_default(),
+        };
+        s.try_save();
+        Ok(Response::new(reply))
     }
 
     async fn rename_contact(
@@ -412,6 +439,7 @@ impl FriendService for FriendServiceImpl {
             online:       contact.online,
             blocked:      contact.blocked,
             typing:       false,
+            address:      Default::default(),
         };
         s.try_save();
         Ok(Response::new(reply))
@@ -488,6 +516,7 @@ impl FriendServiceImpl {
             online:       contact.online,
             blocked:      contact.blocked,
             typing:       false,
+            address:      Default::default(),
         };
         s.try_save();
         Ok(Response::new(reply))
@@ -785,7 +814,7 @@ impl TransferService for TransferServiceImpl {
         // disk in a future iteration; this covers the common transfer size.
         let data = std::fs::read(&r.file_path)
             .map_err(|e| Status::not_found(format!("cannot read '{}': {e}", r.file_path)))?;
-        if data.len() > 200 * 1024 * 1024 {
+        if data.len() as u64 > crate::outbox::MAX_FILE {
             return Err(Status::resource_exhausted(
                 "files over 200 MB need chunked disk streaming (coming soon)",
             ));
@@ -852,10 +881,18 @@ impl TransferService for TransferServiceImpl {
             };
             reply = stored_to_reply(&msg);
             s.messages.entry(contact_id.clone()).or_default().push(msg);
-            let tid = s.next_id();
+            // The transfer shares the message's id, so progress (chunks dispatched) and completion (the peer's ack)
+            // find it; the source path stays in the outbox until then, so a send while the peer is away still
+            // happens later (outbox::flush), even after a restart.
+            let tid = id.clone();
+            let name = s.contacts.iter().find(|c| c.id == contact_id).map(|c| c.name.clone()).unwrap_or_else(|| contact_id.clone());
+            let full_path = std::fs::canonicalize(&r.file_path)
+                .map(|p| p.to_string_lossy().trim_start_matches(r"\\?\").to_string())
+                .unwrap_or_else(|_| r.file_path.clone());
+            s.settings.insert(crate::outbox::file_key(&id), full_path);
             s.transfers.push(crate::state::Transfer {
                 id: tid,
-                contact_name: contact_id.clone(),
+                contact_name: name,
                 file_name: file_name.clone(),
                 size_bytes,
                 xferd_bytes: 0,
@@ -869,23 +906,12 @@ impl TransferService for TransferServiceImpl {
         }
 
         // 4. Split into wire chunks and enqueue for lane delivery.
-        const CHUNK: usize = 30 * 1024;
-        let total = data.len().div_ceil(CHUNK).max(1) as u32;
+        let chunks = crate::outbox::file_chunks(&sender_pk, &msg_id, &file_name, &mime, now_secs(), &data);
+        let total = chunks.len();
         {
             let mut pm = transport.lock().await;
             if pm.has_session(&contact_id) {
-                for (i, part) in data.chunks(CHUNK).enumerate() {
-                    let wire = crate::wire::WireMsg::File {
-                        sender: sender_pk.clone(),
-                        msg_id: msg_id.clone(),
-                        file_name: file_name.clone(),
-                        file_size: size_bytes,
-                        mime: mime.clone(),
-                        ts: now_secs(),
-                        seq: i as u32,
-                        total_chunks: total,
-                        data: part.to_vec(),
-                    };
+                for wire in chunks {
                     match wire.encode() {
                         Ok(payload) => { let _ = pm.send_message(&contact_id, msg_id.clone(), bytes::Bytes::from(payload)); }
                         Err(_) => break,
@@ -903,20 +929,59 @@ impl TransferService for TransferServiceImpl {
     async fn cancel_transfer(&self, req: Request<CancelTransferRequest>) -> Result<Response<Empty>, Status> {
         let tid = req.into_inner().transfer_id;
         let mut s = self.0.lock();
+        if !s.transfers.iter().any(|t| t.id == tid) {
+            return Err(Status::not_found("no such transfer"));
+        }
         s.transfers.retain(|t| t.id != tid);
+        // A file still waiting in the outbox is not sent any more; one already on the wire is marked failed here.
+        s.settings.remove(&crate::outbox::file_key(&tid));
+        s.settings.remove(&crate::outbox::paused_key(&tid));
+        let unfinished = s.messages.values().flatten().any(|m| m.id == tid && m.status != "delivered" && m.status != "read");
+        if unfinished {
+            s.mark_status(&tid, "failed");
+        }
+        s.try_save();
         tracing::info!("[grpc] cancelled transfer {tid}");
         Ok(Response::new(Empty {}))
     }
 
     async fn pause_transfer(&self, req: Request<CancelTransferRequest>) -> Result<Response<Empty>, Status> {
         let tid = req.into_inner().transfer_id;
-        tracing::info!("[grpc] pause transfer {tid} — stub");
+        let (outbound, pending, contact) = {
+            let s = self.0.lock();
+            let Some(t) = s.transfers.iter().find(|t| t.id == tid) else {
+                return Err(Status::not_found("no such transfer"));
+            };
+            let msg = s.messages.values().flatten().find(|m| m.id == tid);
+            (t.outbound, msg.map(|m| m.status == "pending").unwrap_or(false), msg.map(|m| m.contact_id.clone()).unwrap_or_default())
+        };
+        if !outbound {
+            return Err(Status::failed_precondition("only outgoing transfers can be paused here"));
+        }
+        let transport = self.0.lock().transport.clone();
+        let queued = transport.lock().await.queued_msg_ids(&contact).contains(&tid);
+        if !pending || queued {
+            // Its chunks are already with the lanes: they cannot be pulled back one by one.
+            return Err(Status::failed_precondition("this transfer is already being sent; cancel it instead"));
+        }
+        let mut s = self.0.lock();
+        s.settings.insert(crate::outbox::paused_key(&tid), "1".into());
+        s.try_save();
+        tracing::info!("[grpc] paused transfer {tid}");
         Ok(Response::new(Empty {}))
     }
 
     async fn resume_transfer(&self, req: Request<CancelTransferRequest>) -> Result<Response<Empty>, Status> {
         let tid = req.into_inner().transfer_id;
-        tracing::info!("[grpc] resume transfer {tid} — stub");
+        let mut s = self.0.lock();
+        if !s.transfers.iter().any(|t| t.id == tid) {
+            return Err(Status::not_found("no such transfer"));
+        }
+        if s.settings.remove(&crate::outbox::paused_key(&tid)).is_none() {
+            return Err(Status::failed_precondition("this transfer is not paused"));
+        }
+        s.try_save();
+        tracing::info!("[grpc] resumed transfer {tid} (it goes out with the next outbox flush)");
         Ok(Response::new(Empty {}))
     }
 }
@@ -1695,4 +1760,25 @@ pub fn add_all_services(
             UpdateServiceImpl, interceptor.clone()))
         .add_service(TelemetryServiceServer::with_interceptor(
             TelemetryServiceImpl(state), interceptor))
+}
+
+/// A contact address as the user typed it, checked: `host:port`, `tcp://host:port`, `ws://...` or `wss://...`.
+/// Empty means none. Keeps the scheme-less `host:port` form (the direct-lane code treats it as TCP).
+#[allow(clippy::result_large_err)] // tonic::Status, as every RPC here returns
+fn normalize_address(raw: &str) -> Result<Option<String>, Status> {
+    let a = raw.trim();
+    if a.is_empty() {
+        return Ok(None);
+    }
+    let rest = a.strip_prefix("tcp://").or_else(|| a.strip_prefix("ws://")).or_else(|| a.strip_prefix("wss://")).unwrap_or(a);
+    let hostport = rest.split('/').next().unwrap_or(rest);
+    let ok = if a.starts_with("wss://") || a.starts_with("ws://") {
+        !hostport.is_empty()
+    } else {
+        hostport.rsplit_once(':').map(|(h, p)| !h.is_empty() && p.parse::<u16>().map(|p| p > 0).unwrap_or(false)).unwrap_or(false)
+    };
+    if !ok || a.len() > 255 || a.chars().any(char::is_whitespace) {
+        return Err(Status::invalid_argument(format!("not an address: {a:?} (host:port, tcp://host:port or ws(s)://host)")));
+    }
+    Ok(Some(a.to_string()))
 }

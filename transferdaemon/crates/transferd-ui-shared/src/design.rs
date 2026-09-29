@@ -112,6 +112,13 @@ pub struct Palette {
     pub scrollbar_thumb: Color32,
 }
 
+/// Brighten a color's RGB by `factor` (> 1), keeping its alpha. (`Color32::gamma_multiply` only takes 0..=1 and
+/// scales alpha too; above 1 it trips an assertion in debug builds.)
+pub fn lighten(c: Color32, factor: f32) -> Color32 {
+    let f = |x: u8| ((x as f32) * factor).round().clamp(0.0, 255.0) as u8;
+    Color32::from_rgba_unmultiplied(f(c.r()), f(c.g()), f(c.b()), c.a())
+}
+
 impl Palette {
     pub fn for_theme(theme: Theme) -> Self {
         match theme {
@@ -127,9 +134,9 @@ impl Palette {
     pub fn with_accent(mut self, accent: Accent) -> Self {
         let c = accent.color();
         self.accent = c;
-        self.accent_hover = c.gamma_multiply(1.18);
-        self.accent_active = c.gamma_multiply(1.34);
-        self.accent_subtle = c.gamma_multiply(1.08);
+        self.accent_hover = lighten(c, 1.18);
+        self.accent_active = lighten(c, 1.34);
+        self.accent_subtle = lighten(c, 1.08);
         self.tab_active = c;
         self.bubble_outbound = c;
         self.border_focus = c;
@@ -872,7 +879,7 @@ pub fn apply_prefs(ctx: &egui::Context, prefs: &UiPreferences) {
     visuals.widgets.open.bg_stroke = egui::Stroke::new(1.0_f32, tokens.palette.border_focus);
 
     ctx.set_visuals(visuals);
-    ctx.set_fonts(egui::FontDefinitions::default());
+    ctx.set_fonts(font_definitions());
     ctx.style_mut(|s| {
         s.spacing.item_spacing = Vec2::new(8.0, 6.0);
         s.spacing.button_padding = tokens.spacing.button_padding;
@@ -888,4 +895,54 @@ pub fn apply_prefs(ctx: &egui::Context, prefs: &UiPreferences) {
 pub fn apply_theme(ctx: &egui::Context, theme: Theme) {
     let prefs = UiPreferences::default().with_theme(theme);
     apply_prefs(ctx, &prefs);
+}
+
+/// egui's own fonts plus the platform's symbol font as a fallback. The defaults (Ubuntu, Noto Emoji, the emoji icon
+/// font) have no arrows, check marks or dingbats, so ← ➤ ✓ rendered as empty boxes. The system font is read once and
+/// only used for glyphs the defaults lack; nothing is bundled, and a missing file just leaves the defaults.
+pub fn font_definitions() -> egui::FontDefinitions {
+    static FALLBACKS: std::sync::OnceLock<Vec<(String, Vec<u8>)>> = std::sync::OnceLock::new();
+    let fallbacks = FALLBACKS.get_or_init(|| {
+        const CANDIDATES: &[&str] = &[
+            // Windows
+            "C:\\Windows\\Fonts\\seguisym.ttf",
+            "C:\\Windows\\Fonts\\segoeui.ttf",
+            // macOS
+            "/System/Library/Fonts/Apple Symbols.ttf",
+            "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+            // Linux
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/TTF/DejaVuSans.ttf",
+            "/usr/share/fonts/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/noto/NotoSansSymbols2-Regular.ttf",
+            "/usr/share/fonts/truetype/noto/NotoSansSymbols2-Regular.ttf",
+            // Android
+            "/system/fonts/NotoSansSymbols-Regular-Subsetted2.ttf",
+            "/system/fonts/NotoSansSymbols-Regular-Subsetted.ttf",
+            "/system/fonts/DroidSans.ttf",
+        ];
+        let windir = std::env::var("WINDIR").ok();
+        let mut out = vec![];
+        for c in CANDIDATES {
+            let path = match (&windir, c.strip_prefix("C:\\Windows")) {
+                (Some(w), Some(rest)) => format!("{w}{rest}"),
+                _ => (*c).to_string(),
+            };
+            if let Ok(bytes) = std::fs::read(&path) {
+                out.push((format!("fallback:{path}"), bytes));
+                if out.len() == 2 {
+                    break;
+                }
+            }
+        }
+        out
+    });
+    let mut defs = egui::FontDefinitions::default();
+    for (name, bytes) in fallbacks {
+        defs.font_data.insert(name.clone(), egui::FontData::from_owned(bytes.clone()));
+        for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+            defs.families.entry(family).or_default().push(name.clone());
+        }
+    }
+    defs
 }

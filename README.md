@@ -41,6 +41,17 @@ WebRTC-style calls with signaling over the daemon's encrypted control channel. N
 ### Terminal UI with Live Video
 A full-featured ratatui terminal UI (`transferd-tui`) provides identical functionality to the desktop GUI — chat, contacts, file transfers, settings, and **real WebRTC video calls in the terminal**. The `transferd-tui-video` crate renders camera frames using four adaptive backends: Kitty graphics protocol, Sixel, half-block Unicode (`▀`), and ASCII art. The backend is auto-detected at runtime from the terminal's capabilities.
 
+### Control From Anywhere: CLI, MCP, and Remote-Driven GUI/TUI
+The daemon runs a local **control hub**. It makes every operation available over HTTP and the Model Context Protocol:
+
+- the whole API;
+- the window, whose widgets can be read, clicked and typed into, with screenshots;
+- the terminal UI, including a headless mode;
+- local relays.
+
+`transferd-cli` does all of it from the command line, and `transferd-cli mcp` serves it to AI agents. See
+[docs/CONTROL.md](docs/CONTROL.md).
+
 ### Pure Rust, Zero External Services
 The entire stack is written in Rust, from the low-level DMI ring to the egui desktop UI. There are no web views, no JavaScript, no telemetry, and no third-party analytics. The app works completely offline and only uses the network when you initiate a transfer.
 
@@ -99,7 +110,7 @@ After installation, run `transferdaemon` or click the **TransferDaemon** shortcu
 ```bash
 git clone https://github.com/LoopyLuci/TransferDaemon.git
 cd TransferDaemon/transferdaemon
-cargo build --release -p transferd -p transferd-ui -p transferd-tui -p launcher
+cargo build --release -p transferd -p transferd-ui -p transferd-tui -p transferd-cli -p launcher
 ```
 
 To include real webcam/mic support in the terminal UI:

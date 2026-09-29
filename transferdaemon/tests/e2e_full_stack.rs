@@ -78,6 +78,7 @@ async fn test_add_and_list_contacts() {
         .add_contact(transferd_api::AddContactRequest {
             public_key: format!("{:016x}", 2u8).repeat(4),
             name: "Alice".into(),
+            ..Default::default()
         })
         .await
         .unwrap()
@@ -116,6 +117,7 @@ async fn test_send_and_receive_message() {
         .add_contact(transferd_api::AddContactRequest {
             public_key: format!("{:016x}", 2u8).repeat(4),
             name: "Alice".into(),
+            ..Default::default()
         })
         .await
         .unwrap()

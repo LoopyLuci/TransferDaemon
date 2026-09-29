@@ -16,6 +16,7 @@ thiserror   = { workspace = true }
 tower       = "0.4"
 http        = "0.2"
 dirs        = { workspace = true }
+serde       = { workspace = true }
 
 [dev-dependencies]
 tokio-stream  = { version = "0.1", features = ["net", "sync"] }

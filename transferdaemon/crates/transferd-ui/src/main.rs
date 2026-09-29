@@ -5,6 +5,7 @@
 //!   - Otherwise try `http://127.0.0.1:50051` with a 500 ms timeout.
 //!   - Fall back to `MockDaemon` when the daemon is not reachable.
 
+mod automation;
 mod tray;
 
 use transferd_ui_shared::{
@@ -57,7 +58,12 @@ fn main() -> eframe::Result<()> {
         Box::new(move |cc| {
             let mut app = TransferDaemonApp::with_daemon(cc, daemon_arc, daemon_is_live);
             app.set_tray_channels(tray_tx, tray_rx);
-            Ok(Box::new(app))
+            // Answer the daemon control hub's gui.* operations (TRANSFERD_GUI_CONTROL=off to opt out).
+            if std::env::var("TRANSFERD_GUI_CONTROL").map(|v| v == "off" || v == "0").unwrap_or(false) {
+                Ok(Box::new(app))
+            } else {
+                Ok(Box::new(automation::wrap(app, &cc.egui_ctx)))
+            }
         }),
     )
 }

@@ -35,7 +35,13 @@ fn now_secs() -> u64 {
         .as_secs()
 }
 
+/// Messages sent in the background: (contact, text, the daemon's answer).
+type SentOutcomes = std::sync::Arc<std::sync::Mutex<Vec<(String, String, Result<Message, String>)>>>;
+
 pub struct ChatPage {
+    /// Sends run on the runtime, not the UI thread (reaching a peer can take seconds); the outcomes land here and
+    /// are shown on the next frame.
+    sent: SentOutcomes,
     pub input: String,
     pub file_path: String,
     show_file_input: bool,
@@ -82,6 +88,7 @@ pub struct ChatPage {
 impl Default for ChatPage {
     fn default() -> Self {
         Self {
+            sent: SentOutcomes::default(),
             input: String::new(),
             file_path: String::new(),
             show_file_input: false,
@@ -186,6 +193,7 @@ impl ChatPage {
 
     pub fn show(&mut self, ui: &mut Ui, state: &mut AppState) {
         let tokens = DesignTokens::current();
+        self.drain_sent(state);
 
         if let Some(path) = self.pending_file_path.take() {
             self.file_path = path;
@@ -673,8 +681,11 @@ impl ChatPage {
                     }
 
                     // Text input
-                    let avail = ui.available_width() - 56.0;
+                    let avail = ui.available_width() - 56.0; // the send button and the gap before it
                     let input_frame = design::input_frame(&tokens);
+                    // The frame's padding and border and the text box's own margin (8 each side) sit outside the
+                    // text width, so take them off or the row overflows and the send button is cut off.
+                    let chrome = input_frame.inner_margin.sum().x + 2.0 * input_frame.stroke.width + 16.0;
                     let input_resp = input_frame
                         .show(ui, |ui| {
                             ui.add(
@@ -682,7 +693,7 @@ impl ChatPage {
                                     .hint_text("Message…")
                                     .font(egui::FontId::proportional(15.0))
                                     .desired_rows(1)
-                                    .desired_width(avail - 16.0)
+                                    .desired_width((avail - chrome).max(40.0))
                                     .margin(Vec2::new(8.0, 8.0)),
                             )
                         })
@@ -696,8 +707,10 @@ impl ChatPage {
                             && self.last_typing_sent.elapsed() >= std::time::Duration::from_secs(2)
                         {
                             self.last_typing_sent = Instant::now();
-                            let rt = tokio::runtime::Handle::current();
-                            rt.block_on(state.daemon.send_typing(&contact_id, true));
+                            // Fire and forget: the indicator must never hold up typing.
+                            let d = state.daemon.clone();
+                            let cid = contact_id.clone();
+                            tokio::runtime::Handle::current().spawn(async move { d.send_typing(&cid, true).await; });
                         }
                     }
 
@@ -813,14 +826,13 @@ impl ChatPage {
                     return;
                 }
 
-                let mut scroll = ScrollArea::vertical()
+                let scroll = ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .stick_to_bottom(true);
 
-                if self.scroll_to_bottom {
-                    scroll = scroll.vertical_scroll_offset(f32::MAX);
-                    self.scroll_to_bottom = false;
-                }
+                // Jump to the newest message by scrolling to the end of the list once it is laid out (an offset of
+                // f32::MAX breaks egui's layout math and trips its assertions).
+                let jump_to_bottom = std::mem::take(&mut self.scroll_to_bottom);
 
                 scroll.show(ui, |ui| {
                     ui.add_space(tokens.spacing.sm);
@@ -863,6 +875,9 @@ impl ChatPage {
                                 }
                             }
                         }
+                    }
+                    if jump_to_bottom {
+                        ui.scroll_to_cursor(Some(egui::Align::BOTTOM));
                     }
                 });
             });
@@ -996,13 +1011,34 @@ impl ChatPage {
         self.replying_to = None;
         state.drafts.remove(&cid);
 
-        let rt = tokio::runtime::Handle::current();
-        rt.block_on(state.daemon.send_typing(&cid, false));
-        let result = if let Some(r) = reply_to {
-            rt.block_on(state.daemon.send_reply(&cid, text.clone(), r))
-        } else {
-            rt.block_on(state.daemon.send_text(&cid, text.clone()))
+        // The daemon may need a few seconds to reach the peer: send in the background and show the outcome when it
+        // arrives (drain_sent), so the window stays responsive.
+        let d = state.daemon.clone();
+        let sent = self.sent.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            d.send_typing(&cid, false).await;
+            let result = if let Some(r) = reply_to {
+                d.send_reply(&cid, text.clone(), r).await
+            } else {
+                d.send_text(&cid, text.clone()).await
+            };
+            if let Ok(mut v) = sent.lock() {
+                v.push((cid, text, result.map_err(|e| e.to_string())));
+            }
+        });
+    }
+
+    fn drain_sent(&mut self, state: &mut AppState) {
+        let done: Vec<_> = match self.sent.lock() {
+            Ok(mut v) => v.drain(..).collect(),
+            Err(_) => return,
         };
+        for (cid, text, result) in done {
+            self.show_sent(state, cid, text, result);
+        }
+    }
+
+    fn show_sent(&mut self, state: &mut AppState, cid: String, text: String, result: Result<Message, String>) {
         match result {
             Ok(msg) => {
                 state

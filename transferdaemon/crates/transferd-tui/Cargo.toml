@@ -24,6 +24,9 @@ hex         = { workspace = true }
 tonic       = { workspace = true }
 tracing     = { workspace = true }
 transferd-api      = { path = "../transferd-api" }
+# Driven from outside through the daemon's control hub (tui.* operations).
+transferd-control  = { path = "../transferd-control", default-features = false }
+serde_json = "1"
 transferd-tui-video = { path = "../transferd-tui-video" }
 transferd-webrtc    = { path = "../transferd-webrtc", features = ["desktop-capture"] }
 image  = { workspace = true }

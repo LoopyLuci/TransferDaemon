@@ -154,3 +154,45 @@ The live desktop↔Kindle relay E2E uncovered three mobile gaps, all fixed + pro
 - **Unbounded WS connect hung registration forever**: connect_async had no timeout, so a blocked TLS handshake (Fire OS suspending outbound Cloudflare TLS - the 'SYN_SENT stuck' finding) left RelayHub::start stuck with the daemon silently unregistered. Now bounded (30s) -> clean TimedOut error + the connection manager retries.
 
 **Live proof** (relayd-ws on the desktop + the Kindle over the tailnet, no Cloudflare TLS): Kindle logs '[relay] inbound listeners registered on 1 relays' -> 'responder session token=3015.. root=d1a2..' -> 'inbound chunk (2108 bytes)', and desktop_sends_to_kindle_over_local_tailnet_ws_relay passes with status delivered. relayd-ws is now a standalone binary (crates/relayd/src/bin/relayd-ws.rs, RELAYD_WS_BIND + RELAYD_WS_* limits) - the self-hosted twin of the Worker relay. Cloudflare-TLS-from-Fire-OS remains the only unproven leg (environmental: the Kindle's TLS to Cloudflare hangs; everything else delivers). Windows note: Hyper-V/WinNAT reserves TCP 7981-8180 (netsh interface ipv4 show excludedportrange) - binding there fails WSAEACCES 10013; use a port outside it.
+
+## 35. The control hub lives in the daemon, and UIs attach to it
+
+Everything that can be done to TransferDaemon goes through one local endpoint inside `transferd`
+(`transferd-control`). It serves the gRPC API as JSON operations, MCP, and the `gui.*` / `tui.*` / `relay.*`
+operations.
+
+- **Why the daemon, not a separate process.** The daemon is the one thing that is always running when anything works.
+- **UIs connect out.** The window and the TUI attach to the hub by long polling, so they never listen on a port. The
+  hub is loopback-only by default, needs the `control.json` token, and refuses browser `Origin`s.
+- **The catalog comes from the proto.** Operation schemas are built from the `.proto` text at runtime, and the
+  requests and replies are the prost types with serde. There is no hand-written mapping to drift, and a test pins the
+  RPC table to the proto.
+
+## 36. Driving egui from outside: AccessKit to see, raw input to act
+
+- **Seeing.** The window reads its own AccessKit tree after each frame, starting at `accesskit_root_id()` and following
+  the node builders' children. egui's `Id` has no public constructor from a raw value, so ids are rebuilt through its
+  serde form (hence egui's `serde` feature in `transferd-ui`).
+- **Acting.** Input is injected in `raw_input_hook`, one step per frame (move, press, release). Clicks go through egui's
+  real hit-testing instead of calling handlers directly, so an automated click behaves like a mouse click.
+
+## 37. The outbox, and why transfers share their message's id
+
+`retry_pending_sessions` re-created sessions but never re-queued the payloads of messages sent without one, so they
+stayed "pending" forever.
+
+- **The flush.** `outbox::flush` rebuilds pending 1:1 messages from the store and queues them (skipping ids already
+  queued on the session).
+- **Files.** Their source paths live in the encrypted settings map (`outbox.file.<msg_id>`), because the bincode store
+  cannot take new fields without a migration.
+- **Transfer ids.** A transfer takes its file message's id. Dispatched chunk ids then advance progress, and the ack
+  (which carries the message id) completes it.
+
+## 38. Auto-unlock with an OS-protected phrase cache
+
+The store is encrypted with a key derived from the recovery phrase, so a daemon started at boot, by a launcher, or by
+ABP had no identity until a UI restored it, and relay registrations and inbound delivery waited on a human.
+
+- **The cache.** The phrase is cached next to the store: DPAPI-protected on Windows (bound to the user), 0600
+  elsewhere (the format the mobile daemon already used). The daemon unlocks itself at start.
+- **Opting out.** `TRANSFERD_AUTO_UNLOCK=off`, for people who prefer typing the phrase on every start.

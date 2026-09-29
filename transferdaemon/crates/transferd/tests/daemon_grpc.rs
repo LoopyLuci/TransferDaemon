@@ -131,7 +131,7 @@ async fn daemon_add_and_list_contacts() {
 
     let key = "a".repeat(64);
     let contact = fc.add_contact(AddContactRequest {
-        public_key: key.clone(), name: "Alice".into(),
+        public_key: key.clone(), name: "Alice".into(), ..Default::default()
     }).await.unwrap().into_inner();
     assert_eq!(contact.name, "Alice");
     assert_eq!(contact.id, key);
@@ -145,7 +145,7 @@ async fn daemon_add_contact_bad_key_rejected() {
     let addr = start_daemon().await;
     let mut fc = client!(FriendServiceClient<_>, addr);
     let err = fc.add_contact(AddContactRequest {
-        public_key: "short".into(), name: "Eve".into(),
+        public_key: "short".into(), name: "Eve".into(), ..Default::default()
     }).await;
     assert_eq!(err.unwrap_err().code(), tonic::Code::InvalidArgument);
 }
@@ -155,8 +155,8 @@ async fn daemon_add_duplicate_contact_rejected() {
     let addr = start_daemon().await;
     let mut fc = client!(FriendServiceClient<_>, addr);
     let key = "b".repeat(64);
-    fc.add_contact(AddContactRequest { public_key: key.clone(), name: "Bob".into() }).await.unwrap();
-    let err = fc.add_contact(AddContactRequest { public_key: key, name: "Bob2".into() }).await;
+    fc.add_contact(AddContactRequest { public_key: key.clone(), name: "Bob".into(), ..Default::default() }).await.unwrap();
+    let err = fc.add_contact(AddContactRequest { public_key: key, name: "Bob2".into(), ..Default::default() }).await;
     assert_eq!(err.unwrap_err().code(), tonic::Code::AlreadyExists);
 }
 
@@ -165,7 +165,7 @@ async fn daemon_rename_contact() {
     let addr = start_daemon().await;
     let mut fc = client!(FriendServiceClient<_>, addr);
     let key = "c".repeat(64);
-    fc.add_contact(AddContactRequest { public_key: key.clone(), name: "Carol".into() }).await.unwrap();
+    fc.add_contact(AddContactRequest { public_key: key.clone(), name: "Carol".into(), ..Default::default() }).await.unwrap();
 
     let r = fc.rename_contact(RenameContactRequest { contact_id: key.clone(), name: "Carolyn".into() })
         .await.unwrap().into_inner();
@@ -185,7 +185,7 @@ async fn daemon_remove_contact_clears_history() {
     let mut fc = client!(FriendServiceClient<_>, addr);
     let mut mc = client!(MessageServiceClient<_>, addr);
     let key = "d".repeat(64);
-    fc.add_contact(AddContactRequest { public_key: key.clone(), name: "Dana".into() }).await.unwrap();
+    fc.add_contact(AddContactRequest { public_key: key.clone(), name: "Dana".into(), ..Default::default() }).await.unwrap();
     mc.send_text(SendTextRequest { contact_id: key.clone(), text: "hi".into(), reply_to: String::new() }).await.unwrap();
 
     fc.remove_contact(RemoveContactRequest { contact_id: key.clone() }).await.unwrap();
@@ -205,7 +205,7 @@ async fn daemon_block_contact() {
     let addr = start_daemon().await;
     let mut fc = client!(FriendServiceClient<_>, addr);
     let key = "e".repeat(64);
-    fc.add_contact(AddContactRequest { public_key: key.clone(), name: "Eve".into() }).await.unwrap();
+    fc.add_contact(AddContactRequest { public_key: key.clone(), name: "Eve".into(), ..Default::default() }).await.unwrap();
 
     let r = fc.block_contact(BlockContactRequest { contact_id: key.clone() }).await.unwrap().into_inner();
     assert!(r.blocked, "contact must be marked blocked");
@@ -450,7 +450,7 @@ async fn daemon_multiple_services_share_state() {
 
     // Contact + message are independent namespaces on same server.
     let mut fc = client!(FriendServiceClient<_>, addr);
-    fc.add_contact(AddContactRequest { public_key: "c".repeat(64), name: "Carol".into() }).await.unwrap();
+    fc.add_contact(AddContactRequest { public_key: "c".repeat(64), name: "Carol".into(), ..Default::default() }).await.unwrap();
 
     let mut mc = client!(MessageServiceClient<_>, addr);
     mc.send_text(SendTextRequest { contact_id: "c".repeat(64), text: "Hi".into(), reply_to: String::new() }).await.unwrap();
