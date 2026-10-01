@@ -27,6 +27,11 @@ signature = "2"
 hex = "0.4"
 serde = { version = "1", features = ["derive"] }
 bincode = "1"
+# ghost keys (src/ghostkey.rs): RFC 9474 blind RSA signatures
+rsa = { version = "0.9", features = ["hazmat", "sha2"] }
+sha2 = "0.10"
+num-bigint-dig = { version = "0.8", features = ["rand"] }
+num-traits = "0.2"
 
 [dev-dependencies]
 criterion = { workspace = true }

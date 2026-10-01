@@ -5319,6 +5319,7 @@ dependencies = [
  "num-iter",
  "num-traits",
  "rand 0.8.8",
+ "serde",
  "smallvec",
  "zeroize",
 ]
@@ -9275,6 +9276,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "transferd-control",
+ "transferd-crypto",
 ]
 
 [[package]]
@@ -9332,10 +9334,14 @@ dependencies = [
  "kem",
  "ml-dsa",
  "ml-kem",
+ "num-bigint-dig",
+ "num-traits",
  "proptest",
  "rand 0.8.8",
  "ring-channel",
+ "rsa",
  "serde",
+ "sha2",
  "signature 2.2.0",
  "thiserror 2.0.21",
  "x25519-dalek",
