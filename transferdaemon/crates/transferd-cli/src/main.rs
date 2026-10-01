@@ -11,6 +11,8 @@ use std::process::ExitCode;
 use std::time::{Duration, Instant};
 use transferd_control::{mcp, Client, ClientError};
 
+mod ghostkey;
+
 const HELP: &str = "transferd-cli: TransferDaemon from the command line
 
 USAGE
@@ -43,6 +45,11 @@ WINDOW AND TERMINAL UI
   gui <action> [JSON | key=value...]   launch, state, inspect, find, click, set, type, key, navigate,
                                        open_chat, scroll, screenshot [--out file.png], window, wait
   tui <action> [JSON | key=value...]   launch, state, screen, key, type, navigate, resize, quit
+
+GHOST KEYS (anonymous identities an issuer vouches for without learning them; no daemon needed)
+  ghostkey issuer-new <name> <tier> <prefix> [--bits 3072]   ghostkey request <issuer-file> <pending-file>
+  ghostkey sign <issuer-secret-file> <blinded>              ghostkey finish <issuer-file> <pending> <sig> <out>
+  ghostkey verify <issuer-file> <certificate>
 
 RELAYS
   relay status | start <relayd|relayd-ws|dhtd> [bind] | stop <kind> | probe <addr>
@@ -289,6 +296,7 @@ fn run(args: Vec<String>, out: &Out) -> Result<Option<Value>, String> {
             mcp_stdio(mode)?;
             Ok(None)
         }
+        "ghostkey" => ghostkey::run(rest).map(Some),
         "daemon" => match rest.first().map(String::as_str) {
             Some("start") => daemon_start(flag_value(rest, "--wait").and_then(|w| w.parse().ok()).unwrap_or(60.0)).map(Some),
             Some("stop") => Client::connect().and_then(|c| c.call("daemon.stop", json!({}))).map(Some).map_err(fail),

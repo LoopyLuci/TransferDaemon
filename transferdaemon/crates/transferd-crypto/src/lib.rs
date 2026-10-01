@@ -1,6 +1,7 @@
 pub mod auth_handshake;
 pub mod common;
 pub mod epochs;
+pub mod ghostkey;
 pub mod handshake;
 pub mod identity;
 pub mod keystore;
