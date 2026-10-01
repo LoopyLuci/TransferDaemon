@@ -21,6 +21,7 @@ members = [
     "crates/transferd-control",
     "crates/transferd-cli",
     "crates/transferd-cat",
+    "crates/transferd-replica",
 ]
 exclude = ["fuzz"]
 resolver = "2"

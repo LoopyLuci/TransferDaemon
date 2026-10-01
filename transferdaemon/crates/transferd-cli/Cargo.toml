@@ -16,4 +16,5 @@ transferd-control = { path = "../transferd-control", default-features = false }
 serde_json = "1"
 transferd-crypto = { path = "../transferd-crypto" }
 transferd-cat = { path = "../transferd-cat" }
+transferd-replica = { path = "../transferd-replica" }
 tokio      = { workspace = true }
