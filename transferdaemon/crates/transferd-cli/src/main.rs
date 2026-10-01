@@ -13,6 +13,7 @@ use transferd_control::{mcp, Client, ClientError};
 
 mod cat;
 mod ghostkey;
+mod rns;
 
 const HELP: &str = "transferd-cli: TransferDaemon from the command line
 
@@ -50,6 +51,10 @@ WINDOW AND TERMINAL UI
 CAT (netcat between two machines: a one-time address, post-quantum encryption, direct or through a relay)
   cat listen [--relay host:port]  prints a tdcat: address, then pipes stdin/stdout with whoever dials it
   cat <tdcat:address>             dials it
+
+RETICULUM (LXMF messaging off-grid and over any link: TCP, the LAN, LoRa radios; Crosstalk / MeshChat users)
+  rns setup | start [--listen h:p] [--connect h:p] [--auto] [--rnode PORT ...] | status | interfaces | peers
+  rns announce | send <address> <text...> [--title t] [--propagated] [--wait] | inbox | propagation <node|off> | stop
 
 GHOST KEYS (anonymous identities an issuer vouches for without learning them; no daemon needed)
   ghostkey issuer-new <name> <tier> <prefix> [--bits 3072]   ghostkey request <issuer-file> <pending-file>
@@ -302,6 +307,7 @@ fn run(args: Vec<String>, out: &Out) -> Result<Option<Value>, String> {
             Ok(None)
         }
         "ghostkey" => ghostkey::run(rest).map(Some),
+        "rns" => rns::run(rest).map(Some),
         "cat" => cat::run(rest).map(|v| {
             eprintln!("{v}");
             None
