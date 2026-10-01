@@ -67,7 +67,7 @@ async fn run_relay_server(socket: UdpSocket, relay: Arc<TokioMutex<Relay>>) {
                     }
                 }
             }
-            Tag::Keepalive | Tag::Error | Tag::Ack => {}
+            Tag::Keepalive | Tag::Error | Tag::Ack | Tag::RegisterGhost => {}
         }
     }
 }

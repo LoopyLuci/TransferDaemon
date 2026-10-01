@@ -15,4 +15,5 @@ workspace = true
 transferd-control = { path = "../transferd-control", default-features = false }
 serde_json = "1"
 transferd-crypto = { path = "../transferd-crypto" }
+transferd-cat = { path = "../transferd-cat" }
 tokio      = { workspace = true }

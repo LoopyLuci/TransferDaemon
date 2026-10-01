@@ -9271,11 +9271,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "transferd-cat"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm",
+ "bincode 1.3.3",
+ "blake3",
+ "hex",
+ "rand 0.8.8",
+ "relayd",
+ "thiserror 2.0.21",
+ "tokio",
+ "transferd-crypto",
+]
+
+[[package]]
 name = "transferd-cli"
 version = "0.1.0"
 dependencies = [
  "serde_json",
  "tokio",
+ "transferd-cat",
  "transferd-control",
  "transferd-crypto",
 ]

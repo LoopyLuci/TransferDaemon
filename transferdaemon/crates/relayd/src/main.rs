@@ -9,12 +9,10 @@
 //!      `Challenge` datagram, solve it, and register/forward/keepalive.
 //!
 //! Configuration (env): `RELAYD_PORT`, `RELAYD_DIFFICULTY`, `RELAYD_TTL`; ghost key admission (relayd::ghost):
-//! `RELAYD_GHOST_ISSUERS` (issuer files, separated like PATH), `RELAYD_REQUIRE_GHOST=1`, `RELAYD_GHOST_SESSIONS`.
+//! `RELAYD_GHOST_ISSUERS` (issuer files, separated like PATH), `RELAYD_REQUIRE_GHOST=1`, `RELAYD_GHOST_SESSIONS`;
+//! `RELAYD_RATE_PER_30S` (datagrams per source address per 30 s, default 300).
 
-use relayd::protocol::{
-    AckMsg, ChallengeMsg, DeliveredMsg, ErrorMsg, ForwardMsg, GhostRegisterMsg, KeepaliveMsg, RegisterMsg, Tag,
-    encode, split, MAX_PAYLOAD,
-};
+use relayd::protocol::MAX_PAYLOAD;
 use relayd::relay::Relay;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -53,6 +51,8 @@ async fn main() -> std::io::Result<()> {
     );
 
     let mut core = Relay::with_limits(difficulty, ttl_secs, MAX_PAYLOAD, limits);
+    // datagrams per source address per 30 s (the default 300 suits messages; raise it for streams such as `cat`)
+    core.set_rate_limit(30, env_u32("RELAYD_RATE_PER_30S", 300));
     let issuers: Vec<String> = std::env::var_os("RELAYD_GHOST_ISSUERS")
         .map(|v| std::env::split_paths(&v).map(|p| p.display().to_string()).collect())
         .unwrap_or_default();
@@ -95,125 +95,6 @@ async fn main() -> std::io::Result<()> {
         });
     }
 
-    // Send the current PoW challenge to `src`.
-    async fn send_challenge(relay: &Arc<Mutex<Relay>>, socket: &Arc<UdpSocket>, src: SocketAddr) {
-        let (challenge, expires_at, difficulty) = {
-            let mut r = relay.lock().await;
-            let c = r.current_challenge();
-            (c.bytes, c.expires_at, c.difficulty)
-        };
-        let frame = encode(Tag::Challenge, &ChallengeMsg { challenge, expires_at, difficulty })
-            .unwrap_or_default();
-        let _ = socket.send_to(&frame, src).await;
-    }
-
-    // Main dispatch loop.
-    let mut buf = vec![0u8; MAX_PAYLOAD + 256];
-    loop {
-        let (len, src) = match socket.recv_from(&mut buf).await {
-            Ok(x) => x,
-            // Windows surfaces ICMP errors (e.g. a client that already closed
-            // its socket) as WSAECONNRESET on the next recv. Transient — never
-            // kill the relay over a stale datagram.
-            Err(e) => {
-                eprintln!("relayd: recv_from: {e} (ignored)");
-                tokio::time::sleep(Duration::from_millis(10)).await;
-                continue;
-            }
-        };
-        let frame = &buf[..len];
-
-        let Some((tag, body)) = split(frame) else {
-            continue; // malformed — silently drop
-        };
-
-        let socket = socket.clone();
-        let relay = relay.clone();
-
-        // Per-IP rate limiting: drop datagrams from addresses over their budget.
-        if relay.lock().await.rate_limited(src.ip()) {
-            continue;
-        }
-
-        match tag {
-            Tag::Challenge => {
-                // Bootstrap: any client may request the current PoW challenge.
-                send_challenge(&relay, &socket, src).await;
-            }
-
-            Tag::Register => {
-                if let Ok(msg) = bincode::deserialize::<RegisterMsg>(body) {
-                    let seq = msg.seq;
-                    let result = relay.lock().await.register(&msg, src);
-                    match result {
-                        Ok(()) => {
-                            send_challenge(&relay, &socket, src).await;
-                        }
-                        Err(e) => {
-                            let frame = encode(Tag::Error, &ErrorMsg {
-                                code: e.code(),
-                                seq,
-                                detail: e.to_string(),
-                            }).unwrap_or_default();
-                            let _ = socket.send_to(&frame, src).await;
-                        }
-                    }
-                }
-            }
-
-            Tag::RegisterGhost => {
-                if let Ok(msg) = bincode::deserialize::<GhostRegisterMsg>(body) {
-                    let seq = msg.register.seq;
-                    let result = relay.lock().await.register_ghost(&msg, src);
-                    match result {
-                        Ok(()) => send_challenge(&relay, &socket, src).await,
-                        Err(e) => {
-                            let frame = encode(Tag::Error, &ErrorMsg { code: e.code(), seq, detail: e.to_string() })
-                                .unwrap_or_default();
-                            let _ = socket.send_to(&frame, src).await;
-                        }
-                    }
-                }
-            }
-
-            Tag::Forward => {
-                if let Ok(msg) = bincode::deserialize::<ForwardMsg>(body) {
-                    let sender_seq = msg.sender_seq;
-                    let ciphertext = msg.ciphertext.clone();
-                    let result = relay.lock().await.forward(&msg);
-                    match result {
-                        Ok(dst) => {
-                            // Blind forward: deliver ciphertext wrapped in DeliveredMsg (no src IP).
-                            let delivered = encode(Tag::Ack, &DeliveredMsg {
-                                sender_seq,
-                                ciphertext,
-                            }).unwrap_or_default();
-                            let _ = socket.send_to(&delivered, dst).await;
-                            // Ack to sender.
-                            let ack = encode(Tag::Ack, &AckMsg { sender_seq }).unwrap_or_default();
-                            let _ = socket.send_to(&ack, src).await;
-                        }
-                        Err(e) => {
-                            let frame = encode(Tag::Error, &ErrorMsg {
-                                code: e.code(),
-                                seq: sender_seq as u32,
-                                detail: e.to_string(),
-                            }).unwrap_or_default();
-                            let _ = socket.send_to(&frame, src).await;
-                        }
-                    }
-                }
-            }
-
-            Tag::Keepalive => {
-                if let Ok(msg) = bincode::deserialize::<KeepaliveMsg>(body) {
-                    let _ = relay.lock().await.keepalive(&msg);
-                }
-            }
-
-            Tag::Error | Tag::Ack => {
-                // Relay never receives these; silently drop.
-            }
-        }
-    }
+    relayd::server::serve(socket, relay).await;
+    Ok(())
 }
