@@ -25,6 +25,8 @@ bincode  = { workspace = true }
 blake3   = { workspace = true }
 rand     = "0.8"
 thiserror = { workspace = true }
+# ghost keys: relays that admit only vouched-for identities (src/ghost.rs)
+transferd-crypto = { path = "../transferd-crypto" }
 tokio-tungstenite = "0.24"
 futures-util = "0.3"
 

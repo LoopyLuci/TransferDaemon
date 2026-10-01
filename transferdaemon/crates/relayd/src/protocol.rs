@@ -20,6 +20,8 @@ pub enum Tag {
     Challenge = 0x04,
     Error     = 0x05,
     Ack       = 0x06,
+    /// A registration carrying a ghost key certificate (see `crate::ghost`).
+    RegisterGhost = 0x07,
 }
 
 impl Tag {
@@ -31,6 +33,7 @@ impl Tag {
             0x04 => Some(Self::Challenge),
             0x05 => Some(Self::Error),
             0x06 => Some(Self::Ack),
+            0x07 => Some(Self::RegisterGhost),
             _    => None,
         }
     }
@@ -51,6 +54,18 @@ pub struct RegisterMsg {
     pub pow_nonce: u64,
     /// Monotonically increasing sequence number; used for replay detection.
     pub seq: u32,
+}
+
+/// A registration with a ghost key certificate: the usual registration (PoW included) plus a certificate from an
+/// issuer the relay trusts, and the ghost key's signature over this token and sequence number (so a certificate
+/// someone else saw cannot be reused). See `crate::ghost`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GhostRegisterMsg {
+    pub register: RegisterMsg,
+    /// `transferd_crypto::ghostkey::GhostCertificate`, bincode
+    pub certificate: Vec<u8>,
+    /// Ed25519 signature by the ghost key over `crate::ghost::binding(token, seq)`
+    pub signature: Vec<u8>,
 }
 
 /// Sender forwards an encrypted payload to a registered recipient.
@@ -118,6 +133,10 @@ pub enum ErrorCode {
     RateLimited       = 5,
     SeqReplay         = 6,
     BandwidthExceeded = 7,
+    /// This relay admits only registrations with a ghost key certificate from an issuer it trusts.
+    GhostRequired     = 8,
+    /// The ghost key certificate or its signature did not check out, or the key holds too many sessions.
+    GhostRejected     = 9,
     InternalError     = 0xFFFF,
 }
 
