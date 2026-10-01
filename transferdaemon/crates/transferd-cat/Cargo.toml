@@ -1,0 +1,19 @@
+[package]
+name = "transferd-cat"
+version = "0.1.0"
+edition = "2021"
+description = "netcat between two machines over TransferD: a one-time address, the hybrid post-quantum handshake, a direct path or the blind relay (tailcat parity)"
+
+[lints]
+workspace = true
+
+[dependencies]
+transferd-crypto = { path = "../transferd-crypto" }
+relayd = { path = "../relayd" }
+tokio = { workspace = true }
+blake3 = { workspace = true }
+bincode = { workspace = true }
+rand = "0.8"
+hex = "0.4"
+aes-gcm = { version = "0.10", features = ["aes", "zeroize"] }
+thiserror = { workspace = true }

@@ -11,6 +11,7 @@ use std::process::ExitCode;
 use std::time::{Duration, Instant};
 use transferd_control::{mcp, Client, ClientError};
 
+mod cat;
 mod ghostkey;
 
 const HELP: &str = "transferd-cli: TransferDaemon from the command line
@@ -45,6 +46,10 @@ WINDOW AND TERMINAL UI
   gui <action> [JSON | key=value...]   launch, state, inspect, find, click, set, type, key, navigate,
                                        open_chat, scroll, screenshot [--out file.png], window, wait
   tui <action> [JSON | key=value...]   launch, state, screen, key, type, navigate, resize, quit
+
+CAT (netcat between two machines: a one-time address, post-quantum encryption, direct or through a relay)
+  cat listen [--relay host:port]  prints a tdcat: address, then pipes stdin/stdout with whoever dials it
+  cat <tdcat:address>             dials it
 
 GHOST KEYS (anonymous identities an issuer vouches for without learning them; no daemon needed)
   ghostkey issuer-new <name> <tier> <prefix> [--bits 3072]   ghostkey request <issuer-file> <pending-file>
@@ -297,6 +302,10 @@ fn run(args: Vec<String>, out: &Out) -> Result<Option<Value>, String> {
             Ok(None)
         }
         "ghostkey" => ghostkey::run(rest).map(Some),
+        "cat" => cat::run(rest).map(|v| {
+            eprintln!("{v}");
+            None
+        }),
         "daemon" => match rest.first().map(String::as_str) {
             Some("start") => daemon_start(flag_value(rest, "--wait").and_then(|w| w.parse().ok()).unwrap_or(60.0)).map(Some),
             Some("stop") => Client::connect().and_then(|c| c.call("daemon.stop", json!({}))).map(Some).map_err(fail),

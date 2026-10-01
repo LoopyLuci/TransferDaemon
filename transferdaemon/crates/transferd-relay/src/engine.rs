@@ -4,7 +4,7 @@ use crate::settings::RelaySettings;
 use crate::token_bucket::TokenBucket;
 use relayd::protocol::{
     self, AckMsg, ChallengeMsg, DeliveredMsg, ErrorCode, ErrorMsg, ForwardMsg,
-    KeepaliveMsg, RegisterMsg, Tag,
+    GhostRegisterMsg, KeepaliveMsg, RegisterMsg, Tag,
 };
 use relayd::relay::Relay;
 use std::net::SocketAddr;
@@ -252,6 +252,34 @@ async fn handle_datagram(
                 Err((code, seq, detail)) => {
                     send_error(socket, src, code, seq, &detail).await;
                 }
+            }
+        }
+
+        Tag::RegisterGhost => {
+            // a registration with a ghost key certificate (relayd::ghost): admitted if this relay's ghost policy
+            // trusts its issuer; the same session limit as plain registrations
+            let Ok(msg) = bincode::deserialize::<GhostRegisterMsg>(body) else { return };
+            let outcome: Result<ChallengeMsg, (ErrorCode, u32, String)> = {
+                let mut r = relay.lock().unwrap_or_else(|e| e.into_inner());
+                if r.active_count() >= max_sessions {
+                    Err((ErrorCode::RateLimited, 0, "session limit reached".into()))
+                } else {
+                    match r.register_ghost(&msg, src) {
+                        Ok(()) => {
+                            let c = r.current_challenge();
+                            Ok(ChallengeMsg { challenge: c.bytes, expires_at: c.expires_at, difficulty: c.difficulty })
+                        }
+                        Err(e) => Err((e.code(), msg.register.seq, e.to_string())),
+                    }
+                }
+            };
+            match outcome {
+                Ok(challenge) => {
+                    if let Ok(frame) = protocol::encode(Tag::Challenge, &challenge) {
+                        let _ = socket.send_to(&frame, src).await;
+                    }
+                }
+                Err((code, seq, detail)) => send_error(socket, src, code, seq, &detail).await,
             }
         }
 
