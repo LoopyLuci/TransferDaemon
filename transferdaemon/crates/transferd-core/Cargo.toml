@@ -17,6 +17,7 @@ thiserror = { workspace = true }
 futures = { workspace = true }
 ring-channel = { path = "../ring-channel" }
 transferd-crypto = { path = "../transferd-crypto" }
+hex = "0.4"
 relayd = { path = "../relayd" }
 tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
 futures-util = "0.3"
