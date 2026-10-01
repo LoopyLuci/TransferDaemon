@@ -1,0 +1,20 @@
+[package]
+name = "transferd-replica"
+version = "0.1.0"
+edition = "2021"
+description = "State replicated across a person's devices with Raft, applied to SQLite: strongly consistent SQL (cockroach parity)"
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { workspace = true }
+bincode = { workspace = true }
+rand = "0.8"
+thiserror = { workspace = true }
+rusqlite = { version = "0.31", features = ["bundled"] }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
