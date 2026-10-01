@@ -2,7 +2,8 @@
 
 use crate::limits::{BandwidthTracker, RelayLimits};
 use crate::pow::PowChallenge;
-use crate::protocol::{ErrorCode, ForwardMsg, KeepaliveMsg, RegisterMsg};
+use crate::ghost::GhostPolicy;
+use crate::protocol::{ErrorCode, ForwardMsg, GhostRegisterMsg, KeepaliveMsg, RegisterMsg};
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -26,6 +27,10 @@ pub enum RelayError {
     RateLimited,
     #[error("per-token bandwidth budget exceeded")]
     BandwidthExceeded,
+    #[error("this relay admits only registrations with a ghost key certificate")]
+    GhostRequired,
+    #[error("ghost key rejected: {0}")]
+    GhostRejected(String),
 }
 
 impl RelayError {
@@ -37,6 +42,8 @@ impl RelayError {
             Self::SeqReplay           => ErrorCode::SeqReplay,
             Self::RateLimited         => ErrorCode::RateLimited,
             Self::BandwidthExceeded   => ErrorCode::BandwidthExceeded,
+            Self::GhostRequired       => ErrorCode::GhostRequired,
+            Self::GhostRejected(_)    => ErrorCode::GhostRejected,
         }
     }
 }
@@ -52,6 +59,8 @@ struct Entry {
     last_reg_seq: u32,
     /// Total bytes forwarded to this recipient (for rate limiting / observability).
     bytes_forwarded: u64,
+    /// The ghost key that admitted this registration, if any (for the per-key session cap).
+    ghost: Option<[u8; 32]>,
 }
 
 // ---------------------------------------------------------------------------
@@ -71,6 +80,8 @@ pub struct Relay {
     /// Node-level limits: max blob size + per-token bandwidth budgets.
     limits: RelayLimits,
     bandwidth: BandwidthTracker,
+    /// Ghost key admission (off unless issuers are configured).
+    ghost: GhostPolicy,
 }
 
 impl Relay {
@@ -89,7 +100,31 @@ impl Relay {
             rate_limiter: RateLimiter::new(30, 300), // ≤ 300 datagrams / 30s per IP
             limits,
             bandwidth: BandwidthTracker::new(),
+            ghost: GhostPolicy::default(),
         }
+    }
+
+    /// Who may register: the issuers whose ghost keys are admitted, whether one is required, and how many sessions
+    /// one ghost key may hold.
+    pub fn set_ghost_policy(&mut self, policy: GhostPolicy) {
+        self.ghost = policy;
+    }
+
+    pub fn ghost_policy(&self) -> &GhostPolicy {
+        &self.ghost
+    }
+
+    /// A registration with a ghost key certificate: checked against the policy, then registered as usual (PoW too).
+    pub fn register_ghost(&mut self, msg: &GhostRegisterMsg, addr: SocketAddr) -> Result<(), RelayError> {
+        let key = self.ghost.admit(msg).map_err(RelayError::GhostRejected)?;
+        let now = now_secs();
+        let held = self.table.iter()
+            .filter(|(t, e)| e.ghost == Some(key) && e.expires_at_secs > now && **t != msg.register.session_token)
+            .count();
+        if held >= self.ghost.max_sessions_per_key {
+            return Err(RelayError::GhostRejected(format!("this ghost key already holds {held} sessions here")));
+        }
+        self.register_inner(&msg.register, addr, Some(key))
     }
 
     /// The node's configured limits (max blob + bandwidth budgets).
@@ -137,6 +172,13 @@ impl Relay {
     ///
     /// Idempotent: re-registering with a valid PoW refreshes the TTL.
     pub fn register(&mut self, msg: &RegisterMsg, addr: SocketAddr) -> Result<(), RelayError> {
+        if self.ghost.required {
+            return Err(RelayError::GhostRequired);
+        }
+        self.register_inner(msg, addr, None)
+    }
+
+    fn register_inner(&mut self, msg: &RegisterMsg, addr: SocketAddr, ghost: Option<[u8; 32]>) -> Result<(), RelayError> {
         if !self.challenge.verify(&msg.session_token, msg.pow_nonce) {
             return Err(RelayError::InvalidPoW);
         }
@@ -150,6 +192,9 @@ impl Relay {
                 entry.last_reg_seq = msg.seq;
                 entry.addr = addr;
                 entry.expires_at_secs = expires_at_secs;
+                if ghost.is_some() {
+                    entry.ghost = ghost;
+                }
             }
             None => {
                 self.table.insert(msg.session_token, Entry {
@@ -157,6 +202,7 @@ impl Relay {
                     expires_at_secs,
                     last_reg_seq: msg.seq,
                     bytes_forwarded: 0,
+                    ghost,
                 });
             }
         }

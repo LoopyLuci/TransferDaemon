@@ -21,7 +21,7 @@ use tokio_tungstenite::WebSocketStream;
 use crate::pow::PowChallenge;
 use crate::protocol::{
     encode, split, AckMsg, ChallengeMsg, DeliveredMsg, ErrorCode, ErrorMsg, ForwardMsg,
-    KeepaliveMsg, RegisterMsg, Tag,
+    GhostRegisterMsg, KeepaliveMsg, RegisterMsg, Tag,
 };
 
 /// Outbound channel to one connection; the drain task writes frames to the WS
@@ -39,6 +39,9 @@ pub struct WsRelay {
     /// Node-level limits: max blob size + per-token bandwidth budgets.
     pub limits: crate::limits::RelayLimits,
     bandwidth: crate::limits::BandwidthTracker,
+    /// Ghost key admission (crate::ghost), the same policy as the UDP relay's.
+    pub ghost: crate::ghost::GhostPolicy,
+    ghost_of: HashMap<[u8; 32], [u8; 32]>,
 }
 
 impl WsRelay {
@@ -55,7 +58,21 @@ impl WsRelay {
             expires: HashMap::new(),
             limits,
             bandwidth: crate::limits::BandwidthTracker::new(),
+            ghost: crate::ghost::GhostPolicy::default(),
+            ghost_of: HashMap::new(),
         }
+    }
+
+    /// Check a ghost registration (policy, then the per-key session cap); the ghost key it proves.
+    pub fn admit_ghost(&self, msg: &GhostRegisterMsg) -> Result<[u8; 32], String> {
+        let key = self.ghost.admit(msg)?;
+        let held = self.ghost_of.iter()
+            .filter(|(t, k)| **k == key && **t != msg.register.session_token && self.clients.contains_key(*t))
+            .count();
+        if held >= self.ghost.max_sessions_per_key {
+            return Err(format!("this ghost key already holds {held} sessions here"));
+        }
+        Ok(key)
     }
 
     pub fn send_challenge(&self, out: &Out) {
@@ -88,6 +105,7 @@ impl WsRelay {
         for t in expired {
             self.clients.remove(&t);
             self.expires.remove(&t);
+            self.ghost_of.remove(&t);
         }
     }
 
@@ -120,6 +138,39 @@ pub async fn handle_connection(
         let mut r = relay.lock().await;
         match tag {
             Tag::Challenge => r.send_challenge(&tx),
+            Tag::RegisterGhost => {
+                if let Ok(msg) = bincode::deserialize::<GhostRegisterMsg>(body) {
+                    let reg = &msg.register;
+                    let verdict = if !r.challenge.verify(&reg.session_token, reg.pow_nonce) {
+                        Err((ErrorCode::InvalidPoW, "invalid PoW".to_string()))
+                    } else {
+                        r.admit_ghost(&msg).map_err(|e| (ErrorCode::GhostRejected, format!("ghost key rejected: {e}")))
+                    };
+                    match verdict {
+                        Ok(key) => {
+                            r.clients.insert(reg.session_token, (peer, tx.clone()));
+                            let ttl = r.ttl_secs;
+                            r.expires.insert(reg.session_token, now_secs() + ttl);
+                            r.ghost_of.insert(reg.session_token, key);
+                            r.send_challenge(&tx);
+                        }
+                        Err((code, detail)) => {
+                            let e = encode(Tag::Error, &ErrorMsg { code, seq: reg.seq, detail }).unwrap_or_default();
+                            let _ = tx.send(Message::Binary(e));
+                        }
+                    }
+                }
+            }
+            Tag::Register if r.ghost.required => {
+                if let Ok(msg) = bincode::deserialize::<RegisterMsg>(body) {
+                    let e = encode(Tag::Error, &ErrorMsg {
+                        code: ErrorCode::GhostRequired,
+                        seq: msg.seq,
+                        detail: "this relay admits only registrations with a ghost key certificate".into(),
+                    }).unwrap_or_default();
+                    let _ = tx.send(Message::Binary(e));
+                }
+            }
             Tag::Register => {
                 if let Ok(msg) = bincode::deserialize::<RegisterMsg>(body) {
                     if r.challenge.verify(&msg.session_token, msg.pow_nonce) {

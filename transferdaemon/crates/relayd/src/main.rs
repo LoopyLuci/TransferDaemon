@@ -8,10 +8,11 @@
 //!   2. Enter the dispatch loop. Clients request the current PoW challenge with a
 //!      `Challenge` datagram, solve it, and register/forward/keepalive.
 //!
-//! Configuration (env): `RELAYD_PORT`, `RELAYD_DIFFICULTY`, `RELAYD_TTL`.
+//! Configuration (env): `RELAYD_PORT`, `RELAYD_DIFFICULTY`, `RELAYD_TTL`; ghost key admission (relayd::ghost):
+//! `RELAYD_GHOST_ISSUERS` (issuer files, separated like PATH), `RELAYD_REQUIRE_GHOST=1`, `RELAYD_GHOST_SESSIONS`.
 
 use relayd::protocol::{
-    AckMsg, ChallengeMsg, DeliveredMsg, ErrorMsg, ForwardMsg, KeepaliveMsg, RegisterMsg, Tag,
+    AckMsg, ChallengeMsg, DeliveredMsg, ErrorMsg, ForwardMsg, GhostRegisterMsg, KeepaliveMsg, RegisterMsg, Tag,
     encode, split, MAX_PAYLOAD,
 };
 use relayd::relay::Relay;
@@ -51,7 +52,19 @@ async fn main() -> std::io::Result<()> {
         limits.monthly_bytes.map(relayd::limits::format_bytes).unwrap_or_else(|| "unlimited".into()),
     );
 
-    let relay = Arc::new(Mutex::new(Relay::with_limits(difficulty, ttl_secs, MAX_PAYLOAD, limits)));
+    let mut core = Relay::with_limits(difficulty, ttl_secs, MAX_PAYLOAD, limits);
+    let issuers: Vec<String> = std::env::var_os("RELAYD_GHOST_ISSUERS")
+        .map(|v| std::env::split_paths(&v).map(|p| p.display().to_string()).collect())
+        .unwrap_or_default();
+    let require_ghost = std::env::var("RELAYD_REQUIRE_GHOST").map(|v| v == "1" || v.eq_ignore_ascii_case("true")).unwrap_or(false);
+    if !issuers.is_empty() || require_ghost {
+        let policy = relayd::ghost::GhostPolicy::from_files(&issuers, require_ghost, env_u64("RELAYD_GHOST_SESSIONS", 8) as usize)
+            .map_err(std::io::Error::other)?;
+        println!("relayd: ghost keys from {} issuer(s) {}", policy.issuers.len(),
+                 if policy.required { "required" } else { "accepted" });
+        core.set_ghost_policy(policy);
+    }
+    let relay = Arc::new(Mutex::new(core));
 
     // Background task: prune expired entries.
     {
@@ -142,6 +155,21 @@ async fn main() -> std::io::Result<()> {
                                 seq,
                                 detail: e.to_string(),
                             }).unwrap_or_default();
+                            let _ = socket.send_to(&frame, src).await;
+                        }
+                    }
+                }
+            }
+
+            Tag::RegisterGhost => {
+                if let Ok(msg) = bincode::deserialize::<GhostRegisterMsg>(body) {
+                    let seq = msg.register.seq;
+                    let result = relay.lock().await.register_ghost(&msg, src);
+                    match result {
+                        Ok(()) => send_challenge(&relay, &socket, src).await,
+                        Err(e) => {
+                            let frame = encode(Tag::Error, &ErrorMsg { code: e.code(), seq, detail: e.to_string() })
+                                .unwrap_or_default();
                             let _ = socket.send_to(&frame, src).await;
                         }
                     }

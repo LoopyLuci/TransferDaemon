@@ -7,7 +7,8 @@
 //!
 //! Configuration (env): `RELAYD_WS_BIND` (default `0.0.0.0:8081`),
 //! `RELAYD_DIFFICULTY`, `RELAYD_TTL`, `RELAYD_WS_MAX_BLOB_BYTES` /
-//! `RELAYD_WS_MAX_MB_PER_DAY|WEEK|MONTH`.
+//! `RELAYD_WS_MAX_MB_PER_DAY|WEEK|MONTH`; ghost key admission: `RELAYD_GHOST_ISSUERS`, `RELAYD_REQUIRE_GHOST`,
+//! `RELAYD_GHOST_SESSIONS` (as relayd).
 
 use relayd::ws::{WsRelay, handle_connection, maintenance_loop};
 use std::sync::Arc;
@@ -30,7 +31,16 @@ async fn main() -> std::io::Result<()> {
     let limits = relayd::limits::RelayLimits::from_env("RELAYD_WS_");
     let addr: std::net::SocketAddr = bind.parse().expect("configured bind address is valid");
 
-    let relay = Arc::new(Mutex::new(WsRelay::with_limits(difficulty, ttl_secs, limits)));
+    let mut core = WsRelay::with_limits(difficulty, ttl_secs, limits);
+    let issuers: Vec<String> = std::env::var_os("RELAYD_GHOST_ISSUERS")
+        .map(|v| std::env::split_paths(&v).map(|p| p.display().to_string()).collect())
+        .unwrap_or_default();
+    let require_ghost = std::env::var("RELAYD_REQUIRE_GHOST").map(|v| v == "1" || v.eq_ignore_ascii_case("true")).unwrap_or(false);
+    if !issuers.is_empty() || require_ghost {
+        core.ghost = relayd::ghost::GhostPolicy::from_files(&issuers, require_ghost, env_u64("RELAYD_GHOST_SESSIONS", 8) as usize)
+            .map_err(std::io::Error::other)?;
+    }
+    let relay = Arc::new(Mutex::new(core));
     tokio::spawn(maintenance_loop(relay.clone()));
 
     let listener = TcpListener::bind(addr).await?;
