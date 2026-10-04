@@ -9240,6 +9240,7 @@ dependencies = [
  "transferd-control",
  "transferd-core",
  "transferd-crypto",
+ "transferd-dns",
  "transferd-relay",
  "transferd-store",
  "transferd-telemetry",
@@ -9294,6 +9295,7 @@ dependencies = [
  "transferd-cat",
  "transferd-control",
  "transferd-crypto",
+ "transferd-dns",
  "transferd-replica",
 ]
 
@@ -9365,6 +9367,18 @@ dependencies = [
  "thiserror 2.0.21",
  "x25519-dalek",
  "zeroize",
+]
+
+[[package]]
+name = "transferd-dns"
+version = "0.1.0"
+dependencies = [
+ "rustls",
+ "thiserror 2.0.21",
+ "tokio",
+ "tokio-rustls",
+ "tracing",
+ "webpki-roots 0.26.11",
 ]
 
 [[package]]

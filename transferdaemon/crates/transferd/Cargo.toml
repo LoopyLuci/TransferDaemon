@@ -36,6 +36,7 @@ bip39     = { workspace = true }
 ed25519-dalek = { workspace = true }
 x25519-dalek = { version = "2.0.1", features = ["static_secrets"] }
 hex       = { workspace = true }
+transferd-dns        = { path = "../transferd-dns" }
 transferd-relay      = { path = "../transferd-relay" }
 relayd               = { path = "../relayd" }
 transferd-telemetry  = { path = "../transferd-telemetry" }

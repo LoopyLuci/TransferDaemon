@@ -94,16 +94,25 @@ pub fn relay_enabled() -> bool {
 }
 
 /// Parse a `host:port` into a `SocketAddr`, resolving DNS names (e.g. a
-/// Cloudflare Worker's `*.workers.dev` host). Prefers IPv4.
+/// Cloudflare Worker's `*.workers.dev` host) through `transferd-dns`, so the
+/// address comes from a resolver that checks DNSSEC rather than from whatever
+/// the operating system is told. Prefers IPv4.
 pub(crate) fn resolve_addr(s: &str) -> Option<std::net::SocketAddr> {
     if let Ok(a) = s.parse() {
         return Some(a);
     }
     let (host, port) = s.rsplit_once(':')?;
     let port: u16 = port.parse().ok()?;
-    std::net::ToSocketAddrs::to_socket_addrs(&(host, port))
-        .ok()?
-        .find(|a| a.is_ipv4())
+    // Synchronous call sites: the hub builds its relay list while starting up, and `grpc.rs` matches a
+    // contact's advertised relays on this thread.
+    let addrs = match transferd_dns::resolve_blocking(host, port) {
+        Ok(a) => a,
+        Err(e) => {
+            tracing::warn!("[dns] {host}:{port}: {e}");
+            return None;
+        }
+    };
+    addrs.iter().find(|a| a.is_ipv4()).copied().or_else(|| addrs.first().copied())
 }
 
 /// Parse the comma-separated `TRANSFERD_RELAY_ADDR` into `(addr, kind)` pairs.

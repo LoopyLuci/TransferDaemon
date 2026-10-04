@@ -19,8 +19,17 @@ pub fn run(rest: &[String]) -> Result<serde_json::Value, String> {
             Some("listen") => {
                 let relay = flag("--relay").or_else(|| std::env::var("TRANSFERD_CAT_RELAY").ok());
                 let relay = match relay {
-                    Some(r) => Some(tokio::net::lookup_host(&r).await.map_err(|e| format!("relay {r}: {e}"))?
-                        .next().ok_or_else(|| format!("relay {r}: no address"))?),
+                    // The relay carries the traffic, so its address comes from a resolver that checks
+                    // DNSSEC (a local Ironroot first, then Quad9 over DoT), not from the OS alone.
+                    Some(r) => {
+                        let (host, port) = r.rsplit_once(':').ok_or_else(|| format!("relay {r}: host:port"))?;
+                        let port: u16 = port.parse().map_err(|_| format!("relay {r}: bad port"))?;
+                        // `[::1]:port` is how an IPv6 literal is written in a host:port pair.
+                        let host = host.trim_start_matches('[').trim_end_matches(']');
+                        let first = transferd_dns::resolve(host, port).await.map_err(|e| format!("relay {r}: {e}"))?
+                            .into_iter().next().ok_or_else(|| format!("relay {r}: no address"))?;
+                        Some(first)
+                    }
                     None => None,
                 };
                 let l = Listener::bind(relay).await.map_err(|e| e.to_string())?;

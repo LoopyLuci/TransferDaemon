@@ -1,0 +1,18 @@
+[package]
+name = "transferd-dns"
+version = "0.1.0"
+edition = "2021"
+description = "Host names resolved by a resolver that checks DNSSEC: a local Ironroot resolver, Quad9 over DNS-over-TLS, the operating system's resolver as a last resort"
+
+[lints]
+workspace = true
+
+[dependencies]
+thiserror   = { workspace = true }
+tracing    = { workspace = true }
+tokio      = { workspace = true }
+rustls     = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+# ring only: the same provider the relay's WebSockets use through tokio-tungstenite. The default
+# features would add a second one (aws-lc-rs) and a C build for nothing.
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+webpki-roots = "0.26"

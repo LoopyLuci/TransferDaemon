@@ -52,6 +52,25 @@ The daemon runs a local **control hub**. It makes every operation available over
 `transferd-cli` does all of it from the command line, and `transferd-cli mcp` serves it to AI agents. See
 [docs/CONTROL.md](docs/CONTROL.md).
 
+### Trustworthy DNS: Names Resolved by a Resolver That Checks DNSSEC
+A relay's address decides **who carries your traffic**, so it should not come from whatever the operating system's resolver is told to say. `transferd-dns` resolves every host name TransferDaemon turns into an address — a relay's `*.workers.dev` host, a relay for `transferd-cli cat` — itself, over the wire, and reports whether the answer was checked:
+
+1. **`ironroot`** — a local Ironroot validating resolver on `127.0.0.1:5350`: plain DNS over UDP, retried over TCP when the answer is truncated.
+2. **`quad9`** — Quad9 over DNS-over-TLS (RFC 7858), one TLS session reused across queries.
+3. **`system`** — the operating system's resolver, never counted as validated.
+
+Every query carries EDNS0 with the DO bit, so a validating resolver sets AD (RFC 4035 §3.2.3) only when the data checks out against a trust anchor. With `TRANSFERD_DNS_REQUIRE_VALIDATED=1` only an answer carrying AD counts: an unvalidated answer, and a SERVFAIL from a validating resolver — which means *bogus* — are errors rather than something to quietly ask somewhere else.
+
+```bash
+transferd-cli dns relay.example   # every address, which resolver answered, and whether it validated
+```
+
+| Variable | Meaning |
+|----------|---------|
+| `TRANSFERD_DNS` | Resolver order (default `ironroot,quad9,system`) |
+| `TRANSFERD_DNS_IRONROOT` | Where the local Ironroot resolver listens (default `127.0.0.1:5350`) |
+| `TRANSFERD_DNS_REQUIRE_VALIDATED` | `1` = only accept answers carrying DNSSEC's AD bit (fail closed) |
+
 ### Pure Rust, Zero External Services
 The entire stack is written in Rust, from the low-level DMI ring to the egui desktop UI. There are no web views, no JavaScript, no telemetry, and no third-party analytics. The app works completely offline and only uses the network when you initiate a transfer.
 

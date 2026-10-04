@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 use transferd_control::{mcp, Client, ClientError};
 
 mod cat;
+mod dns;
 mod ghostkey;
 mod replica;
 mod rns;
@@ -53,6 +54,9 @@ CAT (netcat between two machines: a one-time address, post-quantum encryption, d
   cat listen [--relay host:port]  prints a tdcat: address, then pipes stdin/stdout with whoever dials it
   cat <tdcat:address>             dials it
 
+DNS (a host name resolved by a resolver that checks DNSSEC: local Ironroot, then Quad9 over DNS-over-TLS)
+  dns <host> [--port N]           every address, which resolver answered, and whether it validated it
+
 RETICULUM (LXMF messaging off-grid and over any link: TCP, the LAN, LoRa radios; Crosstalk / MeshChat users)
   rns setup | start [--listen h:p] [--connect h:p] [--auto] [--rnode PORT ...] | status | interfaces | peers
   rns announce | send <address> <text...> [--title t] [--propagated] [--wait] | inbox | propagation <node|off> | stop
@@ -76,7 +80,9 @@ THE DAEMON
 
 Options: --json prints raw JSON. key=value values are parsed as JSON when they can be (numbers, true, {...});
 dotted keys build objects (target.text=Send).
-Environment: TRANSFERD_DATA_DIR (where control.json is), TRANSFERD_CONTROL_URL + TRANSFERD_CONTROL_TOKEN.";
+Environment: TRANSFERD_DATA_DIR (where control.json is), TRANSFERD_CONTROL_URL + TRANSFERD_CONTROL_TOKEN.
+           TRANSFERD_DNS (resolver order, default ironroot,quad9,system), TRANSFERD_DNS_IRONROOT,
+           TRANSFERD_DNS_REQUIRE_VALIDATED=1 (only accept answers carrying DNSSEC's AD bit).";
 
 struct Out {
     json: bool,
@@ -318,6 +324,7 @@ fn run(args: Vec<String>, out: &Out) -> Result<Option<Value>, String> {
             eprintln!("{v}");
             None
         }),
+        "dns" => dns::run(rest).map(Some),
         "daemon" => match rest.first().map(String::as_str) {
             Some("start") => daemon_start(flag_value(rest, "--wait").and_then(|w| w.parse().ok()).unwrap_or(60.0)).map(Some),
             Some("stop") => Client::connect().and_then(|c| c.call("daemon.stop", json!({}))).map(Some).map_err(fail),
