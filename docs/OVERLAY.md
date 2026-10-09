@@ -155,7 +155,17 @@ relayed:
 cargo test --release -p transferd-overlay --test bench -- --ignored --nocapture
 ```
 
-BENCH_RESULTS
+Release build, Windows, one machine, loopback (2026-10). 64 MiB one way, then 200 one-byte round trips:
+
+| Path | Throughput | Round trip p50 / p99 |
+|---|---|---|
+| direct (LAN listener) | 143 MB/s (1.1 Gbit/s) | 0.15 ms / 13.9 ms |
+| relayed (relayd's logic, in process) | 96 MB/s (770 Mbit/s) | 0.23 ms / 0.41 ms |
+
+The relayed figure depends on socket buffers. A stream sends a window (256 KiB) at once, and a 64 KiB default UDP
+receive buffer drops most of it; then only the 400 ms resend timer moves the data, at about 1 MB/s. The relay client
+and relayd ask for 4 MiB buffers. Loopback numbers are an upper bound: on a real network the path's own bandwidth
+and RTT decide, and the overlay has no congestion control yet beyond the per-stream window.
 
 ## Tests
 

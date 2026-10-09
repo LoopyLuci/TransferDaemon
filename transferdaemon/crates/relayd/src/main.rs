@@ -44,7 +44,13 @@ async fn main() -> std::io::Result<()> {
         })?,
         Err(_) => SocketAddr::from(([0, 0, 0, 0], port)),
     };
-    let socket = Arc::new(UdpSocket::bind(addr).await?);
+    let socket = UdpSocket::bind(addr).await?;
+    // Room for bursts: a relayed overlay stream arrives a window at a time, and the system's
+    // default receive buffer (64 KiB on Windows) would drop most of one.
+    let sock = socket2::SockRef::from(&socket);
+    let _ = sock.set_recv_buffer_size(4 << 20);
+    let _ = sock.set_send_buffer_size(4 << 20);
+    let socket = Arc::new(socket);
     let limits = relayd::limits::RelayLimits::from_env("RELAYD_");
     println!(
         "relayd: listening on {addr} (difficulty={difficulty}, ttl={ttl_secs}s, \

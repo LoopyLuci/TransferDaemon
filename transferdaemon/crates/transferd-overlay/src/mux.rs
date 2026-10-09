@@ -101,6 +101,22 @@ impl SendSide {
     /// writer waits on.
     pub fn frame(&mut self, data: &[u8], fin: bool) -> Vec<OutFrame> {
         let mut out = Vec::new();
+        if data.is_empty() {
+            // The end of the stream on its own: one empty frame, which needs no credit.
+            if fin {
+                let frame = OutFrame {
+                    stream: self.id,
+                    seq: self.next_seq,
+                    payload: Vec::new(),
+                    fin: true,
+                };
+                self.next_seq += 1;
+                self.unacked.insert(frame.seq, frame.clone());
+                out.push(frame);
+                self.fin_pending = true;
+            }
+            return out;
+        }
         let mut rest = data;
         loop {
             let room = (self.credit as usize).min(MAX_FRAME).min(rest.len());
@@ -657,6 +673,22 @@ mod tests {
         assert_eq!(m.counts(), (3, 3), "and so does one the peer opened");
         m.remove_send(a);
         assert_eq!(m.counts(), (2, 3));
+    }
+
+    #[test]
+    fn the_end_of_a_stream_goes_out_even_with_no_credit_left() {
+        let mut send = SendSide::with_window(StreamId(1), "x", 0);
+        assert!(send.frame(b"data", false).is_empty(), "no credit, no data");
+        let end = send.frame(&[], true);
+        assert_eq!(end.len(), 1);
+        assert!(
+            end[0].fin && end[0].payload.is_empty(),
+            "an empty FIN frame needs no credit"
+        );
+        assert!(
+            send.frame(&[], false).is_empty(),
+            "and nothing at all is not a frame"
+        );
     }
 
     #[test]

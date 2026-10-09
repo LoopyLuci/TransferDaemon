@@ -1021,8 +1021,10 @@ impl OverlayNode {
                     break;
                 }
             }
+            // The peer is done sending: pass the end on to the service, and leave the other
+            // direction running, since a service may still answer after reading everything.
             let _ = sw.shutdown().await;
-            upload.abort();
+            let _ = upload.await;
         });
     }
 
@@ -1388,8 +1390,10 @@ impl OverlayNode {
                                 break;
                             }
                         }
+                        // The service is done sending: end the application's read side, and leave
+                        // the other direction running (half-close), as TCP itself would.
                         let _ = writer.shutdown().await;
-                        upload.abort();
+                        let _ = upload.await;
                         node.inner
                             .loads
                             .lock()

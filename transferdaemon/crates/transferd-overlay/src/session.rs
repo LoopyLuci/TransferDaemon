@@ -710,8 +710,10 @@ impl Session {
                 if !bytes.is_empty() {
                     queue.chunks.push_back(bytes);
                 }
-                if fin {
+                if fin && !queue.fin {
+                    // The end of the stream travels as its own empty frame, after every byte before it.
                     queue.fin = true;
+                    queue.chunks.push_back(Vec::new());
                 }
                 self.pump(stream);
             }
@@ -838,13 +840,18 @@ impl Session {
                 Some(s) => s.frame(&chunk, last),
                 None => return,
             };
-            if frames.is_empty() {
-                // The window is closed: put the bytes back and wait.
+            // The window may take only part of the chunk (or none of it): the rest goes back to the
+            // front of the queue and waits for credit. Dropping it would lose bytes from the middle.
+            let taken: usize = frames.iter().map(|f| f.payload.len()).sum();
+            if taken < chunk.len() {
                 if let Some(q) = self.write_queue.get_mut(&stream.0) {
-                    q.chunks.push_front(chunk);
+                    q.chunks.push_front(chunk[taken..].to_vec());
                 }
+            }
+            if frames.is_empty() {
                 return;
             }
+            let window_closed = taken < chunk.len();
             let bulk = chunk.len() >= BULK_THRESHOLD;
             for f in frames {
                 let frame = self.data_frame(&f, false);
@@ -861,6 +868,9 @@ impl Session {
                 );
                 // Timed from now either way: a frame no route would take is the resend's to send.
                 self.sent_at.insert((f.stream.0, f.seq), now);
+            }
+            if window_closed {
+                return; // the rest waits for a WINDOW from the peer
             }
             let done = self
                 .write_queue

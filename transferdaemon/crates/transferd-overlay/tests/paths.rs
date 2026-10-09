@@ -354,3 +354,51 @@ async fn one_invite_pairs_both_ways_and_a_node_that_only_knows_an_id_is_not_pair
         .expect_err("not paired");
     assert_eq!(err.code(), "denied", "{err}");
 }
+
+/// A service that answers after reading everything (HTTP/1.0, netcat, a byte counter) still gets
+/// its answer through: the client finishing sending ends one direction only.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_answer_after_the_client_finished_sending_still_arrives() {
+    let relay = TestRelay::start().await;
+    let a = TestNode::inbound_only("a", &[relay.addr]).await;
+    let b = TestNode::inbound_only("b", &[relay.addr]).await;
+    a.pair_with(&b, "b");
+    b.pair_with(&a, "a");
+    // Counts what it reads and, once the sender is done, answers with the count.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("binds");
+    let counter = listener.local_addr().expect("addr");
+    tokio::spawn(async move {
+        while let Ok((mut s, _)) = listener.accept().await {
+            tokio::spawn(async move {
+                let mut buf = vec![0u8; 16 * 1024];
+                let mut total = 0u64;
+                while let Ok(n) = s.read(&mut buf).await {
+                    if n == 0 {
+                        break;
+                    }
+                    total += n as u64;
+                }
+                let _ = s.write_all(&total.to_be_bytes()).await;
+            });
+        }
+    });
+    b.node
+        .expose("count", counter, vec!["*paired".into()], "")
+        .expect("expose");
+    let (local, _) = a.node.connect(&b.id(), "count").await.expect("connect");
+
+    let mut s = tokio::net::TcpStream::connect(local)
+        .await
+        .expect("endpoint");
+    let body = vec![7u8; 300 * 1024];
+    s.write_all(&body).await.expect("write");
+    s.shutdown().await.expect("done sending");
+    let mut count = [0u8; 8];
+    tokio::time::timeout(common::PATIENCE, s.read_exact(&mut count))
+        .await
+        .expect("the answer comes in time")
+        .expect("the answer comes");
+    assert_eq!(u64::from_be_bytes(count), body.len() as u64);
+}

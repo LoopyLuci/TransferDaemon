@@ -19,6 +19,7 @@ path = "src/lib.rs"
 workspace = true
 
 [dependencies]
+socket2 = "0.6"
 tokio    = { workspace = true }
 serde    = { workspace = true }
 bincode  = { workspace = true }

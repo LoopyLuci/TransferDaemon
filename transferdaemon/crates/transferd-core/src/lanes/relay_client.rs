@@ -60,7 +60,9 @@ pub fn read_ghost_file(path: &std::path::Path) -> io::Result<(GhostCertificate, 
 impl RelayClient {
     /// Bind a UDP socket (ephemeral local port) and seed the PoW challenge cache.
     pub async fn bind(relay_addr: SocketAddr) -> io::Result<Self> {
-        let socket = Arc::new(UdpSocket::bind("0.0.0.0:0").await?);
+        let socket = UdpSocket::bind("0.0.0.0:0").await?;
+        widen_buffers(&socket);
+        let socket = Arc::new(socket);
         let client = Self {
             socket,
             relay_addr,
@@ -286,6 +288,15 @@ impl RelayClient {
     fn next_seq(&self) -> u32 {
         self.reg_seq.fetch_add(1, Ordering::Relaxed).wrapping_add(1)
     }
+}
+
+/// Ask for 4 MiB socket buffers. A relayed stream sends a window's worth of datagrams at once, and
+/// the system's default (64 KiB on Windows) drops most of a burst, which only the resend timer
+/// repairs. Best effort: a system that refuses keeps its default.
+pub fn widen_buffers(socket: &UdpSocket) {
+    let sock = socket2::SockRef::from(socket);
+    let _ = sock.set_recv_buffer_size(4 << 20);
+    let _ = sock.set_send_buffer_size(4 << 20);
 }
 
 /// Send `request` and wait for one datagram back, sending again every second for up to five:

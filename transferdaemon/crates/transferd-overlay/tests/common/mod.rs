@@ -36,6 +36,8 @@ impl TestRelay {
     /// Start a relay on an ephemeral loopback port.
     pub async fn start() -> TestRelay {
         let socket = UdpSocket::bind("127.0.0.1:0").await.expect("relay binds");
+        // As relayd does: room for a window's burst.
+        transferd_core::lanes::relay_client::widen_buffers(&socket);
         let addr = socket.local_addr().expect("relay address");
         let mut relay = Relay::new(0, 300, 64 * 1024);
         // Every test node is 127.0.0.1, so relayd's per-IP budget (300 datagrams per 30 s, sized for
