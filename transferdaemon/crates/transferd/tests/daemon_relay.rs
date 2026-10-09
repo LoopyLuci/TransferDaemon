@@ -97,7 +97,7 @@ async fn run_relay_server(
                             }
                         }
                     }
-                    Tag::Keepalive | Tag::Error | Tag::Ack | Tag::RegisterGhost => {}
+                    Tag::Keepalive | Tag::Error | Tag::Ack | Tag::RegisterGhost | Tag::Locate => {}
                 }
             }
         }

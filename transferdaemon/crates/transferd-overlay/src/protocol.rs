@@ -130,6 +130,26 @@ impl Hello {
     }
 }
 
+/// What a hello's `ext` carries (bincode). Optional fields only, so an empty `ext` is a valid,
+/// empty extension.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct HelloExt {
+    /// The nonce of an invite this node accepted from the peer: presented once, it tells the
+    /// peer that the pairing is mutual.
+    #[serde(default)]
+    pub pairing: Option<[u8; 16]>,
+}
+
+impl HelloExt {
+    /// Decode an `ext`, treating anything unreadable as empty (an extension is never fatal).
+    pub fn decode(ext: &[u8]) -> Self {
+        if ext.is_empty() {
+            return Self::default();
+        }
+        bincode::deserialize(ext).unwrap_or_default()
+    }
+}
+
 /// The responder's answer: the single agreed version, or a refusal.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HelloAck {
@@ -213,7 +233,13 @@ pub struct CtrlAck {
 pub fn is_reliable(kind: u8) -> bool {
     matches!(
         kind,
-        kind::HELLO | kind::HELLO_ACK | kind::OPEN | kind::OPEN_OK | kind::OPEN_ERR | kind::WINDOW | kind::CLOSE
+        kind::HELLO
+            | kind::HELLO_ACK
+            | kind::OPEN
+            | kind::OPEN_OK
+            | kind::OPEN_ERR
+            | kind::WINDOW
+            | kind::CLOSE
     )
 }
 
@@ -292,12 +318,29 @@ pub struct Frame {
 impl Frame {
     /// Build a frame with an empty body (for kinds that carry one in the header).
     pub fn bare(version: u8, kind: u8, seq: u64) -> Self {
-        Self { version, kind, flags: 0, seq, body: Vec::new() }
+        Self {
+            version,
+            kind,
+            flags: 0,
+            seq,
+            body: Vec::new(),
+        }
     }
 
     /// Build a frame carrying a bincode body.
-    pub fn new<T: Serialize>(version: u8, kind: u8, seq: u64, value: &T) -> Result<Self, bincode::Error> {
-        Ok(Self { version, kind, flags: 0, seq, body: bincode::serialize(value)? })
+    pub fn new<T: Serialize>(
+        version: u8,
+        kind: u8,
+        seq: u64,
+        value: &T,
+    ) -> Result<Self, bincode::Error> {
+        Ok(Self {
+            version,
+            kind,
+            flags: 0,
+            seq,
+            body: bincode::serialize(value)?,
+        })
     }
 
     /// Decode the body.
@@ -396,12 +439,7 @@ pub fn decode(buf: &[u8]) -> Result<(Frame, usize), DecodeError> {
 ///
 /// Policy: the highest version the responder supports that is also within the
 /// initiator's range, but never below the responder's own minimum.
-pub fn negotiate(
-    peer_min: u16,
-    peer_max: u16,
-    our_min: u16,
-    our_max: u16,
-) -> Option<u16> {
+pub fn negotiate(peer_min: u16, peer_max: u16, our_min: u16, our_max: u16) -> Option<u16> {
     let hi = peer_max.min(our_max);
     let lo = peer_min.max(our_min);
     (lo <= hi).then_some(hi)
@@ -427,9 +465,13 @@ pub struct ReplayWindow {
 }
 
 impl ReplayWindow {
-    /// A window that accepts the last `span` sequence numbers.
+    /// A window that accepts the last `span` sequence numbers, at most 64 (one `u64` of bits).
     pub fn new(span: u64) -> Self {
-        Self { highest: None, seen: 0, span: span.max(1) }
+        Self {
+            highest: None,
+            seen: 0,
+            span: span.max(1),
+        }
     }
 
     /// Accept `seq`, or refuse it as a replay.
@@ -441,7 +483,11 @@ impl ReplayWindow {
         };
         if seq > highest {
             let shift = seq - highest;
-            self.seen = if shift >= 64 { 1 } else { (self.seen << shift) | 1 };
+            self.seen = if shift >= 64 {
+                1
+            } else {
+                (self.seen << shift) | 1
+            };
             self.highest = Some(seq);
             return true;
         }
@@ -546,7 +592,10 @@ mod tests {
             max_version: 2,
             node_id: "aa".repeat(32),
             name: "laptop".into(),
-            services: vec![ServiceInfo { name: "http".into(), description: "web".into() }],
+            services: vec![ServiceInfo {
+                name: "http".into(),
+                description: "web".into(),
+            }],
             ext: b"future".to_vec(),
             nonce: [7; 16],
         };
@@ -562,7 +611,16 @@ mod tests {
 
     #[test]
     fn frames_are_split_across_reads() {
-        let frame = Frame::new(2, kind::PING, 1, &Ping { nonce: 5, sent_us: 9 }).expect("encode");
+        let frame = Frame::new(
+            2,
+            kind::PING,
+            1,
+            &Ping {
+                nonce: 5,
+                sent_us: 9,
+            },
+        )
+        .expect("encode");
         let wire = frame.encode();
         let mut reader = FrameReader::new();
         assert!(reader.push(&wire[..7]).is_empty());
@@ -574,14 +632,27 @@ mod tests {
 
     #[test]
     fn an_unknown_frame_kind_is_skipped_not_fatal() {
-        let known = Frame::new(2, kind::PING, 1, &Ping { nonce: 1, sent_us: 1 }).expect("encode");
+        let known = Frame::new(
+            2,
+            kind::PING,
+            1,
+            &Ping {
+                nonce: 1,
+                sent_us: 1,
+            },
+        )
+        .expect("encode");
         let future = Frame::new(3, 0xEE, 2, &vec![1u8, 2, 3]).expect("encode");
         let mut wire = future.encode();
         wire.extend_from_slice(&known.encode());
 
         let mut reader = FrameReader::new();
         let got = reader.push(&wire);
-        assert_eq!(got, vec![known], "the unknown kind is skipped, the frame after it survives");
+        assert_eq!(
+            got,
+            vec![known],
+            "the unknown kind is skipped, the frame after it survives"
+        );
     }
 
     #[test]
@@ -613,7 +684,10 @@ mod tests {
             max_version: 2,
             node_id: "bb".repeat(32),
             name: "phone".into(),
-            services: vec![ServiceInfo { name: "ssh".into(), description: String::new() }],
+            services: vec![ServiceInfo {
+                name: "ssh".into(),
+                description: String::new(),
+            }],
             ext: b"x".to_vec(),
             nonce: [1; 16],
         })

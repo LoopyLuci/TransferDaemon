@@ -7,6 +7,9 @@
 //! The one thing the tests *do* control is reachability: a node with `listen: None` binds no
 //! inbound overlay listener at all, which is exactly the situation behind a NAT.
 
+// Shared by every test target; each uses only part of it.
+#![allow(dead_code, clippy::unwrap_used, clippy::panic)]
+
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -34,13 +37,21 @@ impl TestRelay {
     pub async fn start() -> TestRelay {
         let socket = UdpSocket::bind("127.0.0.1:0").await.expect("relay binds");
         let addr = socket.local_addr().expect("relay address");
-        let core = Arc::new(Mutex::new(Relay::new(0, 300, 64 * 1024)));
+        let mut relay = Relay::new(0, 300, 64 * 1024);
+        // Every test node is 127.0.0.1, so relayd's per-IP budget (300 datagrams per 30 s, sized for
+        // messaging) would be shared by all of them; a relay carrying overlay traffic raises it.
+        relay.set_rate_limit(30, 1_000_000);
+        let core = Arc::new(Mutex::new(relay));
         let table = core.clone();
         let reader = Arc::new(socket);
         let serving = tokio::spawn(async move {
             relayd::server::serve(reader, table).await;
         });
-        TestRelay { addr, core, serving }
+        TestRelay {
+            addr,
+            core,
+            serving,
+        }
     }
 
     /// How many tokens are registered here right now.
@@ -76,13 +87,17 @@ impl TestNode {
     pub async fn publishing(name: &str, relays: &[SocketAddr], direct: Vec<String>) -> TestNode {
         let mut config = base(name, relays);
         config.direct = direct;
-        TestNode { node: OverlayNode::start(config).await.expect("the node starts") }
+        TestNode {
+            node: OverlayNode::start(config).await.expect("the node starts"),
+        }
     }
 
     async fn build(name: &str, relays: &[SocketAddr], listen: Option<&str>) -> TestNode {
         let mut config = base(name, relays);
         config.listen = listen.and_then(|l| l.parse().ok());
-        TestNode { node: OverlayNode::start(config).await.expect("the node starts") }
+        TestNode {
+            node: OverlayNode::start(config).await.expect("the node starts"),
+        }
     }
 
     /// This node's id.
@@ -108,21 +123,27 @@ impl TestNode {
 
 /// Start a real TCP echo service on loopback, for something to expose.
 pub async fn echo_service(tag: u8) -> SocketAddr {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("echo binds");
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("echo binds");
     let addr = listener.local_addr().expect("echo address");
     tokio::spawn(async move {
         loop {
-            let Ok((mut socket, _)) = listener.accept().await else { break };
+            let Ok((mut socket, _)) = listener.accept().await else {
+                break;
+            };
             tokio::spawn(async move {
                 let mut buf = [0u8; 4096];
-                loop {
-                    let Ok(n) = tokio::io::AsyncReadExt::read(&mut socket, &mut buf).await else { break };
+                while let Ok(n) = tokio::io::AsyncReadExt::read(&mut socket, &mut buf).await {
                     if n == 0 {
                         break;
                     }
                     let mut out = vec![tag];
                     out.extend_from_slice(&buf[..n]);
-                    if tokio::io::AsyncWriteExt::write_all(&mut socket, &out).await.is_err() {
+                    if tokio::io::AsyncWriteExt::write_all(&mut socket, &out)
+                        .await
+                        .is_err()
+                    {
                         break;
                     }
                 }
@@ -170,7 +191,8 @@ fn base(name: &str, relays: &[SocketAddr]) -> OverlayConfig {
 pub fn trace() {
     let _ = tracing_subscriber::fmt()
         .with_env_filter(
-            std::env::var("TD_OVERLAY_TRACE").unwrap_or_else(|_| "transferd_overlay=trace".to_string()),
+            std::env::var("TD_OVERLAY_TRACE")
+                .unwrap_or_else(|_| "transferd_overlay=trace".to_string()),
         )
         .with_test_writer()
         .try_init();
@@ -188,10 +210,13 @@ impl Lossy {
         let addr = front.local_addr().expect("addr");
         tokio::spawn(async move {
             // One socket towards the relay per client, so the relay still sees each client apart.
-            let mut backs: std::collections::HashMap<SocketAddr, Arc<UdpSocket>> = std::collections::HashMap::new();
+            let mut backs: std::collections::HashMap<SocketAddr, Arc<UdpSocket>> =
+                std::collections::HashMap::new();
             let mut buf = vec![0u8; 65_536];
             loop {
-                let Ok((n, client)) = front.recv_from(&mut buf).await else { continue };
+                let Ok((n, client)) = front.recv_from(&mut buf).await else {
+                    continue;
+                };
                 let back = match backs.get(&client) {
                     Some(b) => b.clone(),
                     None => {

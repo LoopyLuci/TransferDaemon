@@ -89,7 +89,12 @@ fn default_timeout_ms() -> u64 {
 impl MeshDnsConfig {
     /// Settings with the defaults and these upstreams.
     pub fn new(upstreams: Vec<String>) -> Self {
-        Self { upstreams, listen: default_listen(), service: default_service(), timeout_ms: default_timeout_ms() }
+        Self {
+            upstreams,
+            listen: default_listen(),
+            service: default_service(),
+            timeout_ms: default_timeout_ms(),
+        }
     }
 }
 
@@ -156,16 +161,15 @@ impl MeshDns {
     /// Bind the listeners and start answering.
     pub async fn start(node: Arc<OverlayNode>, config: MeshDnsConfig) -> Result<Arc<Self>> {
         if config.upstreams.is_empty() {
-            return Err(OverlayError::protocol("mesh DNS needs at least one upstream (a node id or a group)"));
+            return Err(OverlayError::protocol(
+                "mesh DNS needs at least one upstream (a node id or a group)",
+            ));
         }
         let wanted: SocketAddr = config
             .listen
             .parse()
             .map_err(|_| OverlayError::protocol(format!("{} is not host:port", config.listen)))?;
-        let udp = UdpSocket::bind(wanted).await.map_err(|source| OverlayError::Listen { addr: wanted, source })?;
-        // TCP on the same port as UDP, so a client retrying a truncated answer finds it.
-        let listen = udp.local_addr()?;
-        let tcp = TcpListener::bind(listen).await.map_err(|source| OverlayError::Listen { addr: listen, source })?;
+        let (udp, tcp, listen) = bind_both(wanted).await?;
         let dns = Arc::new(Self {
             upstreams: config
                 .upstreams
@@ -191,7 +195,9 @@ impl MeshDns {
         let serve_udp = tokio::spawn(async move {
             let mut buf = vec![0u8; MAX_MESSAGE];
             loop {
-                let Ok((n, from)) = udp.recv_from(&mut buf).await else { continue };
+                let Ok((n, from)) = udp.recv_from(&mut buf).await else {
+                    continue;
+                };
                 let Some(dns) = weak.upgrade() else { break };
                 let query = buf[..n].to_vec();
                 let socket = udp.clone();
@@ -205,13 +211,18 @@ impl MeshDns {
         let weak = Arc::downgrade(&dns);
         let serve_tcp = tokio::spawn(async move {
             loop {
-                let Ok((socket, _)) = tcp.accept().await else { continue };
+                let Ok((socket, _)) = tcp.accept().await else {
+                    continue;
+                };
                 let Some(dns) = weak.upgrade() else { break };
                 tokio::spawn(async move { dns.serve_tcp_client(socket).await });
             }
         });
         dns.tasks.lock().extend([serve_udp, serve_tcp]);
-        tracing::info!("[mesh dns] answering on {listen} through {:?}", dns.config.upstreams);
+        tracing::info!(
+            "[mesh dns] answering on {listen} through {:?}",
+            dns.config.upstreams
+        );
         Ok(dns)
     }
 
@@ -239,7 +250,12 @@ impl MeshDns {
                 v
             })
             .collect();
-        let sum = |key: &str| upstreams.iter().map(|u| u[key].as_u64().unwrap_or(0)).sum::<u64>();
+        let sum = |key: &str| {
+            upstreams
+                .iter()
+                .map(|u| u[key].as_u64().unwrap_or(0))
+                .sum::<u64>()
+        };
         json!({
             "enabled": true,
             "listen": self.listen.to_string(),
@@ -260,7 +276,9 @@ impl MeshDns {
         let (mut reader, writer) = socket.into_split();
         let writer = Arc::new(tokio::sync::Mutex::new(writer));
         loop {
-            let Ok(query) = read_message(&mut reader).await else { break };
+            let Ok(query) = read_message(&mut reader).await else {
+                break;
+            };
             let dns = self.clone();
             let writer = writer.clone();
             // Pipelined: answers go back as they arrive, each framed whole under the lock.
@@ -285,7 +303,11 @@ impl MeshDns {
             .filter(|u| u.down_until.lock().map(|t| t <= now).unwrap_or(true))
             .collect();
         // Every upstream held down: ask them all anyway rather than fail without trying.
-        let order: Vec<&Arc<Upstream>> = if healthy.is_empty() { self.upstreams.iter().collect() } else { healthy };
+        let order: Vec<&Arc<Upstream>> = if healthy.is_empty() {
+            self.upstreams.iter().collect()
+        } else {
+            healthy
+        };
         for upstream in order {
             match self.exchange(upstream, query).await {
                 Ok(answer) => {
@@ -311,7 +333,11 @@ impl MeshDns {
         match &result {
             Ok(answer) => {
                 let ms = started.elapsed().as_secs_f64() * 1000.0;
-                stats.avg_ms = if stats.answered == 0 { ms } else { stats.avg_ms * 0.8 + ms * 0.2 };
+                stats.avg_ms = if stats.answered == 0 {
+                    ms
+                } else {
+                    stats.avg_ms * 0.8 + ms * 0.2
+                };
                 stats.answered += 1;
                 match answer[3] & 0x0f {
                     RCODE_NXDOMAIN => stats.nxdomain += 1,
@@ -359,7 +385,9 @@ impl MeshDns {
             }
             Ok(Err(_)) => {
                 self.drop_connection(upstream, &conn).await;
-                Err(OverlayError::Closed("the upstream closed the connection".into()))
+                Err(OverlayError::Closed(
+                    "the upstream closed the connection".into(),
+                ))
             }
             Err(_) => {
                 conn.pending.lock().remove(&id);
@@ -376,7 +404,10 @@ impl MeshDns {
                 return Ok(conn.clone());
             }
         }
-        let (endpoint, _route) = self.node.connect(&upstream.target, &self.config.service).await?;
+        let (endpoint, _route) = self
+            .node
+            .connect(&upstream.target, &self.config.service)
+            .await?;
         let stream = tokio::time::timeout(self.timeout, TcpStream::connect(endpoint))
             .await
             .map_err(|_| OverlayError::Closed("timed out".into()))??;
@@ -419,6 +450,33 @@ impl MeshDns {
     }
 }
 
+/// UDP and TCP on one port, so a client retrying a truncated answer over TCP finds it. With
+/// port 0 the system picks a UDP port, which may not be free for TCP (on Windows a port can be in
+/// an excluded range for one and not the other), so a few are tried.
+async fn bind_both(wanted: SocketAddr) -> Result<(UdpSocket, TcpListener, SocketAddr)> {
+    let tries = if wanted.port() == 0 { 20 } else { 1 };
+    let mut last = None;
+    for _ in 0..tries {
+        let udp = UdpSocket::bind(wanted)
+            .await
+            .map_err(|source| OverlayError::Listen {
+                addr: wanted,
+                source,
+            })?;
+        let listen = udp.local_addr()?;
+        match TcpListener::bind(listen).await {
+            Ok(tcp) => return Ok((udp, tcp, listen)),
+            Err(source) => {
+                last = Some(OverlayError::Listen {
+                    addr: listen,
+                    source,
+                })
+            }
+        }
+    }
+    Err(last.unwrap_or_else(|| OverlayError::protocol("no port")))
+}
+
 async fn read_message<R: AsyncReadExt + Unpin>(r: &mut R) -> std::io::Result<Vec<u8>> {
     let mut len = [0u8; 2];
     r.read_exact(&mut len).await?;
@@ -428,7 +486,8 @@ async fn read_message<R: AsyncReadExt + Unpin>(r: &mut R) -> std::io::Result<Vec
 }
 
 async fn write_message<W: AsyncWriteExt + Unpin>(w: &mut W, msg: &[u8]) -> std::io::Result<()> {
-    let len = u16::try_from(msg.len()).map_err(|_| std::io::Error::other("a DNS message over 65535 bytes"))?;
+    let len = u16::try_from(msg.len())
+        .map_err(|_| std::io::Error::other("a DNS message over 65535 bytes"))?;
     let mut framed = Vec::with_capacity(2 + msg.len());
     framed.extend_from_slice(&len.to_be_bytes());
     framed.extend_from_slice(msg);
@@ -481,15 +540,23 @@ pub fn fit_for_udp(query: &[u8], answer: Vec<u8>) -> Vec<u8> {
 /// Whether every address in the answer is `0.0.0.0` or `::` (and there is at least one): how a
 /// filtering resolver answers a name it blocks.
 pub fn is_null_answer(answer: &[u8]) -> bool {
-    let Some(mut pos) = question_end(answer) else { return false };
+    let Some(mut pos) = question_end(answer) else {
+        return false;
+    };
     let ancount = u16::from_be_bytes([answer[6], answer[7]]);
     let mut seen = 0;
     for _ in 0..ancount {
-        let Ok((_, after)) = transferd_dns::wire::decode_name(answer, pos) else { return false };
-        let Some(head) = answer.get(after..after + 10) else { return false };
+        let Ok((_, after)) = transferd_dns::wire::decode_name(answer, pos) else {
+            return false;
+        };
+        let Some(head) = answer.get(after..after + 10) else {
+            return false;
+        };
         let rtype = u16::from_be_bytes([head[0], head[1]]);
         let rdlen = u16::from_be_bytes([head[8], head[9]]) as usize;
-        let Some(rdata) = answer.get(after + 10..after + 10 + rdlen) else { return false };
+        let Some(rdata) = answer.get(after + 10..after + 10 + rdlen) else {
+            return false;
+        };
         let addr = match (rtype, rdlen) {
             (1, 4) => Some(IpAddr::from([rdata[0], rdata[1], rdata[2], rdata[3]])),
             (28, 16) => <[u8; 16]>::try_from(rdata).ok().map(IpAddr::from),
@@ -542,16 +609,26 @@ mod tests {
         r
     }
 
+    fn ip(text: &str) -> IpAddr {
+        text.parse().expect("an address")
+    }
+
     #[test]
     fn a_blocked_answer_is_told_apart_from_a_real_one() {
         let q = query(7, "ads.example", 1, false);
-        let null = response(&q, &["0.0.0.0".parse().unwrap(), "::".parse().unwrap()], 0);
-        let real = response(&q, &["93.184.216.34".parse().unwrap()], 0);
-        let mixed = response(&q, &["0.0.0.0".parse().unwrap(), "10.0.0.1".parse().unwrap()], 0);
+        let null = response(&q, &[ip("0.0.0.0"), ip("::")], 0);
+        let real = response(&q, &[ip("93.184.216.34")], 0);
+        let mixed = response(&q, &[ip("0.0.0.0"), ip("10.0.0.1")], 0);
         assert!(is_null_answer(&null));
         assert!(!is_null_answer(&real));
-        assert!(!is_null_answer(&mixed), "one real address means it was not blocked");
-        assert!(!is_null_answer(&response(&q, &[], 0)), "no addresses is not a block");
+        assert!(
+            !is_null_answer(&mixed),
+            "one real address means it was not blocked"
+        );
+        assert!(
+            !is_null_answer(&response(&q, &[], 0)),
+            "no addresses is not a block"
+        );
     }
 
     #[test]
@@ -577,6 +654,10 @@ mod tests {
         assert_eq!(u16::from_be_bytes([cut[6], cut[7]]), 0);
         assert_eq!(question_end(&cut), Some(cut.len()));
         let edns = query(1, "big.example", 1, true);
-        assert_eq!(fit_for_udp(&edns, big.clone()), big, "an EDNS client takes up to 1232 bytes");
+        assert_eq!(
+            fit_for_udp(&edns, big.clone()),
+            big,
+            "an EDNS client takes up to 1232 bytes"
+        );
     }
 }

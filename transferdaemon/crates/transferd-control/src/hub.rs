@@ -64,12 +64,12 @@ pub trait Extension: Send + Sync + 'static {
     /// The operations this extension answers.
     fn operations(&self) -> Vec<Operation>;
     /// Run one of them; an error is `(code, message)`.
-    fn call<'a>(
-        &'a self,
-        op: &'a str,
-        args: Value,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value, (String, String)>> + Send + 'a>>;
+    fn call<'a>(&'a self, op: &'a str, args: Value) -> ExtensionCall<'a>;
 }
+
+/// What [`Extension::call`] returns: its answer, or `(code, message)`.
+pub type ExtensionCall<'a> =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value, (String, String)>> + Send + 'a>>;
 
 struct LocalRelay {
     child: std::process::Child,
@@ -245,6 +245,7 @@ impl Hub {
                             "denied" | "identity_mismatch" => StatusCode::FORBIDDEN,
                             "no_such_service" | "group_empty" => StatusCode::NOT_FOUND,
                             "rate_limited" => StatusCode::TOO_MANY_REQUESTS,
+                            "listen_failed" => StatusCode::CONFLICT,
                             _ => StatusCode::BAD_GATEWAY,
                         };
                         ApiError::new(status, &code, message)

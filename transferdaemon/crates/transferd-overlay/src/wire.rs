@@ -55,7 +55,6 @@ pub const MAX_TUNNEL_FRAME: usize = 256 * 1024;
 /// Domain separators, so no key is ever reused between roles or between link kinds.
 const CTX_C2S: &str = "TransferDaemon-overlay-c2s-v1";
 const CTX_S2C: &str = "TransferDaemon-overlay-s2c-v1";
-const CTX_PREFIX: &str = "TransferDaemon-overlay-nonce-prefix-v1";
 
 /// Bytes of a tunnel frame that are not ciphertext: len(4) + counter(8).
 const TUNNEL_HEADER: usize = 4 + 8;
@@ -182,7 +181,11 @@ fn shift_left(bits: &mut [u64], n: u64) {
     for i in (0..len).rev() {
         let src = i as isize - words as isize;
         let lo = if src >= 0 { bits[src as usize] } else { 0 };
-        let carry = if rem > 0 && src > 0 { bits[src as usize - 1] >> (64 - rem) } else { 0 };
+        let carry = if rem > 0 && src > 0 {
+            bits[src as usize - 1] >> (64 - rem)
+        } else {
+            0
+        };
         bits[i] = if rem > 0 { (lo << rem) | carry } else { lo };
     }
 }
@@ -242,7 +245,9 @@ where
     let resp = AuthResponderHello::from_wire(&reply)
         .ok_or_else(|| OverlayError::protocol("responder flight is malformed"))?;
     if !resp.verify() {
-        return Err(OverlayError::protocol("responder flight signature does not verify"));
+        return Err(OverlayError::protocol(
+            "responder flight signature does not verify",
+        ));
     }
     let peer_node_id = hex::encode(&resp.identity_pk.to_bytes()[..32]);
     if let Some(expected) = expect_node_id {
@@ -272,7 +277,9 @@ where
     let hello = AuthInitiatorHello::from_wire(&flight)
         .ok_or_else(|| OverlayError::protocol("initiator flight is malformed"))?;
     if !hello.verify() {
-        return Err(OverlayError::protocol("initiator flight signature does not verify"));
+        return Err(OverlayError::protocol(
+            "initiator flight signature does not verify",
+        ));
     }
     let (responder_hello, session_key) = Responder::new().respond(&hello.hello);
     let reply = AuthResponderHello::build(
@@ -305,7 +312,9 @@ pub async fn read_blob<R: AsyncRead + Unpin>(r: &mut R) -> Result<Vec<u8>> {
     r.read_exact(&mut len).await?;
     let len = u32::from_be_bytes(len) as usize;
     if len > MAX_TUNNEL_FRAME {
-        return Err(OverlayError::protocol("blob is larger than the tunnel allows"));
+        return Err(OverlayError::protocol(
+            "blob is larger than the tunnel allows",
+        ));
     }
     let mut body = vec![0u8; len];
     r.read_exact(&mut body).await?;
@@ -327,12 +336,22 @@ pub struct Tunnel {
 impl Tunnel {
     /// The sending half, drawing nonces from `counter`.
     pub fn sender(keys: &LinkKeys) -> Self {
-        Self { key: keys.send, prefix: keys.send_prefix, counter: keys.counter.clone(), window: Arc::default() }
+        Self {
+            key: keys.send,
+            prefix: keys.send_prefix,
+            counter: keys.counter.clone(),
+            window: Arc::default(),
+        }
     }
 
     /// The receiving half, checking replays against the session's window.
     pub fn receiver(keys: &LinkKeys) -> Self {
-        Self { key: keys.recv, prefix: keys.recv_prefix, counter: Arc::default(), window: keys.window.clone() }
+        Self {
+            key: keys.recv,
+            prefix: keys.recv_prefix,
+            counter: Arc::default(),
+            window: keys.window.clone(),
+        }
     }
 
     fn nonce(&self, counter: u64) -> [u8; 12] {
@@ -345,14 +364,19 @@ impl Tunnel {
     /// Encrypt one blob into a tunnel frame.
     pub fn seal(&self, plaintext: &[u8]) -> Result<Vec<u8>> {
         let counter = self.counter.next();
-        let cipher = Aes256Gcm::new_from_slice(&self.key).map_err(|_| OverlayError::protocol("bad tunnel key"))?;
-        let len = u32::try_from(plaintext.len()).map_err(|_| OverlayError::protocol("frame too large"))?;
+        let cipher = Aes256Gcm::new_from_slice(&self.key)
+            .map_err(|_| OverlayError::protocol("bad tunnel key"))?;
+        let len = u32::try_from(plaintext.len())
+            .map_err(|_| OverlayError::protocol("frame too large"))?;
         let aad = associated_data(len, counter);
         // `encrypt` already returns ciphertext ‖ tag.
         let sealed = cipher
             .encrypt(
                 Nonce::from_slice(&self.nonce(counter)),
-                AeadPayload { msg: plaintext, aad: &aad },
+                AeadPayload {
+                    msg: plaintext,
+                    aad: &aad,
+                },
             )
             .map_err(|_| OverlayError::protocol("tunnel encryption failed"))?;
         let mut out = Vec::with_capacity(TUNNEL_HEADER + sealed.len());
@@ -373,16 +397,25 @@ impl Tunnel {
         let len = u32::from_be_bytes(frame[..4].try_into().unwrap_or([0; 4])) as usize;
         let counter = u64::from_be_bytes(frame[4..12].try_into().unwrap_or([0; 8]));
         let aad = &frame[..12];
-        let cipher = Aes256Gcm::new_from_slice(&self.key).map_err(|_| OverlayError::protocol("bad tunnel key"))?;
+        let cipher = Aes256Gcm::new_from_slice(&self.key)
+            .map_err(|_| OverlayError::protocol("bad tunnel key"))?;
         let plain = cipher
-            .decrypt(Nonce::from_slice(&self.nonce(counter)), AeadPayload { msg: &frame[TUNNEL_HEADER..], aad })
+            .decrypt(
+                Nonce::from_slice(&self.nonce(counter)),
+                AeadPayload {
+                    msg: &frame[TUNNEL_HEADER..],
+                    aad,
+                },
+            )
             .map_err(|_| OverlayError::protocol("tunnel frame failed authentication"))?;
         // Only an authenticated frame may move the window, so a forged counter cannot.
         if !self.window.accept(counter) {
             return Err(OverlayError::protocol("replayed tunnel frame"));
         }
         if plain.len() != len {
-            return Err(OverlayError::protocol("tunnel frame length does not match its header"));
+            return Err(OverlayError::protocol(
+                "tunnel frame length does not match its header",
+            ));
         }
         Ok(plain)
     }
@@ -405,7 +438,10 @@ pub struct TunnelReader {
 impl TunnelReader {
     /// A reader for the receiving direction of `keys`.
     pub fn new(keys: &LinkKeys) -> Self {
-        Self { cipher: Tunnel::receiver(keys), reader: FrameReader::new() }
+        Self {
+            cipher: Tunnel::receiver(keys),
+            reader: FrameReader::new(),
+        }
     }
 
     /// Read the next overlay frame, blocking until one arrives.
@@ -421,7 +457,11 @@ impl TunnelReader {
 }
 
 /// Seal one overlay frame and write it to a byte stream.
-pub async fn write_frame<W: AsyncWrite + Unpin>(w: &mut W, cipher: &Tunnel, frame: &Frame) -> Result<()> {
+pub async fn write_frame<W: AsyncWrite + Unpin>(
+    w: &mut W,
+    cipher: &Tunnel,
+    frame: &Frame,
+) -> Result<()> {
     write_blob(w, &cipher.seal(&frame.encode())?).await
 }
 
@@ -429,6 +469,20 @@ pub async fn write_frame<W: AsyncWrite + Unpin>(w: &mut W, cipher: &Tunnel, fram
 mod tests {
     use super::*;
     use crate::protocol::kind;
+
+    /// A frame with a fresh ping body.
+    fn frame(seq: u64) -> Frame {
+        Frame::new(
+            2,
+            crate::protocol::kind::PING,
+            seq,
+            &crate::protocol::Ping {
+                nonce: seq,
+                sent_us: seq,
+            },
+        )
+        .expect("frame")
+    }
 
     fn keys() -> LinkKeys {
         derive_link_keys(&[9u8; 32])
@@ -456,7 +510,10 @@ mod tests {
         assert_eq!(init.peer_hybrid_pk, b.hybrid_public_key());
         assert_eq!(resp.peer_hybrid_pk, a.hybrid_public_key());
         assert_eq!(init.peer_node_id, b.node_id());
-        assert_eq!(init.keys.send, resp.keys.recv, "the sides mirror each other's keys");
+        assert_eq!(
+            init.keys.send, resp.keys.recv,
+            "the sides mirror each other's keys"
+        );
         assert_eq!(init.keys.recv, resp.keys.send);
     }
 
@@ -470,16 +527,31 @@ mod tests {
             handshake_initiator(&mut ca, &a, Some(stranger.node_id())),
             handshake_responder(&mut cb, &b)
         );
-        let Err(err) = init else { panic!("the handshake must refuse a peer that is not who we dialled") };
+        let err = init
+            .err()
+            .expect("the handshake must refuse a peer that is not who we dialled");
         assert_eq!(err.code(), "identity_mismatch");
     }
 
     #[tokio::test]
     async fn a_tunnel_seals_and_opens_a_frame() {
         let (tx, rx) = both_ends();
-        let frame = Frame::new(2, kind::PING, 5, &crate::protocol::Ping { nonce: 1, sent_us: 2 }).expect("frame");
+        let frame = Frame::new(
+            2,
+            kind::PING,
+            5,
+            &crate::protocol::Ping {
+                nonce: 1,
+                sent_us: 2,
+            },
+        )
+        .expect("frame");
         let sealed = tx.seal(&frame.encode()).expect("seal");
-        assert_ne!(sealed, frame.encode(), "the wire bytes are not the plaintext");
+        assert_ne!(
+            sealed,
+            frame.encode(),
+            "the wire bytes are not the plaintext"
+        );
         let opened = rx.open(&sealed).expect("open");
         let (back, _) = crate::protocol::decode(&opened).expect("frame");
         assert_eq!(back, frame);
@@ -490,29 +562,56 @@ mod tests {
         let (tx, _) = both_ends();
         let stranger = Tunnel::receiver(&keys());
         let sealed = tx.seal(&frame(1).encode()).expect("seal");
-        assert!(stranger.open(&sealed).is_err(), "a third party's key does not open it");
+        assert!(
+            stranger.open(&sealed).is_err(),
+            "a third party's key does not open it"
+        );
     }
 
     #[tokio::test]
     async fn a_tunnel_refuses_tampering_and_replay() {
         let (tx, rx) = both_ends();
-        let frame = Frame::new(2, kind::PING, 1, &crate::protocol::Ping { nonce: 1, sent_us: 1 }).expect("frame");
+        let frame = Frame::new(
+            2,
+            kind::PING,
+            1,
+            &crate::protocol::Ping {
+                nonce: 1,
+                sent_us: 1,
+            },
+        )
+        .expect("frame");
         let sealed = tx.seal(&frame.encode()).expect("seal");
 
         let mut flipped = sealed.clone();
         let last = flipped.len() - 1;
         flipped[last] ^= 0xff;
-        assert!(rx.open(&flipped).is_err(), "a flipped ciphertext bit must not authenticate");
+        assert!(
+            rx.open(&flipped).is_err(),
+            "a flipped ciphertext bit must not authenticate"
+        );
 
         let sealed = tx.seal(&frame.encode()).expect("seal");
         rx.open(&sealed).expect("the first copy");
-        assert!(rx.open(&sealed).is_err(), "the same tunnel frame twice is refused");
+        assert!(
+            rx.open(&sealed).is_err(),
+            "the same tunnel frame twice is refused"
+        );
     }
 
     #[tokio::test]
     async fn a_tunnel_rejects_a_frame_whose_length_header_was_changed() {
         let (tx, rx) = both_ends();
-        let frame = Frame::new(2, kind::PING, 1, &crate::protocol::Ping { nonce: 1, sent_us: 1 }).expect("frame");
+        let frame = Frame::new(
+            2,
+            kind::PING,
+            1,
+            &crate::protocol::Ping {
+                nonce: 1,
+                sent_us: 1,
+            },
+        )
+        .expect("frame");
         let mut sealed = tx.seal(&frame.encode()).expect("seal");
         sealed[3] ^= 0x7f; // change the length that is bound in as associated data
         assert!(rx.open(&sealed).is_err(), "length is authenticated");
@@ -526,7 +625,16 @@ mod tests {
         let tx = Tunnel::sender(&here);
         let mut reader = TunnelReader::new(&there);
 
-        let one = Frame::new(2, kind::PING, 1, &crate::protocol::Ping { nonce: 11, sent_us: 22 }).expect("frame");
+        let one = Frame::new(
+            2,
+            kind::PING,
+            1,
+            &crate::protocol::Ping {
+                nonce: 11,
+                sent_us: 22,
+            },
+        )
+        .expect("frame");
         let two = Frame::new(2, kind::BYE, 2, &()).expect("frame");
         write_frame(&mut a, &tx, &one).await.expect("write one");
         write_frame(&mut a, &tx, &two).await.expect("write two");
@@ -551,11 +659,4 @@ mod tests {
         assert!(w.accept(100_000 - 64));
         assert!(!w.accept(100_000 - 64));
     }
-}
-
-/// A frame with a fresh ping body, used by the tunnel tests.
-#[cfg(test)]
-fn frame(seq: u64) -> Frame {
-    Frame::new(2, crate::protocol::kind::PING, seq, &crate::protocol::Ping { nonce: seq, sent_us: seq })
-        .expect("frame")
 }

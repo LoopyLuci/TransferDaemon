@@ -141,9 +141,18 @@ impl RelayClient {
                 }
             }
         }
-        let fresh = self.fetch_challenge().await?;
-        *self.challenge.lock().await = Some(fresh.clone());
-        Ok(fresh)
+        match self.fetch_challenge().await {
+            Ok(fresh) => {
+                *self.challenge.lock().await = Some(fresh.clone());
+                Ok(fresh)
+            }
+            // The relay did not answer this time (a lost datagram): the challenge we have is still
+            // the best guess, and a message it no longer covers is refused and sent again later.
+            Err(e) => match self.challenge.lock().await.clone() {
+                Some(cached) => Ok(cached),
+                None => Err(e),
+            },
+        }
     }
 
     /// A proof-of-work nonce for `token` against the relay's current challenge, for messages

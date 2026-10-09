@@ -56,9 +56,16 @@ pub async fn call(node: &Arc<OverlayNode>, op: &str, args: Value) -> Result<Valu
             let allow = args
                 .get("allow")
                 .and_then(Value::as_array)
-                .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(str::to_string))
+                        .collect()
+                })
                 .unwrap_or_default();
-            let description = args.get("description").and_then(Value::as_str).unwrap_or_default();
+            let description = args
+                .get("description")
+                .and_then(Value::as_str)
+                .unwrap_or_default();
             node.expose(&service, addr, allow, description)?;
             Ok(json!({}))
         }
@@ -76,7 +83,9 @@ pub async fn call(node: &Arc<OverlayNode>, op: &str, args: Value) -> Result<Valu
                 .ok_or_else(|| OverlayError::protocol("connect needs node_id or group"))?
                 .to_string();
             let (local, route) = node.connect(&target, &service).await?;
-            Ok(json!({"local_addr": local.to_string(), "route": route.as_str(), "service": service}))
+            Ok(
+                json!({"local_addr": local.to_string(), "route": route.as_str(), "service": service}),
+            )
         }
         "overlay.disconnect" => {
             let local = str_arg(&args, "local_addr")?;
@@ -103,12 +112,24 @@ pub async fn call(node: &Arc<OverlayNode>, op: &str, args: Value) -> Result<Valu
             Ok(json!({"socks5_addr": socks.to_string(), "http_proxy_addr": http.to_string()}))
         }
         "overlay.events" => {
-            let seconds = args.get("seconds").and_then(Value::as_f64).unwrap_or(5.0).clamp(0.2, 120.0);
-            let max = args.get("max").and_then(Value::as_u64).unwrap_or(200).max(1) as usize;
+            let seconds = args
+                .get("seconds")
+                .and_then(Value::as_f64)
+                .unwrap_or(5.0)
+                .clamp(0.2, 120.0);
+            let max = args
+                .get("max")
+                .and_then(Value::as_u64)
+                .unwrap_or(200)
+                .max(1) as usize;
             Ok(json!(collect_events(node, seconds, max).await))
         }
         "overlay.audit" => {
-            let limit = args.get("limit").and_then(Value::as_u64).unwrap_or(100).min(2000) as usize;
+            let limit = args
+                .get("limit")
+                .and_then(Value::as_u64)
+                .unwrap_or(100)
+                .min(2000) as usize;
             let records: Vec<Value> = node
                 .audit_trail()
                 .recent(limit)
@@ -122,7 +143,11 @@ pub async fn call(node: &Arc<OverlayNode>, op: &str, args: Value) -> Result<Valu
             let members = args
                 .get("members")
                 .and_then(Value::as_array)
-                .map(|a| a.iter().filter_map(|v| v.as_str().map(str::to_string)).collect())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(str::to_string))
+                        .collect()
+                })
                 .unwrap_or_default();
             node.set_group(&name, members);
             Ok(json!({}))
@@ -141,7 +166,12 @@ pub async fn call(node: &Arc<OverlayNode>, op: &str, args: Value) -> Result<Valu
             let upstreams: Vec<String> = args
                 .get("upstreams")
                 .and_then(Value::as_array)
-                .map(|a| a.iter().filter_map(|v| v.as_str().map(str::trim).map(str::to_string)).filter(|s| !s.is_empty()).collect())
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|v| v.as_str().map(str::trim).map(str::to_string))
+                        .filter(|s| !s.is_empty())
+                        .collect()
+                })
                 .unwrap_or_default();
             if upstreams.is_empty() {
                 return node.set_mesh_dns(None).await;
@@ -150,7 +180,11 @@ pub async fn call(node: &Arc<OverlayNode>, op: &str, args: Value) -> Result<Valu
             if let Some(listen) = args.get("listen").and_then(Value::as_str) {
                 config.listen = listen.to_string();
             }
-            if let Some(service) = args.get("service").and_then(Value::as_str).filter(|s| !s.is_empty()) {
+            if let Some(service) = args
+                .get("service")
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+            {
                 config.service = service.to_string();
             }
             if let Some(ms) = args.get("timeout_ms").and_then(Value::as_u64) {
@@ -159,7 +193,9 @@ pub async fn call(node: &Arc<OverlayNode>, op: &str, args: Value) -> Result<Valu
             node.set_mesh_dns(Some(config)).await
         }
         "overlay.dns_status" => Ok(node.mesh_dns_status()),
-        other => Err(OverlayError::protocol(format!("no overlay operation {other:?}"))),
+        other => Err(OverlayError::protocol(format!(
+            "no overlay operation {other:?}"
+        ))),
     }
 }
 
@@ -232,7 +268,9 @@ async fn collect_events(node: &Arc<OverlayNode>, seconds: f64, max: usize) -> Ve
     let mut rx = node.events().subscribe();
     let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs_f64(seconds);
     while out.len() < max {
-        let Ok(received) = tokio::time::timeout_at(deadline, rx.recv()).await else { break };
+        let Ok(received) = tokio::time::timeout_at(deadline, rx.recv()).await else {
+            break;
+        };
         match received {
             Ok(event) => out.push(serde_json::to_value(&event).unwrap_or(Value::Null)),
             Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
@@ -256,60 +294,118 @@ mod tests {
 
     #[tokio::test]
     async fn an_unknown_operation_is_refused_rather_than_guessed() {
-        let node = OverlayNode::start(crate::node::OverlayConfig::local(crate::NodeIdentity::generate("t")))
+        let node = OverlayNode::start(crate::node::OverlayConfig::local(
+            crate::NodeIdentity::generate("t"),
+        ))
+        .await
+        .expect("a node");
+        let err = call(&node, "overlay.nonsense", json!({}))
             .await
-            .expect("a node");
-        let err = call(&node, "overlay.nonsense", json!({})).await.expect_err("refused");
+            .expect_err("refused");
         assert_eq!(err.code(), "protocol");
     }
 
     #[tokio::test]
     async fn status_reports_the_node_itself() {
         let identity = crate::NodeIdentity::generate("test-node");
-        let node = OverlayNode::start(crate::OverlayConfig::local(identity.clone())).await.expect("a node");
-        let status = call(&node, "overlay.status", json!({})).await.expect("status");
+        let node = OverlayNode::start(crate::OverlayConfig::local(identity.clone()))
+            .await
+            .expect("a node");
+        let status = call(&node, "overlay.status", json!({}))
+            .await
+            .expect("status");
         assert_eq!(status["node_id"], identity.node_id());
         assert_eq!(status["name"], "test-node");
         assert_eq!(status["protocol_versions"]["current"], VERSION_CURRENT);
-        assert_eq!(status["nat"]["type"], "unknown", "no relay, so no reachability view");
-        assert!(status["proxies"]["socks5_addr"].is_null(), "proxies are opt-in");
+        assert_eq!(
+            status["nat"]["type"], "unknown",
+            "no relay, so no reachability view"
+        );
+        assert!(
+            status["proxies"]["socks5_addr"].is_null(),
+            "proxies are opt-in"
+        );
     }
 
     #[tokio::test]
     async fn nothing_is_exposed_or_connected_by_default() {
-        let node = OverlayNode::start(crate::OverlayConfig::local(crate::NodeIdentity::generate("t"))).await.expect("a node");
+        let node = OverlayNode::start(crate::OverlayConfig::local(crate::NodeIdentity::generate(
+            "t",
+        )))
+        .await
+        .expect("a node");
         assert!(node.service_details().is_empty());
         assert!(node.connect_details().is_empty());
-        let services = call(&node, "overlay.services", json!({})).await.expect("services");
+        let services = call(&node, "overlay.services", json!({}))
+            .await
+            .expect("services");
         assert!(services["exposed"].as_array().expect("an array").is_empty());
-        let proxies = call(&node, "overlay.proxy_status", json!({})).await.expect("proxies");
+        let proxies = call(&node, "overlay.proxy_status", json!({}))
+            .await
+            .expect("proxies");
         assert!(proxies["socks5_addr"].is_null());
         assert!(proxies["http_proxy_addr"].is_null());
     }
 
     #[tokio::test]
     async fn exposing_requires_a_service_and_an_address() {
-        let node = OverlayNode::start(crate::OverlayConfig::local(crate::NodeIdentity::generate("t"))).await.expect("a node");
-        assert!(call(&node, "overlay.expose", json!({"service": "http"})).await.is_err());
-        assert!(call(&node, "overlay.expose", json!({"service": "http", "local_addr": "not-an-addr"})).await.is_err());
-        call(&node, "overlay.expose", json!({"service": "http", "local_addr": "127.0.0.1:8000", "allow": ["*paired"]}))
+        let node = OverlayNode::start(crate::OverlayConfig::local(crate::NodeIdentity::generate(
+            "t",
+        )))
+        .await
+        .expect("a node");
+        assert!(call(&node, "overlay.expose", json!({"service": "http"}))
             .await
-            .expect("expose");
-        let services = call(&node, "overlay.services", json!({})).await.expect("services");
+            .is_err());
+        assert!(call(
+            &node,
+            "overlay.expose",
+            json!({"service": "http", "local_addr": "not-an-addr"})
+        )
+        .await
+        .is_err());
+        call(
+            &node,
+            "overlay.expose",
+            json!({"service": "http", "local_addr": "127.0.0.1:8000", "allow": ["*paired"]}),
+        )
+        .await
+        .expect("expose");
+        let services = call(&node, "overlay.services", json!({}))
+            .await
+            .expect("services");
         assert_eq!(services["exposed"][0]["service"], "http");
-        call(&node, "overlay.unexpose", json!({"service": "http"})).await.expect("unexpose");
+        call(&node, "overlay.unexpose", json!({"service": "http"}))
+            .await
+            .expect("unexpose");
         assert!(node.service_details().is_empty());
     }
 
     #[tokio::test]
     async fn an_invite_round_trips_between_two_nodes() {
-        let a = OverlayNode::start(crate::OverlayConfig::local(crate::NodeIdentity::generate("a"))).await.expect("a node");
-        let b = OverlayNode::start(crate::OverlayConfig::local(crate::NodeIdentity::generate("b"))).await.expect("a node");
-        let invite = call(&a, "overlay.invite_create", json!({"ttl_s": 600})).await.expect("invite")["invite"]
+        let a = OverlayNode::start(crate::OverlayConfig::local(crate::NodeIdentity::generate(
+            "a",
+        )))
+        .await
+        .expect("a node");
+        let b = OverlayNode::start(crate::OverlayConfig::local(crate::NodeIdentity::generate(
+            "b",
+        )))
+        .await
+        .expect("a node");
+        let invite = call(&a, "overlay.invite_create", json!({"ttl_s": 600}))
+            .await
+            .expect("invite")["invite"]
             .as_str()
             .expect("a string")
             .to_string();
-        let paired = call(&b, "overlay.invite_accept", json!({"invite": invite, "name": "laptop"})).await.expect("pair");
+        let paired = call(
+            &b,
+            "overlay.invite_accept",
+            json!({"invite": invite, "name": "laptop"}),
+        )
+        .await
+        .expect("pair");
         assert_eq!(paired["node_id"], a.node_id());
         assert_eq!(paired["name"], "laptop");
         // And it is in the peer list, so `overlay.peers` shows it.
@@ -322,13 +418,21 @@ mod tests {
     #[tokio::test]
     async fn every_published_operation_is_runnable_or_explicitly_about_the_network() {
         // The catalog must not drift from the dispatcher: anything published has to exist.
-        let node = OverlayNode::start(crate::OverlayConfig::local(crate::NodeIdentity::generate("t"))).await.expect("a node");
+        let node = OverlayNode::start(crate::OverlayConfig::local(crate::NodeIdentity::generate(
+            "t",
+        )))
+        .await
+        .expect("a node");
         for (id, _, _, _, _) in operations() {
             let args = match id {
                 "overlay.invite_accept" => json!({"invite": "nonsense"}),
-                "overlay.expose" => json!({"service": "http", "local_addr": "127.0.0.1:1", "allow": []}),
+                "overlay.expose" => {
+                    json!({"service": "http", "local_addr": "127.0.0.1:1", "allow": []})
+                }
                 "overlay.unexpose" => json!({"service": "http"}),
-                "overlay.connect" | "overlay.probe" => json!({"node_id": &"a".repeat(64), "service": "http"}),
+                "overlay.connect" | "overlay.probe" => {
+                    json!({"node_id": &"a".repeat(64), "service": "http"})
+                }
                 "overlay.disconnect" => json!({"local_addr": "127.0.0.1:1"}),
                 "overlay.group_set" => json!({"name": "g", "members": []}),
                 _ => json!({}),
@@ -336,8 +440,14 @@ mod tests {
             let result = call(&node, id, args).await;
             // These reach outside the node by design (a peer, or an invite from someone else);
             // everything else must answer with nothing but this node.
-            if matches!(id, "overlay.connect" | "overlay.probe" | "overlay.invite_accept") {
-                assert!(result.is_err(), "{id} needs a reachable node or a real invite");
+            if matches!(
+                id,
+                "overlay.connect" | "overlay.probe" | "overlay.invite_accept"
+            ) {
+                assert!(
+                    result.is_err(),
+                    "{id} needs a reachable node or a real invite"
+                );
             } else {
                 assert!(result.is_ok(), "{id} answered: {:?}", result.err());
             }

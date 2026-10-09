@@ -4,6 +4,9 @@
 //! `0.0.0.0`), served over TCP on the far node; the near node's forwarder is asked over real UDP
 //! and TCP sockets. Neither node has a listener: the overlay path is the relay.
 
+// Test code: a failed expectation is a panic, and that is the point.
+#![allow(clippy::unwrap_used, clippy::panic)]
+
 mod common;
 
 use std::net::{IpAddr, SocketAddr};
@@ -17,11 +20,15 @@ use transferd_overlay::ops;
 /// A DNS server on TCP: `ads.example` is blocked (0.0.0.0), `nope.example` does not exist,
 /// everything else is 192.0.2.1.
 async fn stand_in_resolver() -> SocketAddr {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("binds");
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("binds");
     let addr = listener.local_addr().expect("addr");
     tokio::spawn(async move {
         loop {
-            let Ok((mut socket, _)) = listener.accept().await else { break };
+            let Ok((mut socket, _)) = listener.accept().await else {
+                break;
+            };
             tokio::spawn(async move {
                 loop {
                     let mut len = [0u8; 2];
@@ -68,21 +75,34 @@ fn answer_for(q: &[u8]) -> Vec<u8> {
 }
 
 async fn ask_udp(server: SocketAddr, id: u16, name: &str) -> transferd_dns::wire::Answer {
-    let socket = tokio::net::UdpSocket::bind("127.0.0.1:0").await.expect("binds");
-    socket.send_to(&encode_query(id, name, TYPE_A).expect("query"), server).await.expect("send");
+    let socket = tokio::net::UdpSocket::bind("127.0.0.1:0")
+        .await
+        .expect("binds");
+    socket
+        .send_to(&encode_query(id, name, TYPE_A).expect("query"), server)
+        .await
+        .expect("send");
     let mut buf = [0u8; 2048];
-    let (n, _) = tokio::time::timeout(common::PATIENCE, socket.recv_from(&mut buf)).await.expect("in time").expect("recv");
+    let (n, _) = tokio::time::timeout(common::PATIENCE, socket.recv_from(&mut buf))
+        .await
+        .expect("in time")
+        .expect("recv");
     decode_answer(&buf[..n], id, name, TYPE_A).expect("an answer to our question")
 }
 
 async fn ask_tcp(server: SocketAddr, id: u16, name: &str) -> transferd_dns::wire::Answer {
-    let mut s = tokio::net::TcpStream::connect(server).await.expect("connects");
+    let mut s = tokio::net::TcpStream::connect(server)
+        .await
+        .expect("connects");
     let q = encode_query(id, name, TYPE_A).expect("query");
     let mut out = (q.len() as u16).to_be_bytes().to_vec();
     out.extend_from_slice(&q);
     s.write_all(&out).await.expect("write");
     let mut len = [0u8; 2];
-    tokio::time::timeout(common::PATIENCE, s.read_exact(&mut len)).await.expect("in time").expect("len");
+    tokio::time::timeout(common::PATIENCE, s.read_exact(&mut len))
+        .await
+        .expect("in time")
+        .expect("len");
     let mut r = vec![0u8; u16::from_be_bytes(len) as usize];
     s.read_exact(&mut r).await.expect("body");
     decode_answer(&r, id, name, TYPE_A).expect("an answer to our question")
@@ -101,13 +121,23 @@ async fn a_node_answers_dns_through_a_paired_nodes_resolver() {
     near.pair_with(&far, "far");
     far.pair_with(&near, "near");
     let resolver = stand_in_resolver().await;
-    far.node.expose("dns", resolver, vec!["*paired".into()], "the resolver").expect("far shares its resolver");
+    far.node
+        .expose("dns", resolver, vec!["*paired".into()], "the resolver")
+        .expect("far shares its resolver");
 
-    let status = ops::call(&near.node, "overlay.dns_set", json!({"upstreams": [far.id()], "listen": "127.0.0.1:0"}))
-        .await
-        .expect("mesh DNS on");
+    let status = ops::call(
+        &near.node,
+        "overlay.dns_set",
+        json!({"upstreams": [far.id()], "listen": "127.0.0.1:0"}),
+    )
+    .await
+    .expect("mesh DNS on");
     assert_eq!(status["enabled"], true);
-    let listen: SocketAddr = status["listen"].as_str().expect("listen").parse().expect("an address");
+    let listen: SocketAddr = status["listen"]
+        .as_str()
+        .expect("listen")
+        .parse()
+        .expect("an address");
 
     let real = ask_udp(listen, 0x1111, "example.com").await;
     assert_eq!(addrs(&real), vec!["192.0.2.1".parse::<IpAddr>().unwrap()]);
@@ -121,20 +151,36 @@ async fn a_node_answers_dns_through_a_paired_nodes_resolver() {
         assert_eq!(addrs(&answer.await.expect("joined")).len(), 1);
     }
 
-    let status = ops::call(&near.node, "overlay.dns_status", json!({})).await.expect("status");
+    let status = ops::call(&near.node, "overlay.dns_status", json!({}))
+        .await
+        .expect("status");
     let upstream = &status["upstreams"][0];
     assert_eq!(upstream["target"], far.id());
     assert_eq!(upstream["healthy"], true);
     assert_eq!(upstream["answered"], 23);
-    assert_eq!(upstream["blocked"], 1, "the filtered answer is counted as blocked");
+    assert_eq!(
+        upstream["blocked"], 1,
+        "the filtered answer is counted as blocked"
+    );
     assert_eq!(upstream["nxdomain"], 1);
     assert_eq!(status["totals"]["failed"], 0);
-    let far_status = ops::call(&far.node, "overlay.dns_status", json!({})).await.expect("far status");
+    let far_status = ops::call(&far.node, "overlay.dns_status", json!({}))
+        .await
+        .expect("far status");
     assert_eq!(far_status["enabled"], false, "far forwards nothing itself");
-    assert_eq!(far_status["serving"]["local_addr"], resolver.to_string(), "but shares its resolver");
+    assert_eq!(
+        far_status["serving"]["local_addr"],
+        resolver.to_string(),
+        "but shares its resolver"
+    );
 
-    ops::call(&near.node, "overlay.dns_set", json!({"upstreams": []})).await.expect("off");
-    assert!(tokio::net::UdpSocket::bind(listen).await.is_ok(), "turning it off frees the address");
+    ops::call(&near.node, "overlay.dns_set", json!({"upstreams": []}))
+        .await
+        .expect("off");
+    assert!(
+        tokio::net::UdpSocket::bind(listen).await.is_ok(),
+        "turning it off frees the address"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -147,10 +193,19 @@ async fn a_broken_upstream_is_skipped_and_all_broken_means_servfail() {
         near.pair_with(other, "peer");
         other.pair_with(&near, "near");
     }
-    good.node.expose("dns", stand_in_resolver().await, vec!["*paired".into()], "").expect("expose");
+    good.node
+        .expose("dns", stand_in_resolver().await, vec!["*paired".into()], "")
+        .expect("expose");
     // A resolver that is not running: the stream opens, the far side cannot reach it.
-    let gone = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("binds").local_addr().expect("addr");
-    broken.node.expose("dns", gone, vec!["*paired".into()], "").expect("expose");
+    let gone = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("binds")
+        .local_addr()
+        .expect("addr");
+    broken
+        .node
+        .expose("dns", gone, vec!["*paired".into()], "")
+        .expect("expose");
 
     let status = ops::call(
         &near.node,
@@ -159,22 +214,46 @@ async fn a_broken_upstream_is_skipped_and_all_broken_means_servfail() {
     )
     .await
     .expect("on");
-    let listen: SocketAddr = status["listen"].as_str().expect("listen").parse().expect("addr");
+    let listen: SocketAddr = status["listen"]
+        .as_str()
+        .expect("listen")
+        .parse()
+        .expect("addr");
 
     let answer = ask_udp(listen, 7, "example.com").await;
-    assert_eq!(addrs(&answer), vec!["192.0.2.1".parse::<IpAddr>().unwrap()], "the second upstream answered");
-    let status = ops::call(&near.node, "overlay.dns_status", json!({})).await.expect("status");
-    assert_eq!(status["upstreams"][0]["healthy"], false, "the broken one is set aside");
-    assert!(status["upstreams"][0]["last_error"].as_str().is_some_and(|e| !e.is_empty()));
+    assert_eq!(
+        addrs(&answer),
+        vec!["192.0.2.1".parse::<IpAddr>().unwrap()],
+        "the second upstream answered"
+    );
+    let status = ops::call(&near.node, "overlay.dns_status", json!({}))
+        .await
+        .expect("status");
+    assert_eq!(
+        status["upstreams"][0]["healthy"], false,
+        "the broken one is set aside"
+    );
+    assert!(status["upstreams"][0]["last_error"]
+        .as_str()
+        .is_some_and(|e| !e.is_empty()));
     // Set aside, it is not asked again: the next answer comes straight from the good one.
     let started = std::time::Instant::now();
     ask_udp(listen, 8, "example.com").await;
-    assert!(started.elapsed() < std::time::Duration::from_millis(1500), "no timeout paid twice");
+    assert!(
+        started.elapsed() < std::time::Duration::from_millis(1500),
+        "no timeout paid twice"
+    );
 
-    ops::call(&near.node, "overlay.dns_set", json!({"upstreams": [broken.id()], "listen": "127.0.0.1:0", "timeout_ms": 1000}))
+    ops::call(
+        &near.node,
+        "overlay.dns_set",
+        json!({"upstreams": [broken.id()], "listen": "127.0.0.1:0", "timeout_ms": 1000}),
+    )
+    .await
+    .expect("only the broken one");
+    let listen: SocketAddr = ops::call(&near.node, "overlay.dns_status", json!({}))
         .await
-        .expect("only the broken one");
-    let listen: SocketAddr = ops::call(&near.node, "overlay.dns_status", json!({})).await.expect("status")["listen"]
+        .expect("status")["listen"]
         .as_str()
         .expect("listen")
         .parse()
@@ -195,14 +274,34 @@ async fn the_mesh_dns_setting_survives_a_restart() {
     };
     let upstream = "a".repeat(64);
     {
-        let node = transferd_overlay::OverlayNode::start(config.clone()).await.expect("starts");
-        ops::call(&node, "overlay.dns_set", json!({"upstreams": [upstream], "listen": "127.0.0.1:0"})).await.expect("on");
-        node.set_mesh_dns(None).await.expect("stopped for the restart");
+        let node = transferd_overlay::OverlayNode::start(config.clone())
+            .await
+            .expect("starts");
+        ops::call(
+            &node,
+            "overlay.dns_set",
+            json!({"upstreams": [upstream], "listen": "127.0.0.1:0"}),
+        )
+        .await
+        .expect("on");
+        node.set_mesh_dns(None)
+            .await
+            .expect("stopped for the restart");
         // Turning it off forgets it; turn it on again so the file says "on" when the node goes.
-        ops::call(&node, "overlay.dns_set", json!({"upstreams": [upstream], "listen": "127.0.0.1:0"})).await.expect("on");
+        ops::call(
+            &node,
+            "overlay.dns_set",
+            json!({"upstreams": [upstream], "listen": "127.0.0.1:0"}),
+        )
+        .await
+        .expect("on");
     }
-    let node = transferd_overlay::OverlayNode::start(config).await.expect("starts again");
-    let status = ops::call(&node, "overlay.dns_status", json!({})).await.expect("status");
+    let node = transferd_overlay::OverlayNode::start(config)
+        .await
+        .expect("starts again");
+    let status = ops::call(&node, "overlay.dns_status", json!({}))
+        .await
+        .expect("status");
     assert_eq!(status["enabled"], true, "it came back from the state file");
     assert_eq!(status["upstreams"][0]["target"], upstream);
     let _ = std::fs::remove_dir_all(&dir);

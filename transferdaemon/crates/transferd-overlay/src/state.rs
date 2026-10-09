@@ -32,6 +32,18 @@ pub struct StoredNode {
     /// Its name as it last introduced itself.
     #[serde(default)]
     pub last_name: String,
+    /// The nonce of the invite we accepted from it (hex), presented in our hello so it knows
+    /// the pairing is mutual.
+    #[serde(default)]
+    pub pairing: String,
+}
+
+/// An invite this node issued that has not been used yet.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StoredInvite {
+    /// Its nonce, hex.
+    pub nonce: String,
+    pub expires_at: u64,
 }
 
 /// An exposed service.
@@ -80,6 +92,10 @@ pub struct StoredState {
     pub connects: Vec<StoredConnect>,
     #[serde(default)]
     pub groups: Vec<StoredGroup>,
+    /// Invites issued and not used yet, so a node that accepts one after a restart is still
+    /// recognised.
+    #[serde(default)]
+    pub invites: Vec<StoredInvite>,
     /// The mesh DNS forwarder's settings, when it is on.
     #[serde(default)]
     pub mesh_dns: Option<crate::dns::MeshDnsConfig>,
@@ -88,11 +104,20 @@ pub struct StoredState {
 impl StoredState {
     /// Load and migrate, or start empty when there is nothing to load.
     pub fn load(path: &Path) -> Self {
-        let Ok(text) = std::fs::read_to_string(path) else { return Self::default() };
+        let Ok(text) = std::fs::read_to_string(path) else {
+            return Self::default();
+        };
         match serde_json::from_str::<StoredState>(&text) {
             Ok(state) => state.migrated(),
-            // A file we cannot read is kept, not deleted: a downgrade must not destroy data.
-            Err(_) => Self::default(),
+            // A file we cannot read (written by a newer build, or damaged) is copied aside before
+            // anything is saved over it: a downgrade must not destroy data. The first copy is kept.
+            Err(_) => {
+                let aside = path.with_extension("json.unreadable");
+                if !aside.exists() {
+                    let _ = std::fs::write(&aside, text.as_bytes());
+                }
+                Self::default()
+            }
         }
     }
 
@@ -135,7 +160,7 @@ fn transferd_control_data_dir() -> PathBuf {
     // The overlay must not depend on the control crate, so resolve the same place it does.
     std::env::var_os("TRANSFERD_DATA_DIR")
         .map(PathBuf::from)
-        .or_else(|| dirs_data_local())
+        .or_else(dirs_data_local)
         .unwrap_or_else(|| PathBuf::from("."))
         .join("transferdaemon")
 }
@@ -182,7 +207,16 @@ mod tests {
         std::fs::write(&path, b"{ not json").expect("write");
         let state = StoredState::load(&path);
         assert!(state.nodes.is_empty(), "a corrupt file loads as empty");
-        assert!(path.exists(), "and is not deleted: a downgrade must not destroy data");
+        assert!(
+            path.exists(),
+            "and is not deleted: a downgrade must not destroy data"
+        );
+        let aside = path.with_extension("json.unreadable");
+        assert_eq!(
+            std::fs::read(&aside).expect("a copy is kept aside"),
+            b"{ not json",
+            "so a later save cannot destroy it"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -191,10 +225,17 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("tdov-state-rt-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("dir");
         let path = dir.join("overlay.json");
-        let mut state = StoredState { version: STATE_VERSION, ..Default::default() };
+        let mut state = StoredState {
+            version: STATE_VERSION,
+            ..Default::default()
+        };
         state.nodes.insert(
             "aa".into(),
-            StoredNode { node_id: "aa".into(), name: "laptop".into(), ..serde_json::from_str(r#"{"node_id":"aa"}"#).expect("defaults") },
+            StoredNode {
+                node_id: "aa".into(),
+                name: "laptop".into(),
+                ..serde_json::from_str(r#"{"node_id":"aa"}"#).expect("defaults")
+            },
         );
         state.exposes.push(StoredExpose {
             service: "http".into(),

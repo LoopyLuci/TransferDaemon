@@ -15,14 +15,14 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::{TcpStream, UdpSocket};
 use tokio::sync::mpsc;
 
-use relayd::protocol::{DeliveredMsg, ForwardMsg, Tag, encode, split};
+use relayd::protocol::{encode, split, DeliveredMsg, ForwardMsg, Tag};
 use transferd_core::lanes::relay_client::RelayClient;
 
 use crate::error::{OverlayError, Result};
 use crate::identity::relay_token_for;
 use crate::link::{Link, RouteKind, RouteStats};
 use crate::protocol::{Frame, FrameReader};
-use crate::wire::{LinkKeys, Tunnel, read_blob, write_blob};
+use crate::wire::{read_blob, write_blob, LinkKeys, Tunnel};
 
 /// The marker byte that says "this payload belongs to the overlay".
 pub const PREFIX_OVERLAY: u8 = 0x03;
@@ -59,7 +59,10 @@ pub struct FramePipe {
 
 impl std::fmt::Debug for FramePipe {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("FramePipe").field("id", &self.id).field("kind", &self.kind).finish()
+        f.debug_struct("FramePipe")
+            .field("id", &self.id)
+            .field("kind", &self.kind)
+            .finish()
     }
 }
 
@@ -68,7 +71,12 @@ impl FramePipe {
     /// [`FramePipe::feed`].
     ///
     /// Returns the link and the queue a writer task drains onto its socket.
-    pub fn new(id: u32, kind: RouteKind, describe: impl Into<String>, keys: &LinkKeys) -> (Arc<Self>, mpsc::Receiver<Vec<u8>>) {
+    pub fn new(
+        id: u32,
+        kind: RouteKind,
+        describe: impl Into<String>,
+        keys: &LinkKeys,
+    ) -> (Arc<Self>, mpsc::Receiver<Vec<u8>>) {
         let (tx, rx) = mpsc::channel(SEND_QUEUE);
         let link = Arc::new(Self {
             id,
@@ -115,7 +123,12 @@ impl FramePipe {
     }
 
     fn wake(&self) {
-        if let Some(waker) = self.waker.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        if let Some(waker) = self
+            .waker
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .as_ref()
+        {
             waker.notify_one();
         }
     }
@@ -142,7 +155,6 @@ impl FramePipe {
         drop(inbox);
         self.wake();
     }
-
 }
 
 impl Link for FramePipe {
@@ -170,7 +182,10 @@ impl Link for FramePipe {
     }
 
     fn try_recv(&self) -> Option<Frame> {
-        self.inbox.lock().unwrap_or_else(|e| e.into_inner()).pop_front()
+        self.inbox
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .pop_front()
     }
 
     fn is_up(&self) -> bool {
@@ -192,7 +207,12 @@ impl Link for FramePipe {
     fn set_waker(&self, waker: Arc<tokio::sync::Notify>) {
         *self.waker.lock().unwrap_or_else(|e| e.into_inner()) = Some(waker.clone());
         // Anything that arrived before the session was listening is read now.
-        if !self.inbox.lock().unwrap_or_else(|e| e.into_inner()).is_empty() {
+        if !self
+            .inbox
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .is_empty()
+        {
             waker.notify_one();
         }
     }
@@ -216,11 +236,12 @@ where
 }
 
 /// Drain a link's send queue onto a connected UDP socket, one datagram per frame.
-async fn write_loop_udp(socket: Arc<UdpSocket>, mut rx: mpsc::Receiver<Vec<u8>>, link: Arc<FramePipe>) {
+async fn write_loop_udp(socket: Arc<UdpSocket>, mut rx: mpsc::Receiver<Vec<u8>>) {
     while let Some(sealed) = rx.recv().await {
-        if socket.send(&sealed).await.is_err() {
-            link.close();
-            break;
+        // UDP: a failed send (on Windows, even an ICMP from an earlier datagram) loses one
+        // datagram, which the session repairs; the route stays.
+        if let Err(e) = socket.send(&sealed).await {
+            tracing::debug!("[overlay] a datagram was not sent: {e}");
         }
     }
 }
@@ -248,13 +269,22 @@ pub async fn dial_tcp(
     // relay is.
     let mut stream = tokio::time::timeout(DIAL_TIMEOUT, TcpStream::connect(target))
         .await
-        .map_err(|_| OverlayError::protocol(format!("{target} did not answer within {DIAL_TIMEOUT:?}")))?
+        .map_err(|_| {
+            OverlayError::protocol(format!("{target} did not answer within {DIAL_TIMEOUT:?}"))
+        })?
         .map_err(|e| OverlayError::protocol(format!("cannot reach {target}: {e}")))?;
     let _ = stream.set_nodelay(true);
     let hs = crate::wire::handshake_initiator(&mut stream, identity, expect_node_id).await?;
     let keys = hs.keys.clone();
     let (read, write) = stream.into_split();
-    let link = split_link(id, kind, format!("tcp://{target}"), keys.clone(), write, read);
+    let link = split_link(
+        id,
+        kind,
+        format!("tcp://{target}"),
+        keys.clone(),
+        write,
+        read,
+    );
     Ok((link, keys, hs.peer_node_id, hs.peer_hybrid_pk))
 }
 
@@ -269,7 +299,10 @@ pub async fn accept_tcp(
     let mut stream = stream;
     let hs = crate::wire::handshake_responder(&mut stream, identity).await?;
     let keys = hs.keys.clone();
-    let peer = stream.peer_addr().map(|a| a.to_string()).unwrap_or_default();
+    let peer = stream
+        .peer_addr()
+        .map(|a| a.to_string())
+        .unwrap_or_default();
     let (read, write) = stream.into_split();
     let link = split_link(id, kind, format!("tcp://{peer}"), keys.clone(), write, read);
     Ok((link, keys, hs.peer_node_id, hs.peer_hybrid_pk))
@@ -296,11 +329,25 @@ impl RelayPoint {
         let client = Arc::new(
             RelayClient::bind(addr)
                 .await
-                .map_err(|e| OverlayError::Relay { addr: addr.to_string(), reason: e.to_string() })?,
+                .map_err(|e| OverlayError::Relay {
+                    addr: addr.to_string(),
+                    reason: e.to_string(),
+                })?,
         );
-        client.register(self_token).await.map_err(|e| OverlayError::Relay { addr: addr.to_string(), reason: e.to_string() })?;
+        client
+            .register(self_token)
+            .await
+            .map_err(|e| OverlayError::Relay {
+                addr: addr.to_string(),
+                reason: e.to_string(),
+            })?;
         client.spawn_keepalive_loop(self_token);
-        Ok(Arc::new(Self { addr, kind: RouteKind::Relay, client, self_token }))
+        Ok(Arc::new(Self {
+            addr,
+            kind: RouteKind::Relay,
+            client,
+            self_token,
+        }))
     }
 
     /// The relay this node is registered on.
@@ -322,14 +369,26 @@ impl RelayPoint {
         self.client
             .send_forward(peer_token, &pad(&payload))
             .await
-            .map_err(|e| OverlayError::Relay { addr: self.addr.to_string(), reason: e.to_string() })
+            .map_err(|e| OverlayError::Relay {
+                addr: self.addr.to_string(),
+                reason: e.to_string(),
+            })
     }
 
     /// Build a link over this relay to `peer_token`.
-    pub fn link(self: &Arc<Self>, id: u32, peer_token: [u8; 32], keys: &LinkKeys) -> Arc<FramePipe> {
-        let (link, rx) = FramePipe::new(id, self.kind, format!("relay://{}#{}", self.addr, hex::encode(peer_token)), keys);
+    pub fn link(
+        self: &Arc<Self>,
+        id: u32,
+        peer_token: [u8; 32],
+        keys: &LinkKeys,
+    ) -> Arc<FramePipe> {
+        let (link, rx) = FramePipe::new(
+            id,
+            self.kind,
+            format!("relay://{}#{}", self.addr, hex::encode(peer_token)),
+            keys,
+        );
         let this = self.clone();
-        let writer = link.clone();
         // The relay is a blind pipe: bytes go out through it, and inbound blobs come back on
         // the socket the relay replies to.
         tokio::spawn(async move {
@@ -339,9 +398,9 @@ impl RelayPoint {
                 payload.push(PREFIX_OVERLAY);
                 payload.extend_from_slice(&this.self_token);
                 payload.extend_from_slice(&sealed);
-                if this.client.send_forward(peer_token, &pad(&payload)).await.is_err() {
-                    writer.close();
-                    break;
+                // A datagram that could not be sent is a lost one, which the session repairs.
+                if let Err(e) = this.client.send_forward(peer_token, &pad(&payload)).await {
+                    tracing::debug!("[overlay relay] a datagram was not sent: {e}");
                 }
             }
         });
@@ -383,22 +442,34 @@ fn unpad(data: &[u8]) -> Option<([u8; 32], &[u8])> {
 }
 
 /// Read the relay's datagrams and hand every overlay payload to `on_blob`.
-pub async fn relay_recv_loop<F>(socket: Arc<UdpSocket>, link: Arc<FramePipe>, keys: &LinkKeys, mut on_blob: F)
-where
+pub async fn relay_recv_loop<F>(
+    socket: Arc<UdpSocket>,
+    link: Arc<FramePipe>,
+    keys: &LinkKeys,
+    mut on_blob: F,
+) where
     F: FnMut([u8; 32], &[u8]) -> bool,
 {
     let (tunnel, mut reader) = FramePipe::receiver(keys);
     let mut buf = vec![0u8; 65_536];
     while link.is_up() {
-        let Ok((n, _)) = socket.recv_from(&mut buf).await else { continue };
-        let Some((tag, body)) = split(&buf[..n]) else { continue };
+        let Ok((n, _)) = socket.recv_from(&mut buf).await else {
+            continue;
+        };
+        let Some((tag, body)) = split(&buf[..n]) else {
+            continue;
+        };
         if tag != Tag::Ack {
             continue;
         }
-        let Ok(delivered) = bincode::deserialize::<DeliveredMsg>(body) else { continue };
+        let Ok(delivered) = bincode::deserialize::<DeliveredMsg>(body) else {
+            continue;
+        };
         // The relay forwards the sender's token inside the payload, so a peer is identified
         // without the relay ever learning who it is talking to.
-        let Some((from, sealed)) = unpad(&delivered.ciphertext) else { continue };
+        let Some((from, sealed)) = unpad(&delivered.ciphertext) else {
+            continue;
+        };
         if !on_blob(from, sealed) {
             return; // the inbox is full; stop reading until it drains
         }
@@ -412,17 +483,24 @@ pub fn relay_payload(data: &[u8]) -> Option<([u8; 32], &[u8])> {
 }
 
 /// Build the `ForwardMsg` a peer must send us; used by tests and by the WebSocket relay.
-pub fn forward_message(peer_token: [u8; 32], sender_token: [u8; 32], sealed: &[u8]) -> Result<Vec<u8>> {
+pub fn forward_message(
+    peer_token: [u8; 32],
+    sender_token: [u8; 32],
+    sealed: &[u8],
+) -> Result<Vec<u8>> {
     let mut payload = Vec::with_capacity(1 + 32 + sealed.len());
     payload.push(PREFIX_OVERLAY);
     payload.extend_from_slice(&sender_token);
     payload.extend_from_slice(sealed);
-    encode(Tag::Forward, &ForwardMsg {
-        session_token: peer_token,
-        pow_nonce: 0,
-        sender_seq: 0,
-        ciphertext: pad(&payload),
-    })
+    encode(
+        Tag::Forward,
+        &ForwardMsg {
+            session_token: peer_token,
+            pow_nonce: 0,
+            sender_seq: 0,
+            ciphertext: pad(&payload),
+        },
+    )
     .map_err(|e| OverlayError::protocol(e.to_string()))
 }
 
@@ -447,7 +525,12 @@ pub struct Punch {
 /// A hole punch works because both ends send first: each side's outbound packet creates the
 /// NAT mapping that lets the other's packets in. Neither side ever accepts an inbound
 /// connection, so neither side needs a port open.
-pub async fn punch(socket: Arc<UdpSocket>, peer: SocketAddr, my_public: SocketAddr, deadline: std::time::Instant) -> bool {
+pub async fn punch(
+    socket: Arc<UdpSocket>,
+    peer: SocketAddr,
+    my_public: SocketAddr,
+    deadline: std::time::Instant,
+) -> bool {
     let mut backoff = Duration::from_millis(20);
     let mut sent = 0u64;
     while std::time::Instant::now() < deadline {
@@ -498,9 +581,15 @@ pub fn parse_punch(data: &[u8]) -> Option<(SocketAddr, u64)> {
 }
 
 /// Wrap a connected UDP socket in a link, reading from anyone (the tunnel decides what is ours).
-pub fn udp_link(id: u32, describe: String, keys: &LinkKeys, socket: Arc<UdpSocket>, _peer: SocketAddr) -> Arc<FramePipe> {
+pub fn udp_link(
+    id: u32,
+    describe: String,
+    keys: &LinkKeys,
+    socket: Arc<UdpSocket>,
+    _peer: SocketAddr,
+) -> Arc<FramePipe> {
     let (link, rx) = FramePipe::new(id, RouteKind::HolePunch, describe, keys);
-    tokio::spawn(write_loop_udp(socket.clone(), rx, link.clone()));
+    tokio::spawn(write_loop_udp(socket.clone(), rx));
     tokio::spawn(udp_read_loop(link.clone(), keys.clone(), socket));
     link
 }
@@ -520,7 +609,10 @@ pub async fn hole_punch(
     deadline: std::time::Instant,
 ) -> Result<Arc<FramePipe>> {
     let socket = Arc::new(UdpSocket::bind("0.0.0.0:0").await?);
-    socket.connect(peer_public).await.map_err(|e| OverlayError::protocol(format!("cannot aim at {peer_public}: {e}")))?;
+    socket
+        .connect(peer_public)
+        .await
+        .map_err(|e| OverlayError::protocol(format!("cannot aim at {peer_public}: {e}")))?;
     // Keep punching while the handshake runs: the other side's first packets may arrive before
     // its mapping is fully open.
     let pumper = {
@@ -530,7 +622,16 @@ pub async fn hole_punch(
         tokio::spawn(async move { punch(socket, peer, public, deadline).await })
     };
 
-    let result = run_handshake(id, &socket, identity, expect_node_id, peer_public, we_start, deadline).await;
+    let result = run_handshake(
+        id,
+        &socket,
+        identity,
+        expect_node_id,
+        peer_public,
+        we_start,
+        deadline,
+    )
+    .await;
     pumper.abort();
     result
 }
@@ -544,7 +645,9 @@ async fn run_handshake(
     we_start: bool,
     deadline: std::time::Instant,
 ) -> Result<Arc<FramePipe>> {
-    let duplex = UdpDuplex { socket: socket.clone() };
+    let duplex = UdpDuplex {
+        socket: socket.clone(),
+    };
     let mut io = duplex;
     let remaining = deadline.saturating_duration_since(std::time::Instant::now());
     let result = if we_start {
@@ -560,7 +663,14 @@ async fn run_handshake(
         Err(_) => return Err(OverlayError::protocol("the hole punch timed out")),
     };
     let (read, write) = tokio::io::split(io);
-    Ok(split_link(id, RouteKind::HolePunch, format!("udp://{peer_public}"), hs.keys, write, read))
+    Ok(split_link(
+        id,
+        RouteKind::HolePunch,
+        format!("udp://{peer_public}"),
+        hs.keys,
+        write,
+        read,
+    ))
 }
 
 /// A byte duplex over a connected UDP socket, so the handshake can run over a punched hole.
@@ -610,7 +720,9 @@ async fn udp_read_loop(link: Arc<FramePipe>, keys: LinkKeys, socket: Arc<UdpSock
     let (tunnel, mut reader) = FramePipe::receiver(&keys);
     let mut buf = vec![0u8; 65_536];
     while link.is_up() {
-        let Ok((n, _from)) = socket.recv_from(&mut buf).await else { continue };
+        let Ok((n, _from)) = socket.recv_from(&mut buf).await else {
+            continue;
+        };
         if parse_punch(&buf[..n]).is_some() {
             continue; // a punch marker, not a frame
         }
@@ -648,15 +760,10 @@ where
     R: AsyncRead + Unpin + Send + 'static,
 {
     let (tunnel, mut reader) = FramePipe::receiver(&keys);
-    loop {
-        match read_blob(&mut source).await {
-            Ok(sealed) => {
-                if !link.feed(&tunnel, &mut reader, &sealed) {
-                    // The inbox is full: pause so the application can drain it.
-                    tokio::time::sleep(Duration::from_millis(5)).await;
-                }
-            }
-            Err(_) => break,
+    while let Ok(sealed) = read_blob(&mut source).await {
+        if !link.feed(&tunnel, &mut reader, &sealed) {
+            // The inbox is full: pause so the application can drain it.
+            tokio::time::sleep(Duration::from_millis(5)).await;
         }
     }
     link.close();

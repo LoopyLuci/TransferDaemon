@@ -6,6 +6,9 @@
 //! cargo test --release -p transferd-overlay --test bench -- --ignored --nocapture
 //! ```
 
+// Test code: a failed expectation is a panic, and that is the point.
+#![allow(clippy::unwrap_used, clippy::panic)]
+
 mod common;
 
 use std::net::SocketAddr;
@@ -16,11 +19,15 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 /// A service that reads everything and answers with the byte count when the sender is done.
 async fn sink() -> SocketAddr {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("binds");
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("binds");
     let addr = listener.local_addr().expect("addr");
     tokio::spawn(async move {
         loop {
-            let Ok((mut s, _)) = listener.accept().await else { break };
+            let Ok((mut s, _)) = listener.accept().await else {
+                break;
+            };
             tokio::spawn(async move {
                 let mut buf = vec![0u8; 64 * 1024];
                 let mut total = 0u64;
@@ -38,8 +45,12 @@ async fn sink() -> SocketAddr {
 }
 
 async fn measure(label: &str, a: &TestNode, b: &TestNode) {
-    b.node.expose("sink", sink().await, vec!["*paired".into()], "").expect("expose");
-    b.node.expose("echo", echo_service(0).await, vec!["*paired".into()], "").expect("expose");
+    b.node
+        .expose("sink", sink().await, vec!["*paired".into()], "")
+        .expect("expose");
+    b.node
+        .expose("echo", echo_service(0).await, vec!["*paired".into()], "")
+        .expect("expose");
     let (sink_at, route) = a.node.connect(&b.id(), "sink").await.expect("sink");
     let (echo_at, _) = a.node.connect(&b.id(), "echo").await.expect("echo");
 

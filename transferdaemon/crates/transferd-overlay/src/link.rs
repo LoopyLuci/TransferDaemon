@@ -11,7 +11,6 @@
 //! `docs/PROTOCOL.md`.
 
 use async_trait::async_trait;
-use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -158,7 +157,11 @@ impl RouteStats {
     /// Fold a round-trip measurement in (exponential average, so one spike does not dominate).
     pub fn record_rtt(&self, ms: f64) {
         if let Ok(mut cur) = self.rtt_ms.lock() {
-            *cur = if *cur <= 0.0 { ms } else { *cur * 0.7 + ms * 0.3 };
+            *cur = if *cur <= 0.0 {
+                ms
+            } else {
+                *cur * 0.7 + ms * 0.3
+            };
         }
     }
 
@@ -176,8 +179,15 @@ impl RouteStats {
 
     /// Recompute the loss estimate. Called once per probe round.
     pub fn refresh_loss(&self) {
-        let (sent, ok) = (self.probes_sent.load(Ordering::Relaxed), self.probes_ok.load(Ordering::Relaxed));
-        let estimate = if sent == 0 { 0.0 } else { 1.0 - (ok as f64 / sent as f64).min(1.0) };
+        let (sent, ok) = (
+            self.probes_sent.load(Ordering::Relaxed),
+            self.probes_ok.load(Ordering::Relaxed),
+        );
+        let estimate = if sent == 0 {
+            0.0
+        } else {
+            1.0 - (ok as f64 / sent as f64).min(1.0)
+        };
         if let Ok(mut cur) = self.loss.lock() {
             *cur = (*cur * 0.5).max(0.0) + estimate * 0.5;
         }
@@ -194,7 +204,11 @@ impl RouteStats {
 
     /// Record `n` frames acknowledged by the peer.
     pub fn record_acked(&self, n: u64) {
-        let _ = self.active.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |a| Some(a.saturating_sub(n)));
+        let _ = self
+            .active
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |a| {
+                Some(a.saturating_sub(n))
+            });
     }
 
     /// Recompute throughput from the byte counter. Called once per health tick.
@@ -210,7 +224,11 @@ impl RouteStats {
         };
         let bps = (total.saturating_sub(prev) as f64 * 8.0) / elapsed;
         if let Ok(mut cur) = self.mbps.lock() {
-            *cur = if *cur <= 0.0 { bps / 1_000_000.0 } else { *cur * 0.7 + (bps / 1_000_000.0) * 0.3 };
+            *cur = if *cur <= 0.0 {
+                bps / 1_000_000.0
+            } else {
+                *cur * 0.7 + (bps / 1_000_000.0) * 0.3
+            };
         }
     }
 
@@ -323,7 +341,11 @@ impl LinkRegistry {
 
     /// Find a transport by scheme.
     pub fn find(&self, scheme: &str) -> Option<&dyn LinkTransport> {
-        self.transports.iter().rev().find(|t| t.scheme() == scheme).map(|t| t.as_ref())
+        self.transports
+            .iter()
+            .rev()
+            .find(|t| t.scheme() == scheme)
+            .map(|t| t.as_ref())
     }
 
     /// Every registered scheme.
@@ -376,7 +398,10 @@ pub struct PipeLink {
 
 impl std::fmt::Debug for PipeLink {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PipeLink").field("id", &self.id).field("kind", &self.kind).finish()
+        f.debug_struct("PipeLink")
+            .field("id", &self.id)
+            .field("kind", &self.kind)
+            .finish()
     }
 }
 
@@ -501,9 +526,19 @@ const MAX_PIPE_READS_PER_POLL: usize = 8;
 mod tests {
     use super::*;
     use crate::protocol::kind;
+    use std::collections::VecDeque;
 
     fn frame(seq: u64) -> Frame {
-        Frame::new(2, kind::PING, seq, &crate::protocol::Ping { nonce: seq, sent_us: seq }).expect("frame")
+        Frame::new(
+            2,
+            kind::PING,
+            seq,
+            &crate::protocol::Ping {
+                nonce: seq,
+                sent_us: seq,
+            },
+        )
+        .expect("frame")
     }
 
     #[test]
@@ -562,7 +597,9 @@ mod tests {
     fn pipe_over(queue: Queue) -> Pipe {
         Pipe {
             write: Box::new(|_bytes: Vec<u8>| Ok(())),
-            incoming: Box::new(move || Ok(queue.lock().unwrap_or_else(|e| e.into_inner()).pop_front())),
+            incoming: Box::new(move || {
+                Ok(queue.lock().unwrap_or_else(|e| e.into_inner()).pop_front())
+            }),
             close: Box::new(|| {}),
         }
     }
@@ -581,7 +618,10 @@ mod tests {
         );
         {
             assert!(link.send(&frame(1)).is_err());
-            assert!(!link.is_up(), "a failed send takes the route out of rotation");
+            assert!(
+                !link.is_up(),
+                "a failed send takes the route out of rotation"
+            );
         }
     }
 
@@ -591,7 +631,10 @@ mod tests {
         s.record_rtt(100.0);
         s.record_rtt(10.0);
         let rtt = s.metrics().rtt_ms;
-        assert!(rtt < 100.0 && rtt > 10.0, "the average moves toward the new sample: {rtt}");
+        assert!(
+            rtt < 100.0 && rtt > 10.0,
+            "the average moves toward the new sample: {rtt}"
+        );
 
         s.probe_sent();
         s.probe_ok(12.0);
@@ -601,7 +644,10 @@ mod tests {
         s.probe_sent();
         s.probe_sent();
         s.refresh_loss();
-        assert!(s.metrics().loss > 0.0, "two of three probes lost is recorded as loss");
+        assert!(
+            s.metrics().loss > 0.0,
+            "two of three probes lost is recorded as loss"
+        );
     }
 
     #[test]
@@ -638,11 +684,23 @@ mod tests {
         assert_eq!(reg.schemes(), vec!["fake"]);
         assert!(reg.find("fake").is_some());
         assert!(reg.find("carrier-pigeon").is_none());
-        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("rt");
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("rt");
         rt.block_on(async {
-            assert!(reg.open("fake://somewhere").await.is_err(), "the fake transport refuses");
-            assert!(reg.open("carrier-pigeon://somewhere").await.is_err(), "unknown scheme is an error");
-            assert!(reg.open("nowhere").await.is_err(), "a target with no scheme is an error");
+            assert!(
+                reg.open("fake://somewhere").await.is_err(),
+                "the fake transport refuses"
+            );
+            assert!(
+                reg.open("carrier-pigeon://somewhere").await.is_err(),
+                "unknown scheme is an error"
+            );
+            assert!(
+                reg.open("nowhere").await.is_err(),
+                "a target with no scheme is an error"
+            );
         });
     }
 }

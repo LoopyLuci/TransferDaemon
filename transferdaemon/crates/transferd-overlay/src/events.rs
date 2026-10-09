@@ -35,7 +35,12 @@ pub struct OverlayEvent {
 impl OverlayEvent {
     /// A new event, stamped with the current time.
     pub fn new(kind: &str, node_id: impl Into<String>, detail: impl Into<String>) -> Self {
-        Self { at: now_secs(), kind: kind.into(), node_id: node_id.into(), detail: detail.into() }
+        Self {
+            at: now_secs(),
+            kind: kind.into(),
+            node_id: node_id.into(),
+            detail: detail.into(),
+        }
     }
 }
 
@@ -53,11 +58,20 @@ pub struct EventLog {
     bus: tokio::sync::broadcast::Sender<OverlayEvent>,
 }
 
+impl Default for EventLog {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl EventLog {
     /// A log with a live broadcast channel behind it.
     pub fn new() -> Self {
         let (bus, _) = tokio::sync::broadcast::channel(HISTORY);
-        Self { recent: std::sync::Mutex::new(VecDeque::with_capacity(HISTORY)), bus }
+        Self {
+            recent: std::sync::Mutex::new(VecDeque::with_capacity(HISTORY)),
+            bus,
+        }
     }
 
     /// Record an event and hand it to anyone listening.
@@ -78,7 +92,9 @@ impl EventLog {
 
     /// The most recent events, oldest first.
     pub fn recent(&self, limit: usize) -> Vec<OverlayEvent> {
-        let Ok(recent) = self.recent.lock() else { return Vec::new() };
+        let Ok(recent) = self.recent.lock() else {
+            return Vec::new();
+        };
         recent.iter().rev().take(limit).rev().cloned().collect()
     }
 
@@ -147,7 +163,10 @@ pub struct Audit {
 impl Audit {
     /// A trail that writes to `path`, or only keeps the ring when there is none.
     pub fn new(path: Option<std::path::PathBuf>) -> Self {
-        Self { recent: std::sync::Mutex::new(VecDeque::with_capacity(256)), path }
+        Self {
+            recent: std::sync::Mutex::new(VecDeque::with_capacity(256)),
+            path,
+        }
     }
 
     /// Record one action.
@@ -156,7 +175,11 @@ impl Audit {
             if let Some(dir) = path.parent() {
                 let _ = std::fs::create_dir_all(dir);
             }
-            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+            if let Ok(mut f) = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+            {
                 use std::io::Write as _;
                 let _ = writeln!(f, "{}", serde_json::to_string(&record).unwrap_or_default());
             }
@@ -171,7 +194,9 @@ impl Audit {
 
     /// The most recent records, newest last.
     pub fn recent(&self, limit: usize) -> Vec<AuditRecord> {
-        let Ok(recent) = self.recent.lock() else { return Vec::new() };
+        let Ok(recent) = self.recent.lock() else {
+            return Vec::new();
+        };
         recent.iter().rev().take(limit).rev().cloned().collect()
     }
 

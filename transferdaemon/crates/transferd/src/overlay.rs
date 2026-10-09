@@ -22,18 +22,19 @@
 //! `overlay/state.json`, the audit trail in `overlay/audit.jsonl`, all under the data folder.
 
 use std::path::Path;
-use std::pin::Pin;
-use std::future::Future;
 use std::sync::Arc;
 
 use serde_json::Value;
 use transferd_control::catalog::{extension_op, Operation};
-use transferd_control::hub::{Extension, Hub};
+use transferd_control::hub::{Extension, ExtensionCall, Hub};
 use transferd_overlay::{NodeIdentity, OverlayConfig, OverlayNode};
 
 /// Whether the overlay is wanted (on unless `TRANSFERD_OVERLAY` is `off`/`0`/`false`).
 pub fn enabled() -> bool {
-    !matches!(std::env::var("TRANSFERD_OVERLAY").as_deref(), Ok("off") | Ok("0") | Ok("false"))
+    !matches!(
+        std::env::var("TRANSFERD_OVERLAY").as_deref(),
+        Ok("off") | Ok("0") | Ok("false")
+    )
 }
 
 /// Start this installation's overlay node and put its operations on `hub`.
@@ -43,7 +44,10 @@ pub async fn start(hub: &Arc<Hub>) -> Option<Arc<OverlayNode>> {
     }
     let dir = transferd_control::client::data_dir().join("overlay");
     if let Err(e) = std::fs::create_dir_all(&dir) {
-        tracing::warn!("[overlay] cannot create {}: {e}; the overlay is off", dir.display());
+        tracing::warn!(
+            "[overlay] cannot create {}: {e}; the overlay is off",
+            dir.display()
+        );
         return None;
     }
     let identity = match load_or_create_identity(&dir.join("node.key"), &node_name()) {
@@ -56,14 +60,20 @@ pub async fn start(hub: &Arc<Hub>) -> Option<Arc<OverlayNode>> {
     let config = OverlayConfig {
         relays: relays(),
         direct: list("TRANSFERD_OVERLAY_DIRECT"),
-        listen: std::env::var("TRANSFERD_OVERLAY_LISTEN").ok().and_then(|v| v.trim().parse().ok()),
+        listen: std::env::var("TRANSFERD_OVERLAY_LISTEN")
+            .ok()
+            .and_then(|v| v.trim().parse().ok()),
         state_path: Some(dir.join("state.json")),
         audit_path: Some(dir.join("audit.jsonl")),
         ..OverlayConfig::local(identity)
     };
     match OverlayNode::start(config).await {
         Ok(node) => {
-            println!("TransferDaemon overlay node {} ({} relay(s))", node.node_id(), node.relays().len());
+            println!(
+                "TransferDaemon overlay node {} ({} relay(s))",
+                node.node_id(),
+                node.relays().len()
+            );
             hub.add_extension(Arc::new(Ops(node.clone())));
             let upstreams = list("TRANSFERD_MESH_DNS");
             if !upstreams.is_empty() {
@@ -72,7 +82,10 @@ pub async fn start(hub: &Arc<Hub>) -> Option<Arc<OverlayNode>> {
                     dns.listen = listen.trim().to_string();
                 }
                 match node.set_mesh_dns(Some(dns)).await {
-                    Ok(status) => println!("TransferDaemon mesh DNS on {}", status["listen"].as_str().unwrap_or("?")),
+                    Ok(status) => println!(
+                        "TransferDaemon mesh DNS on {}",
+                        status["listen"].as_str().unwrap_or("?")
+                    ),
                     Err(e) => tracing::warn!("[overlay] mesh DNS did not start: {e}"),
                 }
             }
@@ -93,7 +106,10 @@ fn relays() -> Vec<String> {
     if !own.is_empty() {
         return own;
     }
-    list("TRANSFERD_RELAY_ADDR").into_iter().filter(|r| !r.contains("://") || r.starts_with("udp://")).collect()
+    list("TRANSFERD_RELAY_ADDR")
+        .into_iter()
+        .filter(|r| !r.contains("://") || r.starts_with("udp://"))
+        .collect()
 }
 
 fn list(var: &str) -> Vec<String> {
@@ -122,7 +138,12 @@ fn load_or_create_identity(path: &Path, name: &str) -> std::io::Result<NodeIdent
         let seed = hex::decode(text.trim())
             .ok()
             .and_then(|b| <[u8; 64]>::try_from(b).ok())
-            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidData, format!("{} is not a node key", path.display())))?;
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("{} is not a node key", path.display()),
+                )
+            })?;
         return Ok(NodeIdentity::from_seed(&seed, name));
     }
     if path.exists() {
@@ -130,7 +151,10 @@ fn load_or_create_identity(path: &Path, name: &str) -> std::io::Result<NodeIdent
         // key silently, every paired node knows this one.
         return Err(std::io::Error::new(
             std::io::ErrorKind::PermissionDenied,
-            format!("{} exists but cannot be read; move it away to start with a new node id", path.display()),
+            format!(
+                "{} exists but cannot be read; move it away to start with a new node id",
+                path.display()
+            ),
         ));
     }
     let mut seed = [0u8; 64];
@@ -146,17 +170,17 @@ impl Extension for Ops {
     fn operations(&self) -> Vec<Operation> {
         transferd_overlay::ops::operations()
             .into_iter()
-            .map(|(id, summary, mutating, input, output)| extension_op(id, summary, mutating, false, input, output))
+            .map(|(id, summary, mutating, input, output)| {
+                extension_op(id, summary, mutating, false, input, output)
+            })
             .collect()
     }
 
-    fn call<'a>(
-        &'a self,
-        op: &'a str,
-        args: Value,
-    ) -> Pin<Box<dyn Future<Output = Result<Value, (String, String)>> + Send + 'a>> {
+    fn call<'a>(&'a self, op: &'a str, args: Value) -> ExtensionCall<'a> {
         Box::pin(async move {
-            transferd_overlay::ops::call(&self.0, op, args).await.map_err(|e| (e.code().to_string(), e.to_string()))
+            transferd_overlay::ops::call(&self.0, op, args)
+                .await
+                .map_err(|e| (e.code().to_string(), e.to_string()))
         })
     }
 }
@@ -175,7 +199,10 @@ mod tests {
         let again = load_or_create_identity(&path, "a").expect("read back");
         assert_eq!(first.node_id(), again.node_id());
         std::fs::write(&path, b"not a key").expect("damage it");
-        assert!(load_or_create_identity(&path, "a").is_err(), "a damaged key is refused, not replaced");
+        assert!(
+            load_or_create_identity(&path, "a").is_err(),
+            "a damaged key is refused, not replaced"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

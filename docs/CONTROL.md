@@ -5,7 +5,8 @@ Everything TransferDaemon does can be done from outside, by a script, another pr
 - the daemon's whole API (47 gRPC calls);
 - its window;
 - its terminal UI;
-- local relays.
+- local relays;
+- the overlay, and mesh DNS over it (see OVERLAY.md).
 
 All of it goes through one place, the **control hub**, which runs inside the daemon.
 
@@ -15,7 +16,8 @@ All of it goes through one place, the **control hub**, which runs inside the dae
   ABP, scripts (HTTP) ─────┼── control hub ─────┤
    MCP clients (HTTP) ─────┘  (in transferd)    ├─ the window (transferd-ui attaches)   gui.*
                                                 ├─ the terminal UI (transferd-tui attaches)   tui.*
-                                                └─ local relays (relayd, relayd-ws, dhtd)   relay.*
+                                                ├─ local relays (relayd, relayd-ws, dhtd)   relay.*
+                                                └─ the overlay and mesh DNS   overlay.*
 ```
 
 ## The hub
@@ -66,6 +68,14 @@ The hub also has its own operations:
 - `tui.*`;
 - `relay.status`, `relay.start`, `relay.stop` and `relay.probe` (UDP challenge, WebSocket handshake, or TCP reachability).
 
+The daemon's overlay node adds its own (`TRANSFERD_OVERLAY=off` leaves them out); OVERLAY.md describes them:
+
+- `overlay.status`, `overlay.peers`, `overlay.services`, `overlay.probe`, `overlay.events`, `overlay.audit`;
+- `overlay.invite_create`, `overlay.invite_accept`;
+- `overlay.expose`, `overlay.unexpose`, `overlay.connect`, `overlay.disconnect`, `overlay.group_set`;
+- `overlay.proxies_start`, `overlay.proxy_status`;
+- `overlay.dns_set`, `overlay.dns_status` (mesh DNS).
+
 ## The window (`gui.*`)
 
 `transferd-ui` attaches to the hub when it starts. `TRANSFERD_GUI_CONTROL=off` opts out. Everything happens inside
@@ -105,6 +115,10 @@ transferd-cli connections | settings get|set ... | telemetry [s] | audit [n]
 transferd-cli ops [words] [--group g] | op <id> | call <id> [JSON | key=value...]
 transferd-cli gui <action> [...] [--out shot.png] | tui <action> [...]
 transferd-cli relay status|start|stop|probe ... | daemon start|stop|status
+transferd-cli overlay status|peers|services|invite [ttl]|accept <invite> [name]
+transferd-cli overlay expose <service> <host:port> [node...] | unexpose <service>
+transferd-cli overlay connect <node|group> <service> | disconnect <host:port> | events [s] | audit [n]
+transferd-cli overlay dns [status] | dns set <node|group...> [--listen host:port] | dns off
 transferd-cli mcp [--tools all|compact]
 ```
 

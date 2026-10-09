@@ -111,7 +111,12 @@ impl SendSide {
             let (chunk, tail) = rest.split_at(room);
             self.credit -= room as u64;
             self.sent += room as u64;
-            let frame = OutFrame { stream: self.id, seq: self.next_seq, payload: chunk.to_vec(), fin: fin && last };
+            let frame = OutFrame {
+                stream: self.id,
+                seq: self.next_seq,
+                payload: chunk.to_vec(),
+                fin: fin && last,
+            };
             self.next_seq += 1;
             self.unacked.insert(frame.seq, frame.clone());
             out.push(frame);
@@ -128,7 +133,9 @@ impl SendSide {
         // Bound the retransmit buffer: the oldest frames are the ones a resend timer would
         // replay first, so drop from the front rather than refusing new data.
         while self.unacked.len() > MAX_UNACKED {
-            let Some(oldest) = self.unacked.keys().next().copied() else { break };
+            let Some(oldest) = self.unacked.keys().next().copied() else {
+                break;
+            };
             self.unacked.remove(&oldest);
         }
         out
@@ -346,7 +353,10 @@ impl Mux {
 
     /// A mux allocating odd ids (`odd`) or even ones; the two ends of a session must differ.
     pub fn with_parity(odd: bool) -> Self {
-        Self { even: !odd, ..Self::default() }
+        Self {
+            even: !odd,
+            ..Self::default()
+        }
     }
 
     /// Allocate a stream id for a stream we are opening.
@@ -357,7 +367,7 @@ impl Mux {
 
     /// Whether `id` belongs to the half the peer allocates from.
     pub fn is_peer_stream(&self, id: StreamId) -> bool {
-        id.0 != 0 && (id.0 % 2 == 0) != self.even
+        id.0 != 0 && id.0.is_multiple_of(2) != self.even
     }
 
     /// Register a stream we are opening.
@@ -372,8 +382,12 @@ impl Mux {
     /// Register a stream the peer opened.
     pub fn accept(&mut self, id: StreamId, service: impl Into<String>) -> &mut RecvSide {
         let service = service.into();
-        self.send.entry(id.0).or_insert_with(|| SendSide::new(id, service.clone()));
-        self.recv.entry(id.0).or_insert_with(|| RecvSide::new(id, service))
+        self.send
+            .entry(id.0)
+            .or_insert_with(|| SendSide::new(id, service.clone()));
+        self.recv
+            .entry(id.0)
+            .or_insert_with(|| RecvSide::new(id, service))
     }
 
     pub fn send_side(&mut self, id: StreamId) -> Option<&mut SendSide> {
@@ -428,13 +442,19 @@ mod tests {
         assert_eq!(frames.len(), 1, "only 40 bytes of credit are left");
         assert_eq!(frames[0].payload.len(), 40);
         assert_eq!(s.credit(), 0);
-        assert!(s.frame(&payload(10, 120), false).is_empty(), "no credit, no frames");
+        assert!(
+            s.frame(&payload(10, 120), false).is_empty(),
+            "no credit, no frames"
+        );
     }
 
     #[test]
     fn a_zero_window_blocks_until_credit_is_granted() {
         let mut s = SendSide::with_window(StreamId(1), "ssh", 0);
-        assert!(s.frame(b"hello", false).is_empty(), "a zero window is closed");
+        assert!(
+            s.frame(b"hello", false).is_empty(),
+            "a zero window is closed"
+        );
         s.grant(10);
         let frames = s.frame(b"hello", false);
         assert_eq!(frames.len(), 1);
@@ -448,7 +468,10 @@ mod tests {
         assert_eq!(frames.len(), 3);
         assert!(frames[..2].iter().all(|f| !f.fin));
         assert!(frames[2].fin, "only the last frame ends the stream");
-        assert_eq!(frames.iter().map(|f| f.payload.len()).sum::<usize>(), MAX_FRAME * 2 + 5);
+        assert_eq!(
+            frames.iter().map(|f| f.payload.len()).sum::<usize>(),
+            MAX_FRAME * 2 + 5
+        );
         assert!(s.is_finished() || !s.is_finished());
     }
 
@@ -468,22 +491,50 @@ mod tests {
         s.frame(&payload(10, 0), false);
         s.frame(&payload(10, 10), false);
         s.frame(&payload(10, 20), false);
-        assert_eq!(s.retransmit().iter().map(|f| f.seq).collect::<Vec<_>>(), vec![0, 1, 2]);
+        assert_eq!(
+            s.retransmit().iter().map(|f| f.seq).collect::<Vec<_>>(),
+            vec![0, 1, 2]
+        );
         s.ack(1);
-        assert_eq!(s.retransmit().iter().map(|f| f.seq).collect::<Vec<_>>(), vec![2], "only what is missing");
+        assert_eq!(
+            s.retransmit().iter().map(|f| f.seq).collect::<Vec<_>>(),
+            vec![2],
+            "only what is missing"
+        );
     }
 
     #[test]
     fn a_receiver_delivers_in_order_even_when_frames_arrive_out_of_order() {
         let mut r = RecvSide::new(StreamId(1), "http");
-        let a = OutFrame { stream: StreamId(1), seq: 0, payload: b"first ".to_vec(), fin: false };
-        let b = OutFrame { stream: StreamId(1), seq: 1, payload: b"second".to_vec(), fin: false };
-        let c = OutFrame { stream: StreamId(1), seq: 2, payload: b" third".to_vec(), fin: true };
+        let a = OutFrame {
+            stream: StreamId(1),
+            seq: 0,
+            payload: b"first ".to_vec(),
+            fin: false,
+        };
+        let b = OutFrame {
+            stream: StreamId(1),
+            seq: 1,
+            payload: b"second".to_vec(),
+            fin: false,
+        };
+        let c = OutFrame {
+            stream: StreamId(1),
+            seq: 2,
+            payload: b" third".to_vec(),
+            fin: true,
+        };
 
-        assert!(r.accept(c.clone()).is_empty(), "nothing is deliverable before frame 0");
+        assert!(
+            r.accept(c.clone()).is_empty(),
+            "nothing is deliverable before frame 0"
+        );
         assert!(r.accept(b.clone()).is_empty(), "still waiting for frame 0");
         let ready = r.accept(a);
-        assert_eq!(ready, vec![b"first ".to_vec(), b"second".to_vec(), b" third".to_vec()]);
+        assert_eq!(
+            ready,
+            vec![b"first ".to_vec(), b"second".to_vec(), b" third".to_vec()]
+        );
         assert_eq!(r.take().expect("read"), b"first second third");
         assert!(r.finished(), "the fin flag arrived");
     }
@@ -491,10 +542,23 @@ mod tests {
     #[test]
     fn a_receiver_ignores_duplicates_and_anything_after_the_end() {
         let mut r = RecvSide::new(StreamId(1), "http");
-        let f = OutFrame { stream: StreamId(1), seq: 0, payload: b"x".to_vec(), fin: true };
+        let f = OutFrame {
+            stream: StreamId(1),
+            seq: 0,
+            payload: b"x".to_vec(),
+            fin: true,
+        };
         assert_eq!(r.accept(f.clone()).len(), 1);
-        assert!(r.accept(f.clone()).is_empty(), "the same frame twice delivers nothing more");
-        let after = OutFrame { stream: StreamId(1), seq: 1, payload: b"y".to_vec(), fin: false };
+        assert!(
+            r.accept(f.clone()).is_empty(),
+            "the same frame twice delivers nothing more"
+        );
+        let after = OutFrame {
+            stream: StreamId(1),
+            seq: 1,
+            payload: b"y".to_vec(),
+            fin: false,
+        };
         assert!(r.accept(after).is_empty(), "nothing is accepted after fin");
     }
 
@@ -504,25 +568,49 @@ mod tests {
         // Every frame is out of order, so nothing drains and the buffer must stop growing.
         let mut accepted = 0;
         for seq in 1..=(MAX_UNACKED as u64 * 2) {
-            if !r.accept(OutFrame { stream: StreamId(1), seq, payload: vec![0; 4], fin: false }).is_empty() {
+            if !r
+                .accept(OutFrame {
+                    stream: StreamId(1),
+                    seq,
+                    payload: vec![0; 4],
+                    fin: false,
+                })
+                .is_empty()
+            {
                 accepted += 1;
             }
         }
         assert_eq!(accepted, 0, "no frame is deliverable without frame 0");
-        assert!(r.dropped() > 0, "frames past the reorder window are refused, not buffered");
+        assert!(
+            r.dropped() > 0,
+            "frames past the reorder window are refused, not buffered"
+        );
     }
 
     #[test]
     fn the_receiver_grants_credit_only_up_to_its_window() {
         let mut r = RecvSide::with_window(StreamId(1), "http", 1000);
-        r.accept(OutFrame { stream: StreamId(1), seq: 0, payload: payload(400, 0), fin: false });
+        r.accept(OutFrame {
+            stream: StreamId(1),
+            seq: 0,
+            payload: payload(400, 0),
+            fin: false,
+        });
         assert_eq!(r.credit(), 600, "400 of the 1000-byte window is in use");
         // Nothing is returned to the peer until the application reads it.
         assert_eq!(r.window_update(), 0);
         let taken = r.take().expect("read");
         assert_eq!(taken.len(), 400);
-        assert_eq!(r.window_update(), 400, "reading 400 bytes returns 400 of credit");
-        assert_eq!(r.window_update(), 0, "and the credit is only handed out once");
+        assert_eq!(
+            r.window_update(),
+            400,
+            "reading 400 bytes returns 400 of credit"
+        );
+        assert_eq!(
+            r.window_update(),
+            0,
+            "and the credit is only handed out once"
+        );
         assert_eq!(r.credit(), 1000, "the whole window is free again");
     }
 
@@ -546,7 +634,10 @@ mod tests {
                 read += taken.len();
                 send.grant(recv.window_update());
             }
-            assert!(recv.buffered() <= window, "the receiver never buffers more than its window");
+            assert!(
+                recv.buffered() <= window,
+                "the receiver never buffers more than its window"
+            );
         }
         assert_eq!(read, total, "every byte arrived, exactly once");
     }
@@ -557,7 +648,11 @@ mod tests {
         let a = m.open("http");
         let b = m.open("ssh");
         assert_ne!(a, b);
-        assert_eq!(m.counts(), (2, 2), "a stream we open carries bytes both ways");
+        assert_eq!(
+            m.counts(),
+            (2, 2),
+            "a stream we open carries bytes both ways"
+        );
         m.accept(StreamId(98), "http");
         assert_eq!(m.counts(), (3, 3), "and so does one the peer opened");
         m.remove_send(a);

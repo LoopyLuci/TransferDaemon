@@ -35,7 +35,11 @@ impl NodeIdentity {
     /// Build an identity from a signing key and a display name.
     pub fn new(signing: HybridSigningKey, name: impl Into<String>) -> Self {
         let node_id = hex::encode(&signing.verifying_key().to_bytes()[..32]);
-        Self { signing: std::sync::Arc::new(signing), node_id, name: name.into() }
+        Self {
+            signing: std::sync::Arc::new(signing),
+            node_id,
+            name: name.into(),
+        }
     }
 
     /// A fresh identity with a random key. Used for tests and for nodes that have not yet
@@ -127,9 +131,11 @@ impl Acl {
     /// Whether `node_id` may use the service.
     ///
     /// An empty list allows nobody: nothing is exposed by default.
-    pub fn permits(&self, node_id: &str) -> bool {
+    pub fn permits(&self, node_id: &str, paired: bool) -> bool {
         match self {
-            Self::AllPaired => true,
+            // Paired: this node accepted the peer's invite, or the peer accepted one of ours.
+            // A node that only managed to open a session (anyone who knows a node id can) is not.
+            Self::AllPaired => paired,
             Self::Nodes(nodes) => nodes.iter().any(|n| n == &node_id.to_ascii_lowercase()),
         }
     }
@@ -166,7 +172,10 @@ impl Default for ServiceRate {
     fn default() -> Self {
         // Generous enough for real work, low enough that a runaway client cannot saturate
         // the node it is pointed at.
-        Self { streams_per_min: 120, bytes_per_min: 512 * 1024 * 1024 }
+        Self {
+            streams_per_min: 120,
+            bytes_per_min: 512 * 1024 * 1024,
+        }
     }
 }
 
@@ -187,7 +196,14 @@ impl NodeRecord {
     /// A record for a newly paired node.
     pub fn new(node_id: String, name: String, hybrid_public_key: Vec<u8>) -> Self {
         let now = now_secs();
-        Self { node_id, name, services: Vec::new(), hybrid_public_key, paired_at: now, last_seen: now }
+        Self {
+            node_id,
+            name,
+            services: Vec::new(),
+            hybrid_public_key,
+            paired_at: now,
+            last_seen: now,
+        }
     }
 }
 
@@ -243,7 +259,23 @@ fn invite_binding(i: &Invite) -> Vec<u8> {
 }
 
 /// Build and sign an invite for this node.
-pub fn make_invite(identity: &NodeIdentity, relays: Vec<String>, direct: Vec<String>, ttl_s: u64) -> String {
+pub fn make_invite(
+    identity: &NodeIdentity,
+    relays: Vec<String>,
+    direct: Vec<String>,
+    ttl_s: u64,
+) -> String {
+    make_invite_with_nonce(identity, relays, direct, ttl_s).0
+}
+
+/// The same, with the invite's nonce and expiry: the nonce is the one-time secret the node
+/// that accepts the invite presents, which is how the inviting node learns it is paired too.
+pub fn make_invite_with_nonce(
+    identity: &NodeIdentity,
+    relays: Vec<String>,
+    direct: Vec<String>,
+    ttl_s: u64,
+) -> (String, [u8; 16], u64) {
     let ttl_s = ttl_s.clamp(30, 86_400);
     let mut nonce = [0u8; 16];
     rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut nonce);
@@ -258,9 +290,22 @@ pub fn make_invite(identity: &NodeIdentity, relays: Vec<String>, direct: Vec<Str
         nonce,
         signature: Vec::new(),
     };
-    invite.signature = identity.signing_key().sign(&invite_binding(&invite)).to_bytes();
+    invite.signature = identity
+        .signing_key()
+        .sign(&invite_binding(&invite))
+        .to_bytes();
     let json = serde_json::to_string(&invite).unwrap_or_default();
-    format!("tdov1:{}", base64_url_encode(json.as_bytes()))
+    (
+        format!("tdov1:{}", base64_url_encode(json.as_bytes())),
+        invite.nonce,
+        invite.expires_at,
+    )
+}
+
+/// An invite's nonce, read without verifying (the caller verified it with [`accept_invite`]).
+pub fn invite_nonce(invite: &str) -> Option<[u8; 16]> {
+    let raw = base64_url_decode(invite.strip_prefix("tdov1:")?).ok()?;
+    serde_json::from_slice::<Invite>(&raw).ok().map(|i| i.nonce)
 }
 
 /// Verify an invite and return the record to pair with.
@@ -275,7 +320,8 @@ pub fn accept_invite(invite: &str) -> Result<NodeRecord> {
     if raw.len() > MAX_INVITE_BYTES {
         return Err(OverlayError::protocol("invite is too large"));
     }
-    let invite: Invite = serde_json::from_slice(&raw).map_err(|e| OverlayError::protocol(e.to_string()))?;
+    let invite: Invite =
+        serde_json::from_slice(&raw).map_err(|e| OverlayError::protocol(e.to_string()))?;
     if invite.expires_at <= now_secs() {
         return Err(OverlayError::protocol("invite has expired"));
     }
@@ -290,7 +336,8 @@ pub fn accept_invite(invite: &str) -> Result<NodeRecord> {
             reason: "invite signature does not verify".into(),
         });
     }
-    let expected = hex::decode(&invite.node_id).map_err(|_| OverlayError::BadNodeId(invite.node_id.clone()))?;
+    let expected = hex::decode(&invite.node_id)
+        .map_err(|_| OverlayError::BadNodeId(invite.node_id.clone()))?;
     if expected.len() != 32 || invite.hybrid_public_key[..32] != expected {
         return Err(OverlayError::IdentityMismatch {
             node: invite.node_id.clone(),
@@ -301,7 +348,11 @@ pub fn accept_invite(invite: &str) -> Result<NodeRecord> {
     if name.is_empty() {
         name = short_name(&invite.node_id);
     }
-    Ok(NodeRecord::new(invite.node_id, name, invite.hybrid_public_key))
+    Ok(NodeRecord::new(
+        invite.node_id,
+        name,
+        invite.hybrid_public_key,
+    ))
 }
 
 /// The reachability an invite carried, for the caller to dial.
@@ -314,10 +365,19 @@ pub struct InviteReach {
 /// Split an invite's reachability out without trusting it: used for a first dial attempt,
 /// before the invite has been verified.
 pub fn invite_reach(invite: &str) -> InviteReach {
-    let Some(body) = invite.strip_prefix("tdov1:") else { return InviteReach::default() };
-    let Ok(raw) = base64_url_decode(body) else { return InviteReach::default() };
-    let Ok(i) = serde_json::from_slice::<Invite>(&raw) else { return InviteReach::default() };
-    InviteReach { relays: i.relays, direct: i.direct }
+    let Some(body) = invite.strip_prefix("tdov1:") else {
+        return InviteReach::default();
+    };
+    let Ok(raw) = base64_url_decode(body) else {
+        return InviteReach::default();
+    };
+    let Ok(i) = serde_json::from_slice::<Invite>(&raw) else {
+        return InviteReach::default();
+    };
+    InviteReach {
+        relays: i.relays,
+        direct: i.direct,
+    }
 }
 
 /// A short, human-typable form of a node id (the first six bytes, hex).
@@ -327,7 +387,11 @@ pub fn short_name(node_id: &str) -> String {
 
 /// Check a node id's shape (64 lowercase hex characters).
 pub fn check_node_id(node_id: &str) -> Result<()> {
-    if node_id.len() != 64 || !node_id.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()) {
+    if node_id.len() != 64
+        || !node_id
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+    {
         return Err(OverlayError::BadNodeId(node_id.to_string()));
     }
     Ok(())
@@ -335,7 +399,10 @@ pub fn check_node_id(node_id: &str) -> Result<()> {
 
 /// Seconds since the Unix epoch.
 pub fn now_secs() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 // ---------------------------------------------------------------------------
@@ -348,7 +415,11 @@ const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz012
 pub fn base64_url_encode(data: &[u8]) -> String {
     let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
     for chunk in data.chunks(3) {
-        let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
+        let b = [
+            chunk[0],
+            *chunk.get(1).unwrap_or(&0),
+            *chunk.get(2).unwrap_or(&0),
+        ];
         let n = ((b[0] as u32) << 16) | ((b[1] as u32) << 8) | b[2] as u32;
         out.push(B64[(n >> 18) as usize & 63] as char);
         out.push(B64[(n >> 12) as usize & 63] as char);
@@ -407,14 +478,27 @@ mod tests {
     fn the_relay_token_is_stable_and_identity_derived() {
         let a = NodeIdentity::generate("a");
         let b = NodeIdentity::generate("b");
-        assert_eq!(a.relay_token(), relay_token_for(a.node_id()), "same node, same token");
-        assert_ne!(a.relay_token(), b.relay_token(), "different nodes, different tokens");
+        assert_eq!(
+            a.relay_token(),
+            relay_token_for(a.node_id()),
+            "same node, same token"
+        );
+        assert_ne!(
+            a.relay_token(),
+            b.relay_token(),
+            "different nodes, different tokens"
+        );
     }
 
     #[test]
     fn an_invite_round_trips_and_carries_reachability() {
         let id = NodeIdentity::generate("phone");
-        let invite = make_invite(&id, vec!["relay.example:7777".into()], vec!["10.0.0.5:9000".into()], 600);
+        let invite = make_invite(
+            &id,
+            vec!["relay.example:7777".into()],
+            vec!["10.0.0.5:9000".into()],
+            600,
+        );
         let record = accept_invite(&invite).expect("accept");
         assert_eq!(record.node_id, id.node_id());
         assert_eq!(record.name, "phone");
@@ -432,7 +516,10 @@ mod tests {
         let body = invite.strip_prefix("tdov1:").expect("prefix");
         let mut raw = base64_url_decode(body).expect("decode");
         // Flip a byte inside the relays list.
-        let pos = raw.windows(2).position(|w| w == b"r:").expect("relay entry");
+        let pos = raw
+            .windows(2)
+            .position(|w| w == b"r:")
+            .expect("relay entry");
         raw[pos] = b'x';
         let forged = format!("tdov1:{}", base64_url_encode(&raw));
         let err = accept_invite(&forged).expect_err("must refuse a tampered invite");
@@ -459,13 +546,20 @@ mod tests {
     fn an_acl_allows_only_what_it_names() {
         let a = "aa".repeat(32);
         let b = "bb".repeat(32);
-        assert!(!Acl::parse(&[]).permits(&a), "an empty list exposes nothing");
-        assert!(Acl::parse(&["*paired".into()]).permits(&a));
-        let only_b = Acl::parse(&[b.clone()]);
-        assert!(only_b.permits(&b));
-        assert!(!only_b.permits(&a));
+        assert!(
+            !Acl::parse(&[]).permits(&a, true),
+            "an empty list exposes nothing"
+        );
+        assert!(Acl::parse(&["*paired".into()]).permits(&a, true));
+        assert!(
+            !Acl::parse(&["*paired".into()]).permits(&a, false),
+            "a session alone is not a pairing"
+        );
+        let only_b = Acl::parse(std::slice::from_ref(&b));
+        assert!(only_b.permits(&b, false));
+        assert!(!only_b.permits(&a, true));
         // Node ids are compared case-insensitively.
-        assert!(Acl::parse(&[b.to_uppercase()]).permits(&b));
+        assert!(Acl::parse(&[b.to_uppercase()]).permits(&b, false));
     }
 
     #[test]
@@ -474,7 +568,10 @@ mod tests {
             let data: Vec<u8> = (0..n).map(|i| (i * 7 + 3) as u8).collect();
             let text = base64_url_encode(&data);
             assert!(!text.contains('='), "no padding");
-            assert!(!text.contains('+') && !text.contains('/'), "url-safe alphabet");
+            assert!(
+                !text.contains('+') && !text.contains('/'),
+                "url-safe alphabet"
+            );
             assert_eq!(base64_url_decode(&text).expect("decode"), data);
         }
     }
@@ -484,6 +581,9 @@ mod tests {
         check_node_id(&"ab".repeat(32)).expect("valid");
         assert!(check_node_id("short").is_err());
         assert!(check_node_id(&"zz".repeat(32)).is_err(), "not hex");
-        assert!(check_node_id(&"AB".repeat(32)).is_err(), "uppercase is normalised away by callers");
+        assert!(
+            check_node_id(&"AB".repeat(32)).is_err(),
+            "uppercase is normalised away by callers"
+        );
     }
 }

@@ -24,14 +24,18 @@ use crate::node::OverlayNode;
 /// SOCKS5: no authentication, `CONNECT` only, domain names of the form
 /// `<service>.<node>.td`.
 pub async fn serve_socks(node: OverlayNode) -> Result<SocketAddr> {
-    let listener = TcpListener::bind("127.0.0.1:0").await.map_err(|e| OverlayError::Listen {
-        addr: std::net::SocketAddr::from(([127, 0, 0, 1], 0)),
-        source: e,
-    })?;
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .map_err(|e| OverlayError::Listen {
+            addr: std::net::SocketAddr::from(([127, 0, 0, 1], 0)),
+            source: e,
+        })?;
     let local = listener.local_addr().map_err(OverlayError::Io)?;
     tokio::spawn(async move {
         loop {
-            let Ok((socket, _)) = listener.accept().await else { break };
+            let Ok((socket, _)) = listener.accept().await else {
+                break;
+            };
             let node = node.clone();
             tokio::spawn(async move {
                 let _ = socks5_session(socket, node).await;
@@ -43,14 +47,18 @@ pub async fn serve_socks(node: OverlayNode) -> Result<SocketAddr> {
 
 /// HTTP: `CONNECT host:port`, for the many tools that take an HTTP proxy.
 pub async fn serve_http(node: OverlayNode) -> Result<SocketAddr> {
-    let listener = TcpListener::bind("127.0.0.1:0").await.map_err(|e| OverlayError::Listen {
-        addr: std::net::SocketAddr::from(([127, 0, 0, 1], 0)),
-        source: e,
-    })?;
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .map_err(|e| OverlayError::Listen {
+            addr: std::net::SocketAddr::from(([127, 0, 0, 1], 0)),
+            source: e,
+        })?;
     let local = listener.local_addr().map_err(OverlayError::Io)?;
     tokio::spawn(async move {
         loop {
-            let Ok((socket, _)) = listener.accept().await else { break };
+            let Ok((socket, _)) = listener.accept().await else {
+                break;
+            };
             let node = node.clone();
             tokio::spawn(async move {
                 let _ = http_session(socket, node).await;
@@ -85,7 +93,9 @@ async fn socks5_session(mut socket: TcpStream, node: OverlayNode) -> Result<()> 
     // Only a domain name (ATYP 3) can name an overlay service; an IP address cannot.
     if request[3] != 3 {
         socket.write_all(&[5, 8, 0, 1, 0, 0, 0, 0, 0, 0]).await?;
-        return Err(OverlayError::protocol("only <service>.<node>.td names are proxied"));
+        return Err(OverlayError::protocol(
+            "only <service>.<node>.td names are proxied",
+        ));
     }
     let mut len = [0u8; 1];
     socket.read_exact(&mut len).await?;
@@ -99,13 +109,28 @@ async fn socks5_session(mut socket: TcpStream, node: OverlayNode) -> Result<()> 
     match open(&node, &host).await {
         Ok(local) => {
             // A bound zero port is what the overlay replies on; tell the client it may proceed.
-            socket.write_all(&[5, 0, 0, 1, 127, 0, 0, 1, local.port().to_be_bytes()[0], local.port().to_be_bytes()[1]]).await?;
+            socket
+                .write_all(&[
+                    5,
+                    0,
+                    0,
+                    1,
+                    127,
+                    0,
+                    0,
+                    1,
+                    local.port().to_be_bytes()[0],
+                    local.port().to_be_bytes()[1],
+                ])
+                .await?;
             splice(socket, local).await;
             Ok(())
         }
         Err(_) => {
             socket.write_all(&[5, 5, 0, 1, 0, 0, 0, 0, 0, 0]).await?;
-            Err(OverlayError::protocol(format!("{host} is not reachable through the overlay")))
+            Err(OverlayError::protocol(format!(
+                "{host} is not reachable through the overlay"
+            )))
         }
     }
 }
@@ -114,7 +139,9 @@ async fn http_session(mut socket: TcpStream, node: OverlayNode) -> Result<()> {
     let mut head = vec![0u8; 0];
     let mut byte = [0u8; 1];
     while !head.ends_with(b"\r\n\r\n") {
-        let Ok(n) = socket.read(&mut byte).await else { break };
+        let Ok(n) = socket.read(&mut byte).await else {
+            break;
+        };
         if n == 0 {
             break;
         }
@@ -134,18 +161,28 @@ async fn http_session(mut socket: TcpStream, node: OverlayNode) -> Result<()> {
         return Err(OverlayError::protocol("only CONNECT is proxied"));
     }
     // The authority is `<service>.<node>.td:<port>`; the port is informational.
-    let host = target.rsplit_once(':').map(|(h, _)| h).unwrap_or(&target).to_string();
+    let host = target
+        .rsplit_once(':')
+        .map(|(h, _)| h)
+        .unwrap_or(&target)
+        .to_string();
     match open(&node, &host).await {
         Ok(local) => {
-            socket.write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n").await?;
+            socket
+                .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                .await?;
             splice(socket, local).await;
             Ok(())
         }
         Err(_) => {
             socket
-                .write_all(b"HTTP/1.1 502 Bad Gateway\r\ncontent-length: 0\r\nconnection: close\r\n\r\n")
+                .write_all(
+                    b"HTTP/1.1 502 Bad Gateway\r\ncontent-length: 0\r\nconnection: close\r\n\r\n",
+                )
                 .await?;
-            Err(OverlayError::protocol(format!("{host} is not reachable through the overlay")))
+            Err(OverlayError::protocol(format!(
+                "{host} is not reachable through the overlay"
+            )))
         }
     }
 }
@@ -167,7 +204,9 @@ pub fn parse_host(host: &str) -> Option<(String, String)> {
 /// a service group, so `<service>.<group>.td` reaches one member of a group.
 async fn open(node: &OverlayNode, host: &str) -> Result<SocketAddr> {
     let Some((service, node_id)) = parse_host(host) else {
-        return Err(OverlayError::protocol(format!("{host} is not a <service>.<node>.td name")));
+        return Err(OverlayError::protocol(format!(
+            "{host} is not a <service>.<node>.td name"
+        )));
     };
     let (local, _route) = node.connect(&node_id, &service).await?;
     Ok(local)
@@ -175,7 +214,9 @@ async fn open(node: &OverlayNode, host: &str) -> Result<SocketAddr> {
 
 /// Copy bytes both ways between the client and the overlay endpoint, until either side stops.
 pub async fn splice(client: TcpStream, local: SocketAddr) {
-    let Ok(server) = TcpStream::connect(local).await else { return };
+    let Ok(server) = TcpStream::connect(local).await else {
+        return;
+    };
     let (mut client_read, mut client_write) = tokio::io::split(client);
     let (mut server_read, mut server_write) = tokio::io::split(server);
     let mut buf = vec![0u8; 32 * 1024];
@@ -209,7 +250,10 @@ pub async fn splice(client: TcpStream, local: SocketAddr) {
 
 /// A refusal the caller can turn into the right protocol error.
 pub fn refused() -> std::io::Error {
-    std::io::Error::new(ErrorKind::PermissionDenied, "not reachable through the overlay")
+    std::io::Error::new(
+        ErrorKind::PermissionDenied,
+        "not reachable through the overlay",
+    )
 }
 
 #[cfg(test)]
@@ -220,14 +264,24 @@ mod tests {
     fn an_overlay_host_splits_into_a_service_and_a_node() {
         assert_eq!(
             parse_host("ssh.aa1122334455667788990011223344556677889900112233445566778899.td"),
-            Some(("ssh".to_string(), "aa1122334455667788990011223344556677889900112233445566778899".to_string()))
+            Some((
+                "ssh".to_string(),
+                "aa1122334455667788990011223344556677889900112233445566778899".to_string()
+            ))
         );
         assert_eq!(parse_host("web.bb.td"), Some(("web".into(), "bb".into())));
     }
 
     #[test]
     fn anything_that_is_not_an_overlay_name_is_refused() {
-        for bad in ["example.com", "1.2.3.4", "ssh.aa.td.extra", ".td", "ssh..td", ""] {
+        for bad in [
+            "example.com",
+            "1.2.3.4",
+            "ssh.aa.td.extra",
+            ".td",
+            "ssh..td",
+            "",
+        ] {
             assert_eq!(parse_host(bad), None, "{bad:?} is not an overlay name");
         }
         // The port is not part of the name.

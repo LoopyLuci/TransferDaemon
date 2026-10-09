@@ -9,20 +9,22 @@
 //! * **Reachability is outbound-only.** Every node keeps authenticated *outbound* connections:
 //!   to relay points (a self-hostable `relayd`, and any paired node that is itself reachable
 //!   can serve as a relay for the rest), and to peers directly when a path exists. Nothing is
-//!   ever dialled *into*, so no NAT, firewall or CGNAT mapping has to be configured. A NAT
-//!   traversal upgrade (UDP hole punching) turns a relayed path into a direct one when the
-//!   network allows it, and the relay stays as the always-works fallback.
+//!   ever dialled *into*, so no NAT, firewall or CGNAT mapping has to be configured. Direct
+//!   addresses a peer publishes are tried first, and the relay is the path that always works.
+//!   (UDP hole punching, to turn a relayed path into a direct one, is not finished: see
+//!   `docs/OVERLAY.md`.)
 //! * **Services are forwarded, not exposed.** A node publishes a local service with an ACL by
 //!   node identity. Another node asks for it by node id (or by service group) and gets a stable
 //!   local endpoint that survives reconnects. A local SOCKS5 and HTTP-CONNECT proxy let any
 //!   app reach `<service>.<node>.td` with no per-service setup at all.
 //! * **Routing is measured, not guessed.** Every route is probed continuously for RTT, loss
-//!   and throughput. Traffic takes the best route per flow, fails over mid-stream without
-//!   breaking the stream the application sees, and stripes bulk flows across routes. A service
+//!   and throughput. Traffic takes the best route, fails over mid-stream without breaking the
+//!   stream the application sees, and bulk frames may be striped across routes. A service
 //!   group is spread over every node offering that service, by load and route quality.
 //! * **Everything is authenticated and encrypted end to end.** Node identity is TransferDaemon's
 //!   hybrid post-quantum identity; every frame is authenticated and bound to its route and its
-//!   position, so it cannot be replayed, reordered or moved. Nothing is exposed by default.
+//!   position, so it cannot be replayed or moved. Nothing is exposed by default, and `*paired`
+//!   means nodes paired through an invite, never a node that merely opened a session.
 //!
 //! The wire format, version negotiation and extension rules are specified in `docs/PROTOCOL.md`;
 //! the architecture, the operations and the measured numbers are in `docs/OVERLAY.md`.
