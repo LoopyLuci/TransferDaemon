@@ -147,9 +147,23 @@ impl RelayClient {
         Ok(fresh)
     }
 
-    /// Register `token` with the relay (valid PoW for the current challenge).
-    /// Returns the challenge seen in the reply (refreshes the cache).
-    pub async fn register(&self, token: [u8; 32]) -> io::Result<PowChallenge> {
+    /// A proof-of-work nonce for `token` against the relay's current challenge, for messages
+    /// built outside this client.
+    pub async fn pow_nonce(&self, token: [u8; 32]) -> io::Result<u64> {
+        let challenge = self.refresh_challenge().await?;
+        Ok(solve_pow(&challenge, &token))
+    }
+
+    /// Send a registration for `token` without waiting for the reply, for a caller whose own
+    /// reader owns the socket. Registering again refreshes the relay's TTL, and after a relay
+    /// restart it is what puts the token back in the table.
+    pub async fn send_register(&self, token: [u8; 32]) -> io::Result<()> {
+        let frame = self.register_frame(token).await?;
+        self.socket.send_to(&frame, self.relay_addr).await?;
+        Ok(())
+    }
+
+    async fn register_frame(&self, token: [u8; 32]) -> io::Result<Vec<u8>> {
         let challenge = self.refresh_challenge().await?;
         let nonce = solve_pow(&challenge, &token);
         let msg = RegisterMsg {
@@ -158,11 +172,17 @@ impl RelayClient {
             seq: self.next_seq(),
         };
         let ghost = self.ghost.lock().ok().and_then(|g| g.clone());
-        let frame = match ghost {
+        match ghost {
             Some((cert, secret)) => encode(Tag::RegisterGhost, &ghost_register(msg, &cert, &GhostKey::from_secret(secret))),
             None => encode(Tag::Register, &msg),
         }
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))
+    }
+
+    /// Register `token` with the relay (valid PoW for the current challenge).
+    /// Returns the challenge seen in the reply (refreshes the cache).
+    pub async fn register(&self, token: [u8; 32]) -> io::Result<PowChallenge> {
+        let frame = self.register_frame(token).await?;
         self.socket.send_to(&frame, self.relay_addr).await?;
 
         // The relay replies with the current ChallengeMsg (or an ErrorMsg).

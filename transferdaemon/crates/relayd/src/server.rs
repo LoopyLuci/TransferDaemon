@@ -2,7 +2,7 @@
 //! `relayd` (src/main.rs) runs it; tests and embedders run the same loop on their own socket.
 
 use crate::protocol::{
-    AckMsg, ChallengeMsg, DeliveredMsg, ErrorMsg, ForwardMsg, GhostRegisterMsg, KeepaliveMsg, RegisterMsg, Tag,
+    AckMsg, ChallengeMsg, DeliveredMsg, ErrorMsg, ForwardMsg, GhostRegisterMsg, KeepaliveMsg, LocateMsg, RegisterMsg, Tag,
     encode, split, MAX_PAYLOAD,
 };
 use crate::relay::Relay;
@@ -127,6 +127,21 @@ pub async fn serve(socket: Arc<UdpSocket>, relay: Arc<Mutex<Relay>>) {
             Tag::Keepalive => {
                 if let Ok(msg) = bincode::deserialize::<KeepaliveMsg>(body) {
                     let _ = relay.lock().await.keepalive(&msg);
+                }
+            }
+
+            Tag::Locate => {
+                // STUN-style address location: the relay is the only party that can see a
+                // NAT's mapped address, so this is what a hole punch is built on.
+                if let Ok(msg) = bincode::deserialize::<LocateMsg>(body) {
+                    let answer = relay.lock().await.locate_answer(&msg, src);
+                    let reply = match answer {
+                        Ok(a) => encode(Tag::Locate, &a),
+                        Err(e) => encode(Tag::Error, &ErrorMsg { code: e.code(), seq: msg.seq, detail: e.to_string() }),
+                    };
+                    if let Ok(frame) = reply {
+                        let _ = socket.send_to(&frame, src).await;
+                    }
                 }
             }
 

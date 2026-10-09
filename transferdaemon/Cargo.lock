@@ -9405,6 +9405,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "transferd-overlay"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm",
+ "async-trait",
+ "bincode 1.3.3",
+ "blake3",
+ "bytes",
+ "hex",
+ "parking_lot",
+ "rand 0.8.8",
+ "relayd",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "transferd-core",
+ "transferd-crypto",
+]
+
+[[package]]
 name = "transferd-pentest"
 version = "0.1.0"
 dependencies = [

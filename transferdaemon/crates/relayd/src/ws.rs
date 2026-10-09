@@ -21,7 +21,7 @@ use tokio_tungstenite::WebSocketStream;
 use crate::pow::PowChallenge;
 use crate::protocol::{
     encode, split, AckMsg, ChallengeMsg, DeliveredMsg, ErrorCode, ErrorMsg, ForwardMsg,
-    GhostRegisterMsg, KeepaliveMsg, RegisterMsg, Tag,
+    GhostRegisterMsg, KeepaliveMsg, LocateMsg, LocatedMsg, RegisterMsg, Tag,
 };
 
 /// Outbound channel to one connection; the drain task writes frames to the WS
@@ -251,6 +251,24 @@ pub async fn handle_connection(
                 if let Ok(msg) = bincode::deserialize::<KeepaliveMsg>(body) {
                     let ttl = r.ttl_secs;
                     r.expires.insert(msg.session_token, now_secs() + ttl);
+                }
+            }
+            Tag::Locate => {
+                // STUN-style address location, the same as the UDP relay: the only party that
+                // can see a NAT's mapped address is the one the datagram went through.
+                if let Ok(msg) = bincode::deserialize::<LocateMsg>(body) {
+                    // As on UDP: only the connection the token registered on may ask for it.
+                    let known = r.clients.get(&msg.self_token).map(|(a, _)| *a == peer).unwrap_or(false);
+                    let peer_addr = r.clients.get(&msg.peer_token).map(|(a, _)| *a);
+                    let reply = if known {
+                        encode(Tag::Locate, &LocatedMsg { self_addr: peer, peer_addr, request: msg.seq })
+                    } else {
+                        encode(
+                            Tag::Error,
+                            &ErrorMsg { code: ErrorCode::TokenNotFound, seq: msg.seq, detail: "not registered".into() },
+                        )
+                    };
+                    let _ = tx.send(Message::Binary(reply.unwrap_or_default()));
                 }
             }
             Tag::Ack | Tag::Error => {}

@@ -3,7 +3,7 @@
 use crate::limits::{BandwidthTracker, RelayLimits};
 use crate::pow::PowChallenge;
 use crate::ghost::GhostPolicy;
-use crate::protocol::{ErrorCode, ForwardMsg, GhostRegisterMsg, KeepaliveMsg, RegisterMsg};
+use crate::protocol::{ErrorCode, ForwardMsg, GhostRegisterMsg, KeepaliveMsg, LocateMsg, LocatedMsg, RegisterMsg};
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -252,6 +252,42 @@ impl Relay {
     // -----------------------------------------------------------------------
     // Keepalive
     // -----------------------------------------------------------------------
+
+    // -----------------------------------------------------------------------
+    // Address location (NAT traversal)
+    // -----------------------------------------------------------------------
+
+    /// The address this relay currently sees for `token`, if it is registered.
+    pub fn locate(&mut self, token: &[u8; 32]) -> Option<SocketAddr> {
+        let now = now_secs();
+        self.table
+            .get(token)
+            .filter(|e| e.expires_at_secs > now)
+            .map(|e| e.addr)
+    }
+
+    /// Answer a `Locate`: the asker's observed address, and the peer's if it is registered.
+    ///
+    /// Only a registered token may ask, and only about tokens it already knows — the relay
+    /// hands out no more than the two addresses the two nodes would exchange anyway.
+    pub fn locate_answer(&mut self, msg: &LocateMsg, src: SocketAddr) -> Result<LocatedMsg, RelayError> {
+        if !self.challenge.verify(&msg.self_token, msg.pow_nonce) {
+            return Err(RelayError::InvalidPoW);
+        }
+        let now = now_secs();
+        // Only the address the token registered from may ask on its behalf, so knowing a
+        // token is not enough to use the relay as a lookup service.
+        let registered = self
+            .table
+            .get(&msg.self_token)
+            .map(|e| e.expires_at_secs > now && e.addr == src)
+            .unwrap_or(false);
+        if !registered {
+            return Err(RelayError::TokenNotFound);
+        }
+        let peer_addr = self.locate(&msg.peer_token);
+        Ok(LocatedMsg { self_addr: src, peer_addr, request: msg.seq })
+    }
 
     /// Refreshes the TTL for a registered session.
     pub fn keepalive(&mut self, msg: &KeepaliveMsg) -> Result<(), RelayError> {

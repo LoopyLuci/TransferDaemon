@@ -9,6 +9,7 @@
 //!   Without the 32-byte `SessionKey`, the relay cannot link a token to any identity.
 
 use serde::{Deserialize, Serialize};
+use std::net::SocketAddr;
 
 /// Message-type discriminant prepended to every datagram.
 #[repr(u8)]
@@ -22,6 +23,8 @@ pub enum Tag {
     Ack       = 0x06,
     /// A registration carrying a ghost key certificate (see `crate::ghost`).
     RegisterGhost = 0x07,
+    /// Ask the relay which addresses it sees for two tokens (STUN-style NAT traversal).
+    Locate = 0x08,
 }
 
 impl Tag {
@@ -34,6 +37,7 @@ impl Tag {
             0x05 => Some(Self::Error),
             0x06 => Some(Self::Ack),
             0x07 => Some(Self::RegisterGhost),
+            0x08 => Some(Self::Locate),
             _    => None,
         }
     }
@@ -121,6 +125,35 @@ pub struct ErrorMsg {
     pub code: ErrorCode,
     pub seq: u32,
     pub detail: String,
+}
+
+/// Ask the relay which addresses it currently sees for two tokens.
+///
+/// This is the rendezvous a hole punch needs: the only party that can observe a NAT's mapped
+/// address is the relay the datagram went through. A client must already be registered under
+/// `self_token`, so an anonymous node cannot use the relay to map arbitrary addresses.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LocateMsg {
+    /// The registered token asking.
+    pub self_token: [u8; 32],
+    /// The other token's mapped address, if it is registered here.
+    #[serde(default)]
+    pub peer_token: [u8; 32],
+    pub pow_nonce: u64,
+    pub seq: u32,
+}
+
+/// The relay's answer: the address it sees for the asker, and for the peer.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LocatedMsg {
+    /// The address the asker's datagram came from.
+    pub self_addr: SocketAddr,
+    /// The address the peer registered from, when it is registered here.
+    #[serde(default)]
+    pub peer_addr: Option<SocketAddr>,
+    /// Echo of the request's `seq`, so a client with several requests in flight can tell the answers apart.
+    #[serde(default)]
+    pub request: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -1,0 +1,31 @@
+[package]
+name = "transferd-overlay"
+version = "0.1.0"
+edition = "2021"
+description = "TransferDaemon's always-connected overlay: reach any paired node, forward its services, and route over the best path"
+
+[lints]
+workspace = true
+
+[dependencies]
+tokio        = { workspace = true }
+async-trait  = { workspace = true }
+serde        = { workspace = true }
+serde_json   = "1"
+bincode      = { workspace = true }
+blake3       = { workspace = true }
+thiserror    = { workspace = true }
+tracing      = { workspace = true }
+hex          = { workspace = true }
+bytes        = { workspace = true }
+rand         = { workspace = true }
+aes-gcm      = { workspace = true }
+parking_lot  = "0.12"
+transferd-core   = { path = "../transferd-core" }
+transferd-crypto = { path = "../transferd-crypto" }
+relayd          = { path = "../relayd" }
+
+[dev-dependencies]
+tokio      = { workspace = true }
+serde_json = "1"
+tracing-subscriber = { workspace = true }

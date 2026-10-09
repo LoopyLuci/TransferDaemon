@@ -1,0 +1,1293 @@
+//! The overlay node: the always-connected, self-routing network one machine participates in.
+//!
+//! # Reachability is outbound-only
+//!
+//! Every node keeps authenticated **outbound** connections. Nothing is ever dialled *into*:
+//!
+//! 1. It registers its identity-derived token on every configured relay — a self-hostable
+//!    `relayd`, and any paired node that is itself reachable can run one for the rest. A relay
+//!    delivers to the mapping our outbound datagram created, so a NAT, a firewall or a CGNAT
+//!    needs no configuration at all.
+//! 2. If both nodes publish a reachable address, a direct connection is dialled — over a LAN, a
+//!    tailnet, or any address a node chose to publish.
+//! 3. A UDP hole punch upgrades a relayed path to a direct one when the network allows it. Both
+//!    ends send outbound first, which is what opens the NAT mapping, and the punch then proves
+//!    itself with the session's own key material.
+//! 4. The relay is always the fallback, so "always reachable" never depends on a direct path
+//!    existing.
+//!
+//! # Services
+//!
+//! `expose` publishes a local service with an access list of node identities — and nothing is
+//! reachable until it is called. A peer that is not on the list never reaches the local socket:
+//! the ACL is checked before the stream is accepted, and the refusal is audited.
+//!
+//! `connect` gives a stable local endpoint for a peer's service. The endpoint outlives the
+//! session: when a session comes back, the same local address starts forwarding again.
+
+use std::collections::{BTreeMap, HashMap};
+use std::net::SocketAddr;
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::Duration;
+
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::sync::mpsc;
+
+use crate::error::{OverlayError, Result};
+use crate::events::{Audit, AuditRecord, EventLog, OverlayEvent, now_secs};
+use crate::identity::{self, Acl, ExposedService, NodeIdentity, NodeRecord, ServiceRate};
+use crate::lanes::{self, FramePipe};
+use crate::link::{Link, RouteKind};
+use crate::mux::StreamId;
+use crate::protocol::{self, ServiceInfo};
+use crate::relay::RelayHub;
+use crate::session::{self, SessionEvent, SessionHandle};
+use crate::state::{StoredConnect, StoredExpose, StoredGroup, StoredNode, StoredState};
+
+/// How often the node saves its state.
+pub const NODE_TICK: Duration = Duration::from_secs(30);
+
+/// How a session reads and writes a proxied stream.
+const COPY_CHUNK: usize = 32 * 1024;
+
+/// How the overlay node is set up.
+#[derive(Clone)]
+pub struct OverlayConfig {
+    /// This node's identity.
+    pub identity: NodeIdentity,
+    /// Relays to register on, as `host:port` (a WebSocket relay is registered on too).
+    pub relays: Vec<String>,
+    /// Addresses to publish for direct dialling.
+    pub direct: Vec<String>,
+    /// An optional direct listener. `None` (the default) means **no inbound port at all**,
+    /// which is the point: the overlay works with nothing open.
+    pub listen: Option<SocketAddr>,
+    /// Where the paired-node state is kept.
+    pub state_path: Option<PathBuf>,
+    /// Where the audit trail is written.
+    pub audit_path: Option<PathBuf>,
+    /// The highest protocol version to offer. Lower it to simulate an older peer.
+    pub max_version: u8,
+}
+
+impl OverlayConfig {
+    /// A configuration with no relays, no listener and no files: the smallest useful overlay.
+    pub fn local(identity: NodeIdentity) -> Self {
+        Self {
+            identity,
+            relays: Vec::new(),
+            direct: Vec::new(),
+            listen: None,
+            state_path: None,
+            audit_path: None,
+            max_version: protocol::VERSION_CURRENT as u8,
+        }
+    }
+}
+
+/// One peer's session, plus what we know about it.
+struct Peer {
+    record: NodeRecord,
+    session: SessionHandle,
+    /// The route the session came up on, for `overlay.connect`'s reply.
+    route: RouteKind,
+    /// Addresses we may dial this peer on.
+    reachable: Vec<String>,
+}
+
+/// Where the local proxies are listening.
+#[derive(Clone, Copy, Default)]
+pub struct ProxyAddrs {
+    pub socks5: Option<SocketAddr>,
+    pub http: Option<SocketAddr>,
+}
+
+/// The overlay node.
+#[derive(Clone)]
+pub struct OverlayNode {
+    inner: Arc<Inner>,
+}
+
+struct Inner {
+    config: OverlayConfig,
+    peers: parking_lot::Mutex<HashMap<String, Peer>>,
+    exposes: parking_lot::RwLock<BTreeMap<String, ExposedService>>,
+    connects: parking_lot::Mutex<BTreeMap<SocketAddr, StoredConnect>>,
+    groups: parking_lot::RwLock<BTreeMap<String, Vec<String>>>,
+    hubs: parking_lot::Mutex<Vec<Arc<RelayHub>>>,
+    events: EventLog,
+    audit: Audit,
+    listener: parking_lot::Mutex<Option<SocketAddr>>,
+    proxies: parking_lot::Mutex<ProxyAddrs>,
+    /// Per-(service, node) rate windows.
+    rates: parking_lot::Mutex<HashMap<(String, String), RateWindow>>,
+    /// Endpoints whose local listener is running.
+    forwarders: parking_lot::Mutex<std::collections::HashSet<SocketAddr>>,
+    /// Addresses this node publishes for direct dialling.
+    direct: parking_lot::Mutex<Vec<String>>,
+    next_link: std::sync::atomic::AtomicU32,
+    /// Nodes currently being dialled, so two callers do not dial at once.
+    dialing: tokio::sync::Mutex<HashMap<String, ()>>,
+    /// Streams currently open to each node, which is what group placement spreads by.
+    loads: parking_lot::Mutex<HashMap<String, usize>>,
+}
+
+/// A simple per-minute rate window.
+#[derive(Default)]
+struct RateWindow {
+    minute: u64,
+    streams: u32,
+    bytes: u64,
+}
+
+impl RateWindow {
+    /// Charge one stream and its bytes; returns why it was refused, if it was.
+    fn charge(&mut self, rate: ServiceRate, bytes: u64, now: u64) -> std::result::Result<(), String> {
+        if self.minute / 60 != now / 60 {
+            *self = RateWindow { minute: now, ..Default::default() };
+        }
+        if self.streams >= rate.streams_per_min {
+            return Err(format!("more than {} streams a minute", rate.streams_per_min));
+        }
+        if self.bytes + bytes > rate.bytes_per_min {
+            return Err(format!("more than {} bytes a minute", rate.bytes_per_min));
+        }
+        self.streams += 1;
+        self.bytes += bytes;
+        Ok(())
+    }
+}
+
+impl OverlayNode {
+    /// Start a node: load its state, register with its relays, and start listening.
+    pub async fn start(config: OverlayConfig) -> Result<Arc<Self>> {
+        let state = config.state_path.as_ref().map(|p| StoredState::load(p)).unwrap_or_default();
+        let node = Arc::new(Self {
+            inner: Arc::new(Inner {
+                groups: parking_lot::RwLock::new(
+                    state.groups.iter().map(|g| (g.name.clone(), g.members.clone())).collect(),
+                ),
+                audit: Audit::new(config.audit_path.clone()),
+                events: EventLog::new(),
+                listener: parking_lot::Mutex::new(None),
+                proxies: parking_lot::Mutex::new(ProxyAddrs::default()),
+                rates: parking_lot::Mutex::new(HashMap::new()),
+                forwarders: parking_lot::Mutex::new(std::collections::HashSet::new()),
+                next_link: std::sync::atomic::AtomicU32::new(1),
+                dialing: tokio::sync::Mutex::new(HashMap::new()),
+                loads: parking_lot::Mutex::new(HashMap::new()),
+                direct: parking_lot::Mutex::new(config.direct.clone()),
+                hubs: parking_lot::Mutex::new(Vec::new()),
+                connects: parking_lot::Mutex::new(
+                    state
+                        .connects
+                        .iter()
+                        .filter_map(|c| c.local_addr.parse().ok().map(|a| (a, c.clone())))
+                        .collect(),
+                ),
+                exposes: parking_lot::RwLock::new(
+                    state
+                        .exposes
+                        .iter()
+                        .filter_map(|e| {
+                            Some((
+                                e.service.clone(),
+                                ExposedService {
+                                    name: e.service.clone(),
+                                    local_addr: e.local_addr.parse().ok()?,
+                                    allow: Acl::parse(&e.allow),
+                                    rate: ServiceRate::default(),
+                                    description: e.description.clone(),
+                                },
+                            ))
+                        })
+                        .collect(),
+                ),
+                peers: parking_lot::Mutex::new(HashMap::new()),
+                config,
+            }),
+        });
+        node.restore_peers(&state);
+        node.register_relays().await;
+        node.start_inbound_listener().await;
+        node.spawn_tick();
+        node.save_state();
+        Ok(node)
+    }
+
+    /// This node's identity.
+    pub fn identity(&self) -> NodeIdentity {
+        self.inner.config.identity.clone()
+    }
+
+    /// This node's id.
+    pub fn node_id(&self) -> String {
+        self.inner.config.identity.node_id().to_string()
+    }
+
+    /// The live event log.
+    pub fn events(&self) -> &EventLog {
+        &self.inner.events
+    }
+
+    /// The audit trail.
+    pub fn audit_trail(&self) -> &Audit {
+        &self.inner.audit
+    }
+
+    /// The relay hubs this node is registered on.
+    pub fn relay_hubs(&self) -> Vec<Arc<RelayHub>> {
+        self.inner.hubs.lock().clone()
+    }
+
+    pub(crate) fn next_link_id(&self) -> u32 {
+        self.inner.next_link.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    }
+
+    fn emit(&self, event: OverlayEvent) {
+        self.inner.events.push(event);
+    }
+
+    fn audit(&self, mut record: AuditRecord) {
+        record.actor = self.node_id();
+        self.inner.audit.record(record);
+    }
+
+
+    // ---- reachability -----------------------------------------------------
+
+    /// Register on every configured relay. One that does not answer now is retried in the
+    /// background until it does, so a node that booted before its relay still becomes reachable.
+    async fn register_relays(&self) {
+        for spec in self.inner.config.relays.clone() {
+            let Some(addr) = resolve_udp(&spec) else {
+                tracing::warn!("[overlay] relay {spec} is not a host:port; skipping");
+                continue;
+            };
+            if self.try_relay(addr).await {
+                continue;
+            }
+            let node = self.clone();
+            tokio::spawn(async move {
+                let mut wait = Duration::from_secs(2);
+                loop {
+                    tokio::time::sleep(wait).await;
+                    if node.try_relay(addr).await {
+                        break;
+                    }
+                    wait = (wait * 2).min(Duration::from_secs(60));
+                }
+            });
+        }
+    }
+
+    async fn try_relay(&self, addr: SocketAddr) -> bool {
+        let token = self.inner.config.identity.relay_token();
+        match RelayHub::start(addr, token, self.inner.config.identity.clone(), self.clone()).await {
+            Ok(hub) => {
+                self.inner.hubs.lock().push(hub);
+                self.emit(OverlayEvent::new("relay.up", self.node_id(), addr.to_string()));
+                true
+            }
+            Err(e) => {
+                tracing::warn!("[overlay] relay {addr}: {e}");
+                false
+            }
+        }
+    }
+
+    /// The relays this node is registered on.
+    pub fn relays(&self) -> Vec<SocketAddr> {
+        self.inner.hubs.lock().iter().map(|h| h.addr).collect()
+    }
+
+    async fn start_inbound_listener(&self) {
+        let Some(bind) = self.inner.config.listen else { return };
+        let identity = self.inner.config.identity.clone();
+        let node = self.clone();
+        match tokio::net::TcpListener::bind(bind).await {
+            Ok(listener) => {
+                let local = listener.local_addr().unwrap_or(bind);
+                *self.inner.listener.lock() = Some(local);
+                tracing::info!("[overlay] direct listener on {local} (every other path is outbound-only)");
+                tokio::spawn(async move {
+                    loop {
+                        let Ok((stream, from)) = listener.accept().await else { break };
+                        let node = node.clone();
+                        let identity = identity.clone();
+                        tokio::spawn(async move {
+                            match lanes::accept_tcp(node.next_link_id(), RouteKind::Direct, stream, &identity).await {
+                                Ok((link, _keys, peer_id, hybrid)) => {
+                                    node.adopt_inbound(link, peer_id, hybrid, from).await;
+                                }
+                                Err(e) => tracing::debug!("[overlay] inbound from {from} refused: {e}"),
+                            }
+                        });
+                    }
+                });
+            }
+            Err(e) => tracing::warn!("[overlay] cannot bind the direct listener on {bind}: {e}"),
+        }
+    }
+
+    /// The direct listener's address, when one is bound.
+    pub fn listener_addr(&self) -> Option<SocketAddr> {
+        *self.inner.listener.lock()
+    }
+
+    /// Take a connection someone made to our direct listener and turn it into a session.
+    async fn adopt_inbound(&self, link: Arc<FramePipe>, peer_id: String, hybrid: Vec<u8>, from: SocketAddr) {
+        if identity::check_node_id(&peer_id).is_err() {
+            link.mark_down();
+            return;
+        }
+        // Trust on first use: a node we already know must present the same identity.
+        if let Some(existing) = self.inner.peers.lock().get(&peer_id) {
+            if !existing.record.hybrid_public_key.is_empty() && existing.record.hybrid_public_key != hybrid {
+                link.mark_down();
+                self.emit(OverlayEvent::new("peer.denied", &peer_id, "the identity changed"));
+                return;
+            }
+        }
+        {
+            let mut peers = self.inner.peers.lock();
+            peers.entry(peer_id.clone()).or_insert_with(|| {
+                Peer {
+                    record: NodeRecord::new(peer_id.clone(), identity::short_name(&peer_id), hybrid.clone()),
+                    session: detached_session(&peer_id),
+                    route: RouteKind::Direct,
+                    reachable: vec![from.to_string()],
+                }
+            });
+        }
+        let handle = self.start_session(&peer_id, vec![link.clone() as Arc<dyn Link>], RouteKind::Direct).await;
+        {
+            let mut peers = self.inner.peers.lock();
+            if let Some(p) = peers.get_mut(&peer_id) {
+                p.session = handle;
+                p.route = RouteKind::Direct;
+                p.record.hybrid_public_key = hybrid;
+            }
+        }
+        self.emit(OverlayEvent::new("peer.up", &peer_id, "direct"));
+        self.save_state();
+    }
+
+    /// Make sure there is a session with `node_id`, dialling if there is not.
+    pub async fn ensure_session(&self, node_id: &str) -> Result<SessionHandle> {
+        if let Some(peer) = self.inner.peers.lock().get(node_id) {
+            if peer.session.is_live() {
+                return Ok(peer.session.clone());
+            }
+        }
+        identity::check_node_id(node_id)?;
+        let _guard = self.inner.dialing.lock().await.entry(node_id.to_string()).or_insert(());
+        if let Some(peer) = self.inner.peers.lock().get(node_id) {
+            if peer.session.is_live() {
+                return Ok(peer.session.clone());
+            }
+        }
+        let (handle, route) = self.dial(node_id).await?;
+        let record = NodeRecord::new(node_id.to_string(), identity::short_name(node_id), Vec::new());
+        self.inner.peers.lock().insert(
+            node_id.to_string(),
+            Peer { record, session: handle.clone(), route, reachable: Vec::new() },
+        );
+        self.emit(OverlayEvent::new("peer.up", node_id, route.as_str()));
+        self.save_state();
+        Ok(handle)
+    }
+
+    /// Try every path to a peer, cheapest first, and take the first that answers.
+    async fn dial(&self, node_id: &str) -> Result<(SessionHandle, RouteKind)> {
+        let peer_token = identity::relay_token_for(node_id);
+        let hubs = self.relay_hubs();
+        let mut attempts: Vec<String> = Vec::new();
+
+        // 1. Relays: always available when both nodes are registered on one.
+        for hub in &hubs {
+            match hub.handshake(node_id, peer_token, &self.inner.config.identity).await {
+                Ok(keys) => {
+                    let link: Arc<dyn Link> = hub.link(self.next_link_id(), peer_token, &keys).await;
+                    let handle = self.start_session(node_id, vec![link], RouteKind::Relay).await;
+                    return Ok((handle, RouteKind::Relay));
+                }
+                Err(e) => attempts.push(format!("relay {}: {e}", hub.addr)),
+            }
+        }
+
+        // 2. Direct addresses the peer published (LAN, tailnet, or any address it chose).
+        for addr in self.known_direct(node_id) {
+            let kind = classify_addr(&addr);
+            match lanes::dial_tcp(
+                self.next_link_id(),
+                kind,
+                &addr,
+                &self.inner.config.identity,
+                Some(node_id),
+            )
+            .await
+            {
+                Ok((link, _keys, _peer, hybrid)) => {
+                    let handle = self.start_session(node_id, vec![link.clone() as Arc<dyn Link>], kind).await;
+                    self.remember_identity(node_id, hybrid);
+                    return Ok((handle, kind));
+                }
+                Err(e) => attempts.push(format!("tcp {addr}: {e}")),
+            }
+        }
+
+        // 3. A hole punch: both ends send outbound at each other through the relay.
+        if !hubs.is_empty() {
+            match self.hole_punch(node_id, peer_token, &hubs).await {
+                Ok(handle) => {
+                    self.emit(OverlayEvent::new("route.change", node_id, "holepunch up"));
+                    return Ok((handle, RouteKind::HolePunch));
+                }
+                Err(e) => attempts.push(format!("hole punch: {e}")),
+            }
+        }
+
+        tracing::debug!("[overlay] no route to {node_id}: {}", attempts.join("; "));
+        Err(OverlayError::Unreachable { node: node_id.to_string() })
+    }
+
+    /// Upgrade a relayed session to a direct one by punching a hole, when the network allows it.
+    ///
+    /// The relay is asked where it sees us and where it sees the peer — it is the only party
+    /// that can observe a NAT's mapped address. Both ends then send outbound at each other and
+    /// run the same authenticated handshake they would over TCP, so the punched path is proven
+    /// by key material rather than by an address that happened to answer.
+    async fn hole_punch(&self, node_id: &str, peer_token: [u8; 32], hubs: &[Arc<RelayHub>]) -> Result<SessionHandle> {
+        let located = {
+            let mut last = OverlayError::protocol("no relay answered a locate");
+            let mut answer = None;
+            for hub in hubs {
+                match hub.locate(peer_token).await {
+                    Ok(a) => {
+                        answer = Some(a);
+                        break;
+                    }
+                    Err(e) => last = e,
+                }
+            }
+            answer.ok_or(last)?
+        };
+        let (mine, theirs) = (located.self_addr, located.peer_addr);
+        let theirs = theirs.ok_or_else(|| OverlayError::protocol("the relay does not know that peer yet"))?;
+        // Exactly one side dials, so the two handshakes do not cross.
+        let we_start = self.node_id().as_str() < node_id;
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        let link = lanes::hole_punch(
+            self.next_link_id(),
+            &self.inner.config.identity,
+            node_id,
+            mine,
+            theirs,
+            we_start,
+            deadline,
+        )
+        .await?;
+        let handle = self.start_session(node_id, vec![link.clone() as Arc<dyn Link>], RouteKind::HolePunch).await;
+        let record = NodeRecord::new(node_id.to_string(), identity::short_name(node_id), Vec::new());
+        self.inner.peers.lock().insert(
+            node_id.to_string(),
+            Peer { record, session: handle.clone(), route: RouteKind::HolePunch, reachable: Vec::new() },
+        );
+        Ok(handle)
+    }
+
+    /// Take a link a peer dialled us through a relay and turn it into a session.
+    pub(crate) async fn adopt_relay_link(
+        &self,
+        link: Arc<FramePipe>,
+        peer_id: String,
+        _from: [u8; 32],
+        route: RouteKind,
+    ) {
+        if identity::check_node_id(&peer_id).is_err() {
+            link.mark_down();
+            return;
+        }
+        {
+            let mut peers = self.inner.peers.lock();
+            peers.entry(peer_id.clone()).or_insert_with(|| {
+                Peer {
+                    record: NodeRecord::new(peer_id.clone(), identity::short_name(&peer_id), Vec::new()),
+                    session: detached_session(&peer_id),
+                    route,
+                    reachable: Vec::new(),
+                }
+            });
+        }
+        let handle = self.start_session(&peer_id, vec![link.clone() as Arc<dyn Link>], route).await;
+        let mut peers = self.inner.peers.lock();
+        if let Some(p) = peers.get_mut(&peer_id) {
+            p.session = handle;
+            p.route = route;
+        }
+        drop(peers);
+        self.emit(OverlayEvent::new("peer.up", &peer_id, "dialled us through the relay"));
+    }
+
+    /// Addresses we know for a peer.
+    fn known_direct(&self, node_id: &str) -> Vec<String> {
+        if let Some(peer) = self.inner.peers.lock().get(node_id) {
+            if !peer.reachable.is_empty() {
+                return peer.reachable.clone();
+            }
+        }
+        self.load_state().nodes.get(node_id).map(|n| n.direct.clone()).unwrap_or_default()
+    }
+
+    fn remember_identity(&self, node_id: &str, hybrid: Vec<u8>) {
+        {
+            let mut peers = self.inner.peers.lock();
+            if let Some(peer) = peers.get_mut(node_id) {
+                if peer.record.hybrid_public_key.is_empty() || peer.record.hybrid_public_key == hybrid {
+                    peer.record.hybrid_public_key = hybrid;
+                }
+            }
+        }
+        self.save_state();
+    }
+
+    async fn start_session(&self, node_id: &str, links: Vec<Arc<dyn Link>>, route: RouteKind) -> SessionHandle {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let handle = session::spawn(
+            node_id.to_string(),
+            identity::short_name(node_id),
+            links,
+            self.inner.config.identity.clone(),
+            self.services(),
+            tx,
+            self.inner.config.max_version,
+        )
+        .await;
+        self.pump_session(node_id.to_string(), rx);
+        let _ = route;
+        handle
+    }
+
+    /// React to what a session reports. Opens are authorised here, which is where the ACL is.
+    fn pump_session(&self, _node_id: String, mut rx: mpsc::UnboundedReceiver<SessionEvent>) {
+        let node = self.clone();
+        tokio::spawn(async move {
+            while let Some(event) = rx.recv().await {
+                match event {
+                    SessionEvent::Ready { peer, version, services } => {
+                        node.emit(OverlayEvent::new("peer.up", &peer, format!("protocol v{version}")));
+                        node.note_services(&peer, &services);
+                    }
+                    SessionEvent::Refused { peer, reason } => {
+                        node.emit(OverlayEvent::new("peer.down", &peer, reason.clone()));
+                        let mut record = AuditRecord::new("refused");
+                        record.peer = peer;
+                        record.error = reason;
+                        node.audit(record);
+                    }
+                    SessionEvent::RouteChanged { peer, kind, up } => {
+                        node.emit(OverlayEvent::new(
+                            "route.change",
+                            &peer,
+                            format!("{} {}", kind.as_str(), if up { "up" } else { "down" }),
+                        ));
+                    }
+                    SessionEvent::OpenRequest { peer, stream, service } => {
+                        node.authorize_open(&peer, stream, &service);
+                    }
+                    SessionEvent::Down { peer, reason } => {
+                        node.emit(OverlayEvent::new("peer.down", &peer, reason));
+                    }
+                }
+            }
+        });
+    }
+
+    fn note_services(&self, peer: &str, services: &[ServiceInfo]) {
+        let mut state = self.load_state();
+        if let Some(node) = state.nodes.get_mut(peer) {
+            node.last_name = services
+                .first()
+                .map(|_| node.last_name.clone())
+                .unwrap_or_else(|| node.last_name.clone());
+        }
+        drop(state);
+    }
+
+    /// Check the ACL and the rate limit, then accept the stream or refuse it out loud.
+    fn authorize_open(&self, peer: &str, stream: StreamId, service: &str) {
+        let session = self.inner.peers.lock().get(peer).map(|p| p.session.clone());
+        let peer_owned = peer.to_string();
+        let service_owned = service.to_string();
+        let refused_service = service_owned.clone();
+        let refuse = |node: OverlayNode, reason: &str| {
+            let session = session.clone();
+            let reason = reason.to_string();
+            let service = refused_service.clone();
+            let peer = peer_owned.clone();
+            let denied = format!("{refused_service}: {reason}");
+            let audit_error = reason.clone();
+            tokio::spawn(async move {
+                if let Some(session) = session {
+                    let _ = session.authorize(stream, service, false, reason).await;
+                }
+            });
+            node.emit(OverlayEvent::new("connect.denied", &peer, denied));
+            let mut record = AuditRecord::new("denied");
+            record.peer = peer;
+            record.service = refused_service;
+            record.error = audit_error;
+            node.audit(record);
+        };
+
+        let exposes = self.inner.exposes.read();
+        let Some(expose) = exposes.get(service) else {
+            drop(exposes);
+            refuse(self.clone(), "no such service");
+            return;
+        };
+        if !expose.allow.permits(peer) {
+            drop(exposes);
+            refuse(self.clone(), "not in the access list");
+            return;
+        }
+        let local = expose.local_addr;
+        let rate = expose.rate;
+        drop(exposes);
+
+        let mut rates = self.inner.rates.lock();
+        let window = rates.entry((service.to_string(), peer.to_string())).or_default();
+        if let Err(reason) = window.charge(rate, 0, now_secs()) {
+            drop(rates);
+            refuse(self.clone(), &reason);
+            return;
+        }
+        drop(rates);
+
+        let Some(session) = session else {
+            refuse(self.clone(), "no session");
+            return;
+        };
+        let node = self.clone();
+        let audit_service = service_owned.clone();
+        let wire_service = service_owned.clone();
+        tokio::spawn(async move {
+            let _ = session.authorize(stream, wire_service.clone(), true, String::new()).await;
+            node.emit(OverlayEvent::new("connect.open", &peer_owned, wire_service.clone()));
+            let mut record = AuditRecord::new("connect");
+            record.peer = peer_owned.clone();
+            record.service = audit_service;
+            record.local_addr = local.to_string();
+            node.audit(record);
+            node.pipe_local(session.clone(), stream, local).await;
+        });
+    }
+
+    /// Copy bytes between a local TCP service and an overlay stream, for as long as either lasts.
+    async fn pipe_local(&self, session: SessionHandle, stream: StreamId, local: SocketAddr) {
+        let Ok(service) = tokio::net::TcpStream::connect(local).await else {
+            let _ = session.close(stream).await;
+            return;
+        };
+        let (mut sr, mut sw) = tokio::io::split(service);
+        let up = session.clone();
+        let down = session;
+        let upload = tokio::spawn(async move {
+            let mut buf = vec![0u8; COPY_CHUNK];
+            loop {
+                let Ok(n) = sr.read(&mut buf).await else { break };
+                if n == 0 {
+                    break;
+                }
+                if up.send(stream, buf[..n].to_vec(), false).await.is_err() {
+                    break;
+                }
+            }
+            let _ = up.send(stream, Vec::new(), true).await;
+        });
+        tokio::spawn(async move {
+            loop {
+                match down.recv(stream).await {
+                    Ok(Some(bytes)) => {
+                        if sw.write_all(&bytes).await.is_err() {
+                            break;
+                        }
+                    }
+                    Ok(None) | Err(_) => break,
+                }
+            }
+            let _ = sw.shutdown().await;
+            upload.abort();
+        });
+    }
+
+    // ---- services ---------------------------------------------------------
+
+    /// Publish a local service. Nothing is reachable until this is called, and only the node
+    /// identities in `allow` may open it.
+    pub fn expose(&self, service: &str, local_addr: SocketAddr, allow: Vec<String>, description: &str) -> Result<()> {
+        if service.is_empty() || service.contains(['.', ' ', '\t']) {
+            return Err(OverlayError::protocol("a service name has no dots or spaces"));
+        }
+        self.inner.exposes.write().insert(
+            service.to_string(),
+            ExposedService {
+                name: service.to_string(),
+                local_addr,
+                allow: Acl::parse(&allow),
+                rate: ServiceRate::default(),
+                description: description.to_string(),
+            },
+        );
+        self.emit(OverlayEvent::new("service.expose", self.node_id(), format!("{service} on {local_addr}")));
+        let mut record = AuditRecord::new("expose");
+        record.service = service.to_string();
+        record.local_addr = local_addr.to_string();
+        self.audit(record);
+        self.save_state();
+        Ok(())
+    }
+
+    /// Withdraw a service.
+    pub fn unexpose(&self, service: &str) -> Result<()> {
+        self.inner.exposes.write().remove(service);
+        self.emit(OverlayEvent::new("service.unexpose", self.node_id(), service));
+        let mut record = AuditRecord::new("unexpose");
+        record.service = service.to_string();
+        self.audit(record);
+        self.save_state();
+        Ok(())
+    }
+
+    /// What this node exposes, as plain `ServiceInfo`s for the session hello.
+    pub fn services(&self) -> Vec<ServiceInfo> {
+        self.inner
+            .exposes
+            .read()
+            .values()
+            .map(|e| ServiceInfo { name: e.name.clone(), description: e.description.clone() })
+            .collect()
+    }
+
+    /// Every exposed service with its access list, for `overlay.services`.
+    pub fn service_details(&self) -> Vec<serde_json::Value> {
+        self.inner
+            .exposes
+            .read()
+            .values()
+            .map(|e| {
+                serde_json::json!({
+                    "service": e.name,
+                    "local_addr": e.local_addr.to_string(),
+                    "allow": e.allow.describe(),
+                    "description": e.description,
+                    "streams_per_min": e.rate.streams_per_min,
+                    "bytes_per_min": e.rate.bytes_per_min,
+                })
+            })
+            .collect()
+    }
+
+    // ---- connections ------------------------------------------------------
+
+    /// Connect to a peer's service, or to a group that offers it, and get a stable local
+    /// endpoint. Idempotent: the same target and service always yield the same address.
+    pub async fn connect(&self, target: &str, service: &str) -> Result<(SocketAddr, RouteKind)> {
+        let key = format!("{target}/{service}");
+        let existing = self
+            .inner
+            .connects
+            .lock()
+            .iter()
+            .find(|(_, c)| format!("{}/{}", c.target, c.service) == key)
+            .map(|(a, c)| (*a, c.clone()));
+        if let Some((addr, entry)) = existing {
+            if self.inner.forwarders.lock().contains(&addr) {
+                // The endpoint is stable: hand back the address the application already has.
+                return Ok((addr, RouteKind::parse(&entry.route).unwrap_or(RouteKind::Relay)));
+            }
+            self.inner.connects.lock().remove(&addr);
+            self.inner.forwarders.lock().remove(&addr);
+        }
+
+        let (node_id, route) = self.place(target, service).await?;
+        let session = self.ensure_session(&node_id).await?;
+        // Prove the service is reachable before publishing an endpoint, so `overlay.connect`
+        // never hands back an address that does not work.
+        let probe = session.open(service).await?;
+        session.close(probe).await;
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.map_err(|e| OverlayError::Listen {
+            addr: std::net::SocketAddr::from(([127, 0, 0, 1], 0)),
+            source: e,
+        })?;
+        let local = listener.local_addr().map_err(OverlayError::Io)?;
+        drop(listener);
+        self.inner.connects.lock().insert(
+            local,
+            StoredConnect {
+                target: target.to_string(),
+                service: service.to_string(),
+                local_addr: local.to_string(),
+                route: route.as_str().into(),
+            },
+        );
+        self.inner.forwarders.lock().insert(local);
+        self.serve_endpoint(local, target.to_string(), service.to_string());
+        self.emit(OverlayEvent::new("connect.open", &node_id, format!("{service} at {local}")));
+        let mut record = AuditRecord::new("connect");
+        record.service = service.to_string();
+        record.peer = node_id;
+        record.local_addr = local.to_string();
+        record.route = route.as_str().into();
+        self.audit(record);
+        self.save_state();
+        Ok((local, route))
+    }
+
+    /// Close a local endpoint.
+    pub fn disconnect(&self, local_addr: SocketAddr) -> Result<()> {
+        self.inner.forwarders.lock().remove(&local_addr);
+        if let Some(c) = self.inner.connects.lock().remove(&local_addr) {
+            self.emit(OverlayEvent::new("connect.close", &c.target, format!("{} at {local_addr}", c.service)));
+            let mut record = AuditRecord::new("disconnect");
+            record.service = c.service;
+            record.local_addr = local_addr.to_string();
+            self.audit(record);
+            self.save_state();
+        }
+        Ok(())
+    }
+
+    /// The endpoints currently forwarded.
+    pub fn connect_details(&self) -> Vec<serde_json::Value> {
+        self.inner
+            .connects
+            .lock()
+            .values()
+            .map(|c| {
+                serde_json::json!({
+                    "local_addr": c.local_addr,
+                    "target": c.target,
+                    "service": c.service,
+                    "route": c.route,
+                    "listening": self.inner.forwarders.lock().contains(&c.local_addr.parse().unwrap_or(std::net::SocketAddr::from(([0, 0, 0, 0], 0)))),
+                })
+            })
+            .collect()
+    }
+
+    /// Choose which node serves a request. A group is spread by route quality and current load.
+    async fn place(&self, target: &str, service: &str) -> Result<(String, RouteKind)> {
+        if identity::check_node_id(target).is_ok() {
+            let node_id = target.to_ascii_lowercase();
+            let session = self.ensure_session(&node_id).await?;
+            let offers = session.services.read().iter().any(|s| s.name == service);
+            if !offers && !session.services.read().is_empty() {
+                return Err(OverlayError::NoSuchService { service: service.to_string() });
+            }
+            let route = self
+                .inner
+                .peers
+                .lock()
+                .get(&node_id)
+                .map(|p| p.route)
+                .unwrap_or(RouteKind::Relay);
+            return Ok((node_id, route));
+        }
+        let members = self.inner.groups.read().get(target).cloned().ok_or_else(|| {
+            OverlayError::GroupEmpty { group: target.to_string(), service: service.to_string() }
+        })?;
+        let mut best: Option<(String, RouteKind, f64)> = None;
+        for member in members {
+            let Ok(session) = self.ensure_session(&member).await else { continue };
+            if !session.services.read().iter().any(|s| s.name == service) {
+                continue;
+            }
+            // Placement: how good the best route is, plus what we already have running to it.
+            let quality = if session.route_quality().is_finite() { session.route_quality() } else { 1000.0 };
+            let load = self.inner.loads.lock().get(&member).copied().unwrap_or(0) as f64;
+            let score = quality + load * 50.0;
+            if best.as_ref().map(|(_, _, b)| score < *b).unwrap_or(true) {
+                let route = self
+                    .inner
+                    .peers
+                    .lock()
+                    .get(&member)
+                    .map(|p| p.route)
+                    .unwrap_or(RouteKind::Relay);
+                best = Some((member, route, score));
+            }
+        }
+        best.map(|(n, r, _)| (n, r)).ok_or(OverlayError::GroupEmpty {
+            group: target.to_string(),
+            service: service.to_string(),
+        })
+    }
+
+    /// Accept local connections on a forwarded endpoint and open a stream for each.
+    fn serve_endpoint(&self, local: SocketAddr, target: String, service: String) {
+        let node = self.clone();
+        tokio::spawn(async move {
+            let Ok(listener) = tokio::net::TcpListener::bind(local).await else { return };
+            loop {
+                let Ok((socket, _)) = listener.accept().await else { break };
+                let node = node.clone();
+                let target = target.clone();
+                let service = service.clone();
+                tokio::spawn(async move {
+                    let Ok((node_id, _route)) = node.place(&target, &service).await else { return };
+                    let Ok(session) = node.ensure_session(&node_id).await else { return };
+                    let Ok(stream) = session.open(&service).await else { return };
+                    node.inner.loads.lock().entry(node_id.clone()).and_modify(|n| *n += 1).or_insert(1);
+                    let (mut reader, mut writer) = tokio::io::split(socket);
+                    let up = session.clone();
+                    let upload = tokio::spawn(async move {
+                        let mut buf = vec![0u8; COPY_CHUNK];
+                        loop {
+                            let Ok(n) = reader.read(&mut buf).await else { break };
+                            if n == 0 {
+                                break;
+                            }
+                            if up.send(stream, buf[..n].to_vec(), false).await.is_err() {
+                                break;
+                            }
+                        }
+                        let _ = up.send(stream, Vec::new(), true).await;
+                    });
+                    tokio::spawn(async move {
+                        loop {
+                            match session.recv(stream).await {
+                                Ok(Some(bytes)) => {
+                                    if writer.write_all(&bytes).await.is_err() {
+                                        break;
+                                    }
+                                }
+                                Ok(None) | Err(_) => break,
+                            }
+                        }
+                        let _ = writer.shutdown().await;
+                        upload.abort();
+                        node.inner.loads.lock().entry(node_id).and_modify(|n| *n = n.saturating_sub(1));
+                    });
+                });
+            }
+        });
+    }
+
+    // ---- groups -----------------------------------------------------------
+
+    /// Define a service group: any node in it may serve the service.
+    pub fn set_group(&self, name: &str, members: Vec<String>) {
+        self.inner.groups.write().insert(name.to_string(), members);
+        self.save_state();
+    }
+
+    /// The groups and their members.
+    pub fn groups(&self) -> Vec<StoredGroup> {
+        self.inner
+            .groups
+            .read()
+            .iter()
+            .map(|(name, members)| StoredGroup { name: name.clone(), members: members.clone() })
+            .collect()
+    }
+
+    // ---- peering ----------------------------------------------------------
+
+    /// Create a pairing invite: identity plus how to reach us, signed so it cannot be edited.
+    pub fn invite_create(&self, ttl_s: u64) -> String {
+        let reach = identity::InviteReach {
+            relays: self.relays().iter().map(|a| a.to_string()).collect(),
+            direct: self.published_direct(),
+        };
+        identity::make_invite(&self.identity(), reach.relays, reach.direct, ttl_s)
+    }
+
+    /// Verify an invite and pair with it. Trust on first use: a node we already know must
+    /// present the same identity.
+    pub fn invite_accept(&self, invite: &str, name: Option<String>) -> Result<NodeRecord> {
+        let record = identity::accept_invite(invite)?;
+        let mut state = self.load_state();
+        if let Some(existing) = state.nodes.get(&record.node_id) {
+            if !existing.hybrid_public_key.is_empty() && existing.hybrid_public_key != record.hybrid_public_key {
+                return Err(OverlayError::IdentityMismatch {
+                    node: record.node_id,
+                    reason: "this node id now presents a different identity".into(),
+                });
+            }
+        }
+        let reach = identity::invite_reach(invite);
+        let label = name.unwrap_or_else(|| record.name.clone()).trim().to_string();
+        state.nodes.insert(
+            record.node_id.clone(),
+            StoredNode {
+                node_id: record.node_id.clone(),
+                name: label.clone(),
+                hybrid_public_key: record.hybrid_public_key.clone(),
+                relays: reach.relays.clone(),
+                direct: reach.direct.clone(),
+                paired_at: record.paired_at,
+                last_name: record.name.clone(),
+            },
+        );
+        self.save_state_with(&state);
+        self.inner.peers.lock().insert(
+            record.node_id.clone(),
+            Peer {
+                record: record.clone(),
+                session: detached_session(&record.node_id),
+                route: RouteKind::Relay,
+                reachable: reach.direct.clone(),
+            },
+        );
+        self.emit(OverlayEvent::new("peer.paired", &record.node_id, label.clone()));
+        let mut audit = AuditRecord::new("pair");
+        audit.peer = record.node_id.clone();
+        audit.service = label.clone();
+        self.audit(audit);
+        // The name we know this node by is the one the operator gave us, not the one it calls
+        // itself: `overlay.connect` and the proxies both key off this.
+        Ok(NodeRecord { name: label, ..record })
+    }
+
+    /// Publish addresses a peer may try to dial us on directly.
+    ///
+    /// They travel in this node's invites, so a peer that pairs with us learns them; a node
+    /// whose address changes republishes by asking for a fresh invite.
+    pub fn set_direct(&self, addr: String) {
+        self.inner.direct.lock().push(addr);
+    }
+
+    /// The addresses this node publishes for direct dialling: the configured ones, and its
+    /// own listener when it has one.
+    pub fn published_direct(&self) -> Vec<String> {
+        let mut out = self.inner.direct.lock().clone();
+        if let Some(listener) = self.listener_addr() {
+            let addr = if listener.ip().is_unspecified() {
+                SocketAddr::new(std::net::Ipv4Addr::LOCALHOST.into(), listener.port()).to_string()
+            } else {
+                listener.to_string()
+            };
+            if !out.contains(&addr) {
+                out.push(addr);
+            }
+        }
+        out
+    }
+
+    /// Restore peer records from stored state.
+    fn restore_peers(&self, state: &StoredState) {
+        let mut peers = self.inner.peers.lock();
+        for node in state.nodes.values() {
+            peers.insert(
+                node.node_id.clone(),
+                Peer {
+                    record: NodeRecord {
+                        node_id: node.node_id.clone(),
+                        name: node.name.clone(),
+                        services: Vec::new(),
+                        hybrid_public_key: node.hybrid_public_key.clone(),
+                        paired_at: node.paired_at,
+                        last_seen: 0,
+                    },
+                    session: detached_session(&node.node_id),
+                    route: RouteKind::Relay,
+                    reachable: node.direct.clone(),
+                },
+            );
+        }
+    }
+
+    fn load_state(&self) -> StoredState {
+        self.inner.config.state_path.as_ref().map(|p| StoredState::load(p)).unwrap_or_default()
+    }
+
+    fn save_state(&self) {
+        let mut state = self.load_state();
+        {
+            let exposes = self.inner.exposes.read();
+            state.exposes = exposes
+                .values()
+                .map(|e| StoredExpose {
+                    service: e.name.clone(),
+                    local_addr: e.local_addr.to_string(),
+                    allow: e.allow.describe(),
+                    description: e.description.clone(),
+                })
+                .collect();
+            state.groups = self.groups();
+            state.connects = self.inner.connects.lock().values().cloned().collect();
+        }
+        self.save_state_with(&state);
+    }
+
+    fn save_state_with(&self, state: &StoredState) {
+        if let Some(path) = self.inner.config.state_path.clone() {
+            if let Err(e) = state.save(&path) {
+                tracing::warn!("[overlay] could not write {}: {e}", path.display());
+            }
+        }
+    }
+
+    // ---- proxies ----------------------------------------------------------
+
+    /// Start the local SOCKS5 and HTTP-CONNECT proxies.
+    pub async fn start_proxies(&self) -> Result<(SocketAddr, SocketAddr)> {
+        let socks = crate::proxy::serve_socks(self.clone()).await?;
+        let http = crate::proxy::serve_http(self.clone()).await?;
+        *self.inner.proxies.lock() = ProxyAddrs { socks5: Some(socks), http: Some(http) };
+        self.emit(OverlayEvent::new("proxy.start", self.node_id(), format!("{socks} {http}")));
+        Ok((socks, http))
+    }
+
+    /// Where the proxies are listening, if they are running.
+    pub fn proxy_status(&self) -> ProxyAddrs {
+        *self.inner.proxies.lock()
+    }
+
+    // ---- reporting --------------------------------------------------------
+
+    /// The node's own view of itself, for `overlay.status`.
+    pub fn status(&self) -> serde_json::Value {
+        serde_json::json!({
+            "node_id": self.node_id(),
+            "name": self.identity().name(),
+            "version": crate::VERSION,
+            "protocol_versions": {
+                "min": protocol::VERSION_MIN,
+                "max": self.inner.config.max_version,
+                "current": protocol::VERSION_CURRENT,
+            },
+            "lanes": self.lanes(),
+            "relays": self
+                .relays()
+                .iter()
+                .map(|a| serde_json::json!({
+                    "addr": a.to_string(),
+                    "registered": true,
+                    "token": hex::encode(identity::relay_token_for(&self.node_id())),
+                }))
+                .collect::<Vec<_>>(),
+            "nat": self.nat(),
+            "listener": self.listener_addr().map(|a| a.to_string()),
+            "proxies": {
+                "socks5_addr": self.proxy_status().socks5.map(|a| a.to_string()),
+                "http_proxy_addr": self.proxy_status().http.map(|a| a.to_string()),
+            },
+            "exposes": self.inner.exposes.read().keys().cloned().collect::<Vec<_>>(),
+            "connects": self.connect_details(),
+        })
+    }
+
+    /// What we know about our own reachability.
+    fn nat(&self) -> serde_json::Value {
+        if self.relays().is_empty() {
+            return serde_json::json!({"type": "unknown", "mapped": serde_json::Value::Null});
+        }
+        match self.listener_addr() {
+            // We publish a direct listener, so a peer may reach us without a relay.
+            Some(a) => serde_json::json!({"type": "reachable", "mapped": a.to_string()}),
+            // No listener: every inbound path is an outbound one, through a relay or a punch.
+            None => serde_json::json!({
+                "type": "outbound",
+                "mapped": self.relays().first().map(|a| a.to_string()),
+                "note": "no inbound port is needed: every path is dialled outbound",
+            }),
+        }
+    }
+
+    /// Every session on this node, for `overlay.status.lanes`.
+    fn lanes(&self) -> Vec<serde_json::Value> {
+        let peers = self.inner.peers.lock();
+        peers
+            .values()
+            .map(|peer| {
+                serde_json::json!({
+                    "peer": peer.record.node_id,
+                    "name": peer.record.name,
+                    "state": if peer.session.is_live() { "up" } else { "down" },
+                    "routes": peer.session.routes(),
+                })
+            })
+            .collect()
+    }
+
+    /// Every peer, with its routes and services, for `overlay.peers`.
+    pub fn peer_list(&self) -> Vec<serde_json::Value> {
+        let peers = self.inner.peers.lock();
+        peers
+            .values()
+            .map(|peer| {
+                let live = peer.session.is_live();
+                serde_json::json!({
+                    "node_id": peer.record.node_id,
+                    "name": peer.record.name,
+                    "state": if live { "up" } else { "degraded" },
+                    "routes": peer.session.routes(),
+                    "services": peer.session.services.read().clone(),
+                    "protocol_version": peer.session.version(),
+                })
+            })
+            .collect()
+    }
+
+    fn spawn_tick(&self) {
+        let node = self.clone();
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(NODE_TICK);
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                ticker.tick().await;
+                node.save_state();
+            }
+        });
+    }
+}
+
+fn classify_addr(addr: &str) -> RouteKind {
+    let ip = addr.rsplit_once(':').map(|(h, _)| h).unwrap_or(addr);
+    match ip.parse::<std::net::IpAddr>() {
+        Ok(std::net::IpAddr::V4(v4)) if v4.is_loopback() || v4.is_private() => RouteKind::Lan,
+        Ok(std::net::IpAddr::V4(v4)) if v4.octets()[0] == 100 && (64..128).contains(&v4.octets()[1]) => RouteKind::Tailscale,
+        _ => RouteKind::Direct,
+    }
+}
+
+fn resolve_udp(spec: &str) -> Option<SocketAddr> {
+    let bare = spec.strip_prefix("udp://").or_else(|| spec.strip_prefix("relay://")).unwrap_or(spec);
+    bare.parse().ok()
+}
+
+/// A handle that is never live, used for peers we know but have not dialled yet.
+fn detached_session(node_id: &str) -> SessionHandle {
+    let (tx, rx) = mpsc::channel(1);
+    drop(rx);
+    SessionHandle::detached(node_id.to_string(), tx)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_address_is_classified_by_where_it_points() {
+        assert_eq!(classify_addr("127.0.0.1:5000"), RouteKind::Lan);
+        assert_eq!(classify_addr("192.168.1.10:5000"), RouteKind::Lan);
+        assert_eq!(classify_addr("100.64.0.10:5000"), RouteKind::Tailscale);
+        assert_eq!(classify_addr("203.0.113.9:5000"), RouteKind::Direct);
+    }
+
+    #[test]
+    fn a_rate_window_refuses_past_its_budget_and_resets_each_minute() {
+        let rate = ServiceRate { streams_per_min: 2, bytes_per_min: 100 };
+        let mut w = RateWindow::default();
+        assert!(w.charge(rate, 10, 1_000).is_ok());
+        assert!(w.charge(rate, 10, 1_001).is_ok());
+        assert!(w.charge(rate, 10, 1_002).is_err(), "the third stream in the minute is refused");
+        assert!(w.charge(rate, 1_000_000, 1_003).is_err(), "and so is a byte budget that is past");
+        assert!(w.charge(rate, 10, 1_060).is_ok(), "the next minute starts a fresh window");
+    }
+}

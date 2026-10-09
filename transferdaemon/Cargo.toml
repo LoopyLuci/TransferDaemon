@@ -12,6 +12,7 @@ members = [
     "crates/transferd-ui-shared",
     "crates/transferd-api",
     "crates/transferd-webrtc",
+    "crates/transferd-overlay",
     "crates/transferd-mobile",
     "crates/launcher",
     "crates/transferd-tui",
