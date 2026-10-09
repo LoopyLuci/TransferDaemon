@@ -10,6 +10,10 @@
 //! 2. **`quad9`** — Quad9 over DNS-over-TLS (RFC 7858), one TLS connection reused across queries.
 //! 3. **`system`** — the operating system's resolver, never counted as validated.
 //!
+//! Not in the default order, and there only when asked for: **`mesh`**, the overlay's mesh DNS
+//! forwarder (`TRANSFERD_DNS_MESH`, default `127.0.0.1:53053`), which answers through a paired
+//! node's resolver. Plain DNS like `ironroot`; validated only when that resolver set AD.
+//!
 //! The order comes from `TRANSFERD_DNS` (comma-separated, default `ironroot,quad9,system`). With
 //! `TRANSFERD_DNS_REQUIRE_VALIDATED=1` only answers carrying the AD bit count; an unvalidated answer, a
 //! SERVFAIL from a validating resolver ("bogus", RFC 4035 §3.2.3) and the system resolver itself are all
@@ -49,6 +53,9 @@ pub const QUAD9_ADDRS: [SocketAddr; 2] = [
 /// The default address of a local Ironroot resolver.
 pub const IRONROOT_DEFAULT_ADDR: SocketAddr =
     SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 5350);
+/// The default address of the overlay's mesh DNS forwarder (`transferd-overlay`'s `dns` module).
+pub const MESH_DEFAULT_ADDR: SocketAddr =
+    SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 53053);
 /// The resolver order used when `TRANSFERD_DNS` says nothing.
 pub const DEFAULT_ORDER: &str = "ironroot,quad9,system";
 
@@ -137,6 +144,8 @@ pub struct Resolution {
 pub enum Resolver {
     /// Plain DNS (UDP, TCP when truncated) to a validating resolver on this machine.
     Ironroot { addr: SocketAddr },
+    /// Plain DNS to the overlay's mesh DNS forwarder, which asks a paired node's resolver.
+    Mesh { addr: SocketAddr },
     /// DNS-over-TLS (RFC 7858): TCP, TLS, then length-prefixed messages.
     Quad9 {
         addrs: Vec<SocketAddr>,
@@ -164,6 +173,7 @@ impl Resolver {
     pub fn name(&self) -> &'static str {
         match self {
             Self::Ironroot { .. } => "ironroot",
+            Self::Mesh { .. } => "mesh",
             Self::Quad9 { .. } => "quad9",
             Self::System => "system",
         }
@@ -171,12 +181,18 @@ impl Resolver {
 
     /// Parse one entry of `TRANSFERD_DNS`.
     pub fn from_name(name: &str, ironroot: SocketAddr) -> Result<Self, DnsError> {
+        Self::from_name_with(name, ironroot, MESH_DEFAULT_ADDR)
+    }
+
+    /// Parse one entry of `TRANSFERD_DNS`, with the mesh forwarder's address too.
+    pub fn from_name_with(name: &str, ironroot: SocketAddr, mesh: SocketAddr) -> Result<Self, DnsError> {
         match name.trim().to_ascii_lowercase().as_str() {
             "ironroot" => Ok(Self::ironroot(ironroot)),
+            "mesh" => Ok(Self::Mesh { addr: mesh }),
             "quad9" => Ok(Self::quad9(QUAD9_ADDRS, QUAD9_SERVER_NAME)),
             "system" => Ok(Self::System),
             other => Err(DnsError::Config {
-                what: format!("unknown resolver {other:?} (ironroot, quad9, system)"),
+                what: format!("unknown resolver {other:?} (ironroot, quad9, system, mesh)"),
             }),
         }
     }
@@ -200,15 +216,28 @@ impl Default for Config {
 }
 
 impl Config {
-    /// Read `TRANSFERD_DNS`, `TRANSFERD_DNS_IRONROOT` and `TRANSFERD_DNS_REQUIRE_VALIDATED`.
+    /// Read `TRANSFERD_DNS`, `TRANSFERD_DNS_IRONROOT`, `TRANSFERD_DNS_MESH` and
+    /// `TRANSFERD_DNS_REQUIRE_VALIDATED`.
     pub fn from_env() -> Self {
-        Self::from_vars(
+        let mut config = Self::from_vars(
             std::env::var("TRANSFERD_DNS").ok().as_deref(),
             std::env::var("TRANSFERD_DNS_IRONROOT").ok().as_deref(),
             std::env::var("TRANSFERD_DNS_REQUIRE_VALIDATED")
                 .ok()
                 .as_deref(),
-        )
+        );
+        config.set_mesh_addr(std::env::var("TRANSFERD_DNS_MESH").ok().as_deref());
+        config
+    }
+
+    /// Point a `mesh` entry at another address (`None` or unparsable: leave the default).
+    pub fn set_mesh_addr(&mut self, addr: Option<&str>) {
+        let Some(addr) = addr.map(str::trim).and_then(|s| s.parse::<SocketAddr>().ok()) else { return };
+        for resolver in &mut self.resolvers {
+            if let Resolver::Mesh { addr: at } = resolver {
+                *at = addr;
+            }
+        }
     }
 
     /// The same, from values already read — so the parsing can be tested without touching the process's
@@ -374,11 +403,12 @@ impl Client {
     async fn ask(&self, resolver: &Resolver, name: &str) -> Result<Answer, DnsError> {
         let timeout = self.config.timeout;
         match resolver {
-            Resolver::Ironroot { addr } => {
-                let answer = self.query_udp(*addr, name, timeout).await?;
+            Resolver::Ironroot { addr } | Resolver::Mesh { addr } => {
+                let who = resolver.name();
+                let answer = self.query_udp(who, *addr, name, timeout).await?;
                 // Truncated: RFC 1035 §4.1.1 says ask again over TCP.
                 if answer.truncated {
-                    return self.query_tcp(*addr, name, timeout).await;
+                    return self.query_tcp(who, *addr, name, timeout).await;
                 }
                 Ok(answer)
             }
@@ -392,6 +422,7 @@ impl Client {
     /// Plain DNS over UDP: A and AAAA in one exchange.
     async fn query_udp(
         &self,
+        resolver: &'static str,
         addr: SocketAddr,
         name: &str,
         timeout: Duration,
@@ -404,13 +435,13 @@ impl Client {
         let sock = UdpSocket::bind(bind)
             .await
             .map_err(|source| DnsError::Transport {
-                resolver: "ironroot",
+                resolver,
                 source,
             })?;
         sock.connect(addr)
             .await
             .map_err(|source| DnsError::Transport {
-                resolver: "ironroot",
+                resolver,
                 source,
             })?;
         let mut out: Vec<Answer> = Vec::new();
@@ -420,7 +451,7 @@ impl Client {
             sock.send(&query)
                 .await
                 .map_err(|source| DnsError::Transport {
-                    resolver: "ironroot",
+                    resolver,
                     source,
                 })?;
             let mut buf = [0u8; wire::EDNS_UDP_PAYLOAD as usize];
@@ -428,20 +459,20 @@ impl Client {
                 Ok(Ok(n)) => n,
                 Ok(Err(source)) => {
                     return Err(DnsError::Transport {
-                        resolver: "ironroot",
+                        resolver,
                         source,
                     })
                 }
                 Err(_) => {
                     return Err(DnsError::Timeout {
-                        resolver: "ironroot",
+                        resolver,
                         after: timeout,
                     })
                 }
             };
             out.push(decode_answer(&buf[..n], id, name, qtype).map_err(|source| {
                 DnsError::Malformed {
-                    resolver: "ironroot",
+                    resolver,
                     source,
                 }
             })?);
@@ -452,6 +483,7 @@ impl Client {
     /// Plain DNS over TCP: 2-byte length prefix, then the message (RFC 1035 §4.2.2).
     async fn query_tcp(
         &self,
+        resolver: &'static str,
         addr: SocketAddr,
         name: &str,
         timeout: Duration,
@@ -460,13 +492,13 @@ impl Client {
             Ok(Ok(s)) => s,
             Ok(Err(source)) => {
                 return Err(DnsError::Transport {
-                    resolver: "ironroot",
+                    resolver,
                     source,
                 })
             }
             Err(_) => {
                 return Err(DnsError::Timeout {
-                    resolver: "ironroot",
+                    resolver,
                     after: timeout,
                 })
             }
@@ -482,7 +514,7 @@ impl Client {
                 .write_all(&framed)
                 .await
                 .map_err(|source| DnsError::Transport {
-                    resolver: "ironroot",
+                    resolver,
                     source,
                 })?;
             let mut len = [0u8; 2];
@@ -490,7 +522,7 @@ impl Client {
                 .read_exact(&mut len)
                 .await
                 .map_err(|source| DnsError::Transport {
-                    resolver: "ironroot",
+                    resolver,
                     source,
                 })?;
             let mut msg = vec![0u8; u16::from_be_bytes(len) as usize];
@@ -498,12 +530,12 @@ impl Client {
                 .read_exact(&mut msg)
                 .await
                 .map_err(|source| DnsError::Transport {
-                    resolver: "ironroot",
+                    resolver,
                     source,
                 })?;
             out.push(decode_answer(&msg, id, name, qtype).map_err(|source| {
                 DnsError::Malformed {
-                    resolver: "ironroot",
+                    resolver,
                     source,
                 }
             })?);
@@ -888,6 +920,20 @@ mod tests {
         let c = Config::from_vars(Some("ironroot"), Some("127.0.0.1:15411"), None);
         let want: SocketAddr = "127.0.0.1:15411".parse().expect("that is an address");
         assert_eq!(c.resolvers[0], Resolver::ironroot(want));
+    }
+
+    #[test]
+    fn mesh_is_only_in_the_chain_when_asked_for_and_its_address_is_configurable() {
+        assert!(!Config::from_vars(None, None, None)
+            .resolvers
+            .iter()
+            .any(|r| matches!(r, Resolver::Mesh { .. })));
+        let mut c = Config::from_vars(Some("mesh,quad9"), None, None);
+        assert_eq!(c.resolvers[0], Resolver::Mesh { addr: MESH_DEFAULT_ADDR });
+        c.set_mesh_addr(Some("127.0.0.1:15353"));
+        assert_eq!(c.resolvers[0], Resolver::Mesh { addr: "127.0.0.1:15353".parse().unwrap() });
+        c.set_mesh_addr(Some("not an address"));
+        assert_eq!(c.resolvers[0].name(), "mesh", "a bad address leaves the last good one");
     }
 
     #[test]

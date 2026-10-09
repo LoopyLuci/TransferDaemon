@@ -270,6 +270,16 @@ pub trait Link: Send + Sync {
 
     /// A human-readable address for diagnostics.
     fn describe(&self) -> String;
+
+    /// Who to wake when a frame arrives, so the session reads it at once instead of at its next
+    /// tick. A link that cannot tell (polled only) keeps the default and is read on the tick.
+    fn set_waker(&self, _waker: Arc<tokio::sync::Notify>) {}
+
+    /// Whether the link is gone for good (its transport closed), as opposed to merely down
+    /// (not answering probes for now).
+    fn is_closed(&self) -> bool {
+        false
+    }
 }
 
 /// A plug-in that builds links for one medium.
@@ -462,17 +472,21 @@ impl Link for PipeLink {
 /// Choose the live route with the lowest cost. Ties break on [`RouteKind::rank`], so a LAN
 /// path wins over a relay of the same measured speed.
 pub fn best_route<'a>(links: &'a [&'a Arc<dyn Link>]) -> Option<&'a Arc<dyn Link>> {
+    let by_cost = |a: &&&Arc<dyn Link>, b: &&&Arc<dyn Link>| {
+        a.stats()
+            .metrics()
+            .cost()
+            .partial_cmp(&b.stats().metrics().cost())
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.kind().rank().cmp(&b.kind().rank()))
+    };
     links
         .iter()
         .filter(|l| l.is_up())
-        .min_by(|a, b| {
-            a.stats()
-                .metrics()
-                .cost()
-                .partial_cmp(&b.stats().metrics().cost())
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then(a.kind().rank().cmp(&b.kind().rank()))
-        })
+        .min_by(by_cost)
+        // Nothing answers probes right now: still use the best route that is not closed rather
+        // than send nothing (with one route, refusing it only stops the session healing).
+        .or_else(|| links.iter().filter(|l| !l.is_closed()).min_by(by_cost))
         .copied()
 }
 

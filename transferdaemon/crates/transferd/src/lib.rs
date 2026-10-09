@@ -17,6 +17,7 @@ pub mod limits;
 pub mod safety;
 pub mod phrase_cache;
 pub mod outbox;
+pub mod overlay;
 
 use std::sync::Arc;
 use parking_lot::Mutex;

@@ -9241,6 +9241,7 @@ dependencies = [
  "transferd-core",
  "transferd-crypto",
  "transferd-dns",
+ "transferd-overlay",
  "transferd-relay",
  "transferd-store",
  "transferd-telemetry",
@@ -9425,6 +9426,7 @@ dependencies = [
  "tracing-subscriber",
  "transferd-core",
  "transferd-crypto",
+ "transferd-dns",
 ]
 
 [[package]]

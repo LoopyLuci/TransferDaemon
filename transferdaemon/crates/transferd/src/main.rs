@@ -6,6 +6,13 @@
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Warnings and errors to stderr; RUST_LOG for more (e.g. RUST_LOG=transferd_overlay=debug).
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
+        )
+        .with_writer(std::io::stderr)
+        .try_init();
     let raw = std::env::var("TRANSFERD_ADDR").unwrap_or_else(|_| "127.0.0.1:50051".into());
     // Strip any scheme prefix (http:// or https://) — tonic serve() needs a bare SocketAddr.
     let addr_str = raw
@@ -65,6 +72,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 None
             }
         }
+    };
+
+    // The overlay: paired devices reach each other's services with no inbound port anywhere
+    // (TRANSFERD_OVERLAY=off leaves it out). Its operations live on the control hub.
+    // On a runtime worker: the node's post-quantum key derivation needs more stack than the main
+    // thread has on Windows (1 MB).
+    let _overlay = match hub.clone() {
+        Some(hub) => tokio::spawn(async move { transferd_lib::overlay::start(&hub).await }).await.ok().flatten(),
+        None => None,
     };
 
     // Start the telemetry collector and wire the global ATE hook.

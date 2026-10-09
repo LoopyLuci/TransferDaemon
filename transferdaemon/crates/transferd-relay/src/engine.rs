@@ -283,6 +283,20 @@ async fn handle_datagram(
             }
         }
 
+        Tag::Locate => {
+            // STUN-style address location for a hole punch: the same answer relayd gives.
+            let Ok(msg) = bincode::deserialize::<relayd::protocol::LocateMsg>(body) else { return };
+            let answer = relay.lock().unwrap_or_else(|e| e.into_inner()).locate_answer(&msg, src);
+            match answer {
+                Ok(located) => {
+                    if let Ok(frame) = protocol::encode(Tag::Locate, &located) {
+                        let _ = socket.send_to(&frame, src).await;
+                    }
+                }
+                Err(e) => send_error(socket, src, e.code(), msg.seq, &e.to_string()).await,
+            }
+        }
+
         Tag::Forward => {
             let Ok(msg) = bincode::deserialize::<ForwardMsg>(body) else { return };
             if !bucket.try_consume(msg.ciphertext.len()) {

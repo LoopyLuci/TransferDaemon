@@ -66,6 +66,8 @@ pub mod kind {
     /// Flow-control credit for a stream (bytes the sender may transmit).
     pub const WINDOW: u8 = 0x12;
     pub const CLOSE: u8 = 0x13;
+    /// "Your control frame with this `seq` arrived": the receipt that stops its resending.
+    pub const CTRL_ACK: u8 = 0x14;
     /// Liveness / RTT probe.
     pub const PING: u8 = 0x20;
     pub const PONG: u8 = 0x21;
@@ -192,7 +194,27 @@ pub struct Data {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Ack {
     pub stream: u64,
+    /// Cumulative: every frame of the stream below `seq` has arrived (the receiver's next
+    /// expected sequence number). Not the sequence number of the frame that triggered it, so a
+    /// frame lost before it is still resent.
     pub seq: u64,
+}
+
+/// The receipt for one control frame (see [`is_reliable`]).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CtrlAck {
+    /// The frame header `seq` of the control frame that arrived.
+    pub seq: u64,
+}
+
+/// Control frames whose loss would leave a stream or a session stuck: they are resent until
+/// the peer sends a [`kind::CTRL_ACK`] for them, and a receiver acts on each one once (by its
+/// frame `seq`). Data has its own acknowledgements; pings and route reports are best effort.
+pub fn is_reliable(kind: u8) -> bool {
+    matches!(
+        kind,
+        kind::HELLO | kind::HELLO_ACK | kind::OPEN | kind::OPEN_OK | kind::OPEN_ERR | kind::WINDOW | kind::CLOSE
+    )
 }
 
 /// Flow-control credit: the sender may transmit up to `credit` bytes past what it has sent.
@@ -457,6 +479,7 @@ pub fn is_known_kind(kind: u8) -> bool {
             | kind::ACK
             | kind::WINDOW
             | kind::CLOSE
+            | kind::CTRL_ACK
             | kind::PING
             | kind::PONG
             | kind::ROUTES

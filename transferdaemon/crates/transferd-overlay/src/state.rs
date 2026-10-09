@@ -80,6 +80,9 @@ pub struct StoredState {
     pub connects: Vec<StoredConnect>,
     #[serde(default)]
     pub groups: Vec<StoredGroup>,
+    /// The mesh DNS forwarder's settings, when it is on.
+    #[serde(default)]
+    pub mesh_dns: Option<crate::dns::MeshDnsConfig>,
 }
 
 impl StoredState {

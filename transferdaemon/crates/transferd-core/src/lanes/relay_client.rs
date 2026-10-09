@@ -65,7 +65,11 @@ impl RelayClient {
             socket,
             relay_addr,
             challenge: Mutex::new(None),
-            reg_seq: AtomicU32::new(0),
+            // The relay accepts a registration or keepalive only with a sequence number newer than
+            // the last one it saw for the token. Starting from the clock keeps a new client (after
+            // a restart, or a retry with a fresh client) ahead of the one before it, as long as a
+            // client sends less than one a second on average (it sends one every 30-45 s).
+            reg_seq: AtomicU32::new(now_secs() as u32),
             ghost: std::sync::Mutex::new(None),
         };
         if let Some(path) = std::env::var_os("TRANSFERD_GHOST_FILE") {
@@ -103,15 +107,10 @@ impl RelayClient {
             difficulty: 0,
         })
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
-        temp.send_to(&req, self.relay_addr).await?;
-
         let mut buf = [0u8; 512];
-        let (len, _) = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            temp.recv_from(&mut buf),
-        )
-        .await
-        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "challenge request timed out"))??;
+        let len = ask(&temp, &req, self.relay_addr, &mut buf)
+            .await
+            .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "challenge request timed out"))?;
 
         let Some((tag, body)) = relayd::protocol::split(&buf[..len]) else {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "bad challenge frame"));
@@ -182,17 +181,24 @@ impl RelayClient {
     /// Register `token` with the relay (valid PoW for the current challenge).
     /// Returns the challenge seen in the reply (refreshes the cache).
     pub async fn register(&self, token: [u8; 32]) -> io::Result<PowChallenge> {
-        let frame = self.register_frame(token).await?;
-        self.socket.send_to(&frame, self.relay_addr).await?;
-
-        // The relay replies with the current ChallengeMsg (or an ErrorMsg).
+        // The relay replies with the current ChallengeMsg (or an ErrorMsg). Registering again is
+        // harmless (it refreshes the TTL), so a lost datagram is simply asked again, each time
+        // with a new sequence number (the relay refuses one it has seen).
         let mut buf = [0u8; 512];
-        let (len, _) = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            self.socket.recv_from(&mut buf),
-        )
-        .await
-        .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "register timed out"))??;
+        let mut answered = None;
+        for _ in 0..5 {
+            let frame = self.register_frame(token).await?;
+            self.socket.send_to(&frame, self.relay_addr).await?;
+            if let Ok(Ok((len, from))) =
+                tokio::time::timeout(std::time::Duration::from_secs(1), self.socket.recv_from(&mut buf)).await
+            {
+                if from == self.relay_addr {
+                    answered = Some(len);
+                    break;
+                }
+            }
+        }
+        let len = answered.ok_or_else(|| io::Error::new(io::ErrorKind::TimedOut, "register timed out"))?;
         let frame = &buf[..len];
         let Some((tag, body)) = relayd::protocol::split(frame) else {
             return Err(io::Error::new(io::ErrorKind::InvalidData, "bad register reply"));
@@ -271,6 +277,20 @@ impl RelayClient {
     fn next_seq(&self) -> u32 {
         self.reg_seq.fetch_add(1, Ordering::Relaxed).wrapping_add(1)
     }
+}
+
+/// Send `request` and wait for one datagram back, sending again every second for up to five:
+/// a UDP request or its answer can be lost, and both of the ones made here are safe to repeat.
+async fn ask(socket: &UdpSocket, request: &[u8], to: SocketAddr, buf: &mut [u8]) -> io::Result<usize> {
+    for _ in 0..5 {
+        socket.send_to(request, to).await?;
+        match tokio::time::timeout(std::time::Duration::from_secs(1), socket.recv_from(buf)).await {
+            Ok(Ok((len, from))) if from == to => return Ok(len),
+            // Something else (or an ICMP-driven error on Windows): ask again.
+            Ok(_) | Err(_) => continue,
+        }
+    }
+    Err(io::Error::new(io::ErrorKind::TimedOut, "no answer"))
 }
 
 /// Solve hashcash PoW for `token` against `challenge` (iterative BLAKE3).

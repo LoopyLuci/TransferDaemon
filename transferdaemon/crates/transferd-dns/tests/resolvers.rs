@@ -56,6 +56,22 @@ async fn a_validated_answer_is_reported_as_validated() {
 }
 
 #[tokio::test]
+async fn the_mesh_forwarder_is_asked_like_a_plain_resolver_and_named_as_mesh() {
+    let Some(server) = support::start(Mode::Validated).await else {
+        eprintln!("no loopback port for the test DNS server");
+        return;
+    };
+    let client = Client::new(Config {
+        resolvers: vec![Resolver::Mesh { addr: server.addr() }],
+        require_validated: false,
+        timeout: Duration::from_millis(1500),
+    });
+    let r = client.lookup(NAME, 443).await.expect("the forwarder answers");
+    assert_eq!(r.resolver, "mesh");
+    assert!(r.validated, "AD from the resolver behind it is passed on");
+}
+
+#[tokio::test]
 async fn an_answer_without_ad_is_not_validated() {
     let Some(server) = support::start(Mode::Unvalidated).await else {
         return;

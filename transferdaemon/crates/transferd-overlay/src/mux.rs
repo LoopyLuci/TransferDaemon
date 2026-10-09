@@ -134,6 +134,15 @@ impl SendSide {
         out
     }
 
+    /// Record a cumulative acknowledgement in the wire's sense: every frame below `next` has
+    /// arrived (`next` is the receiver's next expected sequence number).
+    pub fn ack_below(&mut self, next: u64) {
+        self.unacked.retain(|_, f| f.seq >= next);
+        if next > 0 {
+            self.acked = Some(next - 1);
+        }
+    }
+
     /// Record a cumulative acknowledgement.
     pub fn ack(&mut self, seq: u64) {
         self.unacked.retain(|_, f| f.seq > seq);
@@ -275,6 +284,12 @@ impl RecvSide {
         let delta = self.consumed.saturating_sub(self.granted);
         self.granted = self.consumed;
         delta
+    }
+
+    /// The next sequence number expected: everything below it has arrived. This is what a
+    /// cumulative acknowledgement carries.
+    pub fn next_expected(&self) -> u64 {
+        self.next_seq
     }
 
     /// The highest sequence number accepted, which is also what we acknowledge.

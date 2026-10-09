@@ -82,8 +82,14 @@ async fn socks5_session(mut socket: TcpStream, node: OverlayNode) -> Result<()> 
         socket.write_all(&[5, 7, 0, 1, 0, 0, 0, 0, 0, 0]).await?;
         return Err(OverlayError::protocol("only CONNECT is proxied"));
     }
-    let len = request[3] as usize;
-    let mut host = vec![0u8; len];
+    // Only a domain name (ATYP 3) can name an overlay service; an IP address cannot.
+    if request[3] != 3 {
+        socket.write_all(&[5, 8, 0, 1, 0, 0, 0, 0, 0, 0]).await?;
+        return Err(OverlayError::protocol("only <service>.<node>.td names are proxied"));
+    }
+    let mut len = [0u8; 1];
+    socket.read_exact(&mut len).await?;
+    let mut host = vec![0u8; len[0] as usize];
     socket.read_exact(&mut host).await?;
     let mut port = [0u8; 2];
     socket.read_exact(&mut port).await?;

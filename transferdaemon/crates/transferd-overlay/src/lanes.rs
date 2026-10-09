@@ -53,6 +53,8 @@ pub struct FramePipe {
     out: mpsc::Sender<Vec<u8>>,
     inbox: Mutex<VecDeque<Frame>>,
     closed: Arc<AtomicBool>,
+    /// The session's wake-up, set when a session adopts the link.
+    waker: Mutex<Option<Arc<tokio::sync::Notify>>>,
 }
 
 impl std::fmt::Debug for FramePipe {
@@ -77,6 +79,7 @@ impl FramePipe {
             out: tx,
             inbox: Mutex::new(VecDeque::new()),
             closed: Arc::new(AtomicBool::new(false)),
+            waker: Mutex::new(None),
         });
         (link, rx)
     }
@@ -100,11 +103,26 @@ impl FramePipe {
         let mut inbox = self.inbox.lock().unwrap_or_else(|e| e.into_inner());
         for frame in reader.push(&plain) {
             if inbox.len() >= RECV_QUEUE {
+                drop(inbox);
+                self.wake();
                 return false;
             }
             inbox.push_back(frame);
         }
+        drop(inbox);
+        self.wake();
         true
+    }
+
+    fn wake(&self) {
+        if let Some(waker) = self.waker.lock().unwrap_or_else(|e| e.into_inner()).as_ref() {
+            waker.notify_one();
+        }
+    }
+
+    /// Whether the link has not been closed (it may still be down for now).
+    pub fn is_open(&self) -> bool {
+        !self.closed.load(Ordering::Relaxed)
     }
 
     /// Mark the link closed.
@@ -121,6 +139,8 @@ impl FramePipe {
         if inbox.len() < RECV_QUEUE {
             inbox.push_back(frame);
         }
+        drop(inbox);
+        self.wake();
     }
 
 }
@@ -164,6 +184,18 @@ impl Link for FramePipe {
     fn describe(&self) -> String {
         self.describe.clone()
     }
+
+    fn is_closed(&self) -> bool {
+        self.closed.load(Ordering::Relaxed)
+    }
+
+    fn set_waker(&self, waker: Arc<tokio::sync::Notify>) {
+        *self.waker.lock().unwrap_or_else(|e| e.into_inner()) = Some(waker.clone());
+        // Anything that arrived before the session was listening is read now.
+        if !self.inbox.lock().unwrap_or_else(|e| e.into_inner()).is_empty() {
+            waker.notify_one();
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -202,6 +234,9 @@ async fn write_loop_udp(socket: Arc<UdpSocket>, mut rx: mpsc::Receiver<Vec<u8>>,
 ///
 /// Everything is outbound: the peer answers on the connection we opened, so nothing has to be
 /// reachable from outside. `identity` is this node's own identity, used to sign the flight.
+/// How long a direct dial may take before the next path is tried.
+pub const DIAL_TIMEOUT: Duration = Duration::from_secs(3);
+
 pub async fn dial_tcp(
     id: u32,
     kind: RouteKind,
@@ -209,8 +244,11 @@ pub async fn dial_tcp(
     identity: &crate::identity::NodeIdentity,
     expect_node_id: Option<&str>,
 ) -> Result<(Arc<FramePipe>, LinkKeys, String, Vec<u8>)> {
-    let mut stream = TcpStream::connect(target)
+    // A short wait: an address that does not answer quickly is not the route to wait for, the
+    // relay is.
+    let mut stream = tokio::time::timeout(DIAL_TIMEOUT, TcpStream::connect(target))
         .await
+        .map_err(|_| OverlayError::protocol(format!("{target} did not answer within {DIAL_TIMEOUT:?}")))?
         .map_err(|e| OverlayError::protocol(format!("cannot reach {target}: {e}")))?;
     let _ = stream.set_nodelay(true);
     let hs = crate::wire::handshake_initiator(&mut stream, identity, expect_node_id).await?;

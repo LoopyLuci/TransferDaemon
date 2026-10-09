@@ -72,6 +72,10 @@ GHOST KEYS (anonymous identities an issuer vouches for without learning them; no
 
 RELAYS
   relay status | start <relayd|relayd-ws|dhtd> [bind] | stop <kind> | probe <addr>
+  overlay status | peers | services | invite [ttl_s] | accept <invite> [name]
+          expose <service> <host:port> [node-id|*paired ...] | unexpose <service>
+          connect <node-id|group> <service> | disconnect <host:port> | events [s] | audit [n]
+          dns [status] | dns set <node-id|group ...> [--listen host:port] | dns off
 
 THE DAEMON
   daemon start [--wait s]         start transferd (next to this program) if it is not running
@@ -474,6 +478,70 @@ fn run(args: Vec<String>, out: &Out) -> Result<Option<Value>, String> {
                     }
                     Some(other) => Err(format!("relay status|start|stop|probe, not {other}")),
                 },
+                "overlay" => {
+                    let sub = rest.first().map(String::as_str).unwrap_or("status");
+                    let args = rest.get(1..).unwrap_or_default();
+                    match sub {
+                        "status" | "peers" | "services" => call(&format!("overlay.{sub}"), json!({})),
+                        "invite" => {
+                            let ttl: u64 = args.first().and_then(|s| s.parse().ok()).unwrap_or(900);
+                            call("overlay.invite_create", json!({"ttl_s": ttl}))
+                        }
+                        "accept" => {
+                            need(2, "overlay accept <invite> [name]")?;
+                            let mut a = json!({"invite": args[0]});
+                            if let Some(name) = args.get(1) {
+                                a["name"] = json!(name);
+                            }
+                            call("overlay.invite_accept", a)
+                        }
+                        "expose" => {
+                            need(3, "overlay expose <service> <host:port> [node-id|*paired ...]")?;
+                            let allow: Vec<&String> = args[2..].iter().collect();
+                            let allow = if allow.is_empty() { json!(["*paired"]) } else { json!(allow) };
+                            call("overlay.expose", json!({"service": args[0], "local_addr": args[1], "allow": allow}))
+                        }
+                        "unexpose" => {
+                            need(2, "overlay unexpose <service>")?;
+                            call("overlay.unexpose", json!({"service": args[0]}))
+                        }
+                        "connect" => {
+                            need(3, "overlay connect <node-id|group> <service>")?;
+                            let key = if args[0].len() == 64 && args[0].chars().all(|c| c.is_ascii_hexdigit()) { "node_id" } else { "group" };
+                            call("overlay.connect", json!({key: args[0], "service": args[1]}))
+                        }
+                        "disconnect" => {
+                            need(2, "overlay disconnect <host:port>")?;
+                            call("overlay.disconnect", json!({"local_addr": args[0]}))
+                        }
+                        "events" => {
+                            let secs: f64 = args.first().and_then(|s| s.parse().ok()).unwrap_or(5.0);
+                            call("overlay.events", json!({"seconds": secs}))
+                        }
+                        "audit" => {
+                            let n: u64 = args.first().and_then(|s| s.parse().ok()).unwrap_or(50);
+                            call("overlay.audit", json!({"limit": n}))
+                        }
+                        "dns" => match args.first().map(String::as_str) {
+                            None | Some("status") => call("overlay.dns_status", json!({})),
+                            Some("off") => call("overlay.dns_set", json!({"upstreams": []})),
+                            Some("set") => {
+                                let listen = flag_value(&args[1..], "--listen");
+                                let upstreams = without_flag(&args[1..], "--listen");
+                                if upstreams.is_empty() {
+                                    return Err("overlay dns set <node-id|group ...> [--listen host:port]".into());
+                                }
+                                let mut a = json!({"upstreams": upstreams});
+                                if let Some(listen) = listen {
+                                    a["listen"] = json!(listen);
+                                }
+                                call("overlay.dns_set", a)
+                            }
+                            Some(other) => Err(format!("overlay dns status|set|off, not {other}")),
+                        },
+                        other => Err(format!("overlay status|peers|services|invite|accept|expose|unexpose|connect|disconnect|events|audit|dns, not {other}")),
+                    }
+                }
                 other => Err(format!("unknown command {other:?} (transferd-cli help)")),
             }
         }

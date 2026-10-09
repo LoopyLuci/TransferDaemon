@@ -29,7 +29,8 @@ use crate::error::{OverlayError, Result};
 use crate::link::{Link, RouteKind};
 use crate::mux::{Mux, OutFrame, StreamId};
 use crate::protocol::{
-    self, kind, Ack, Close, Data, Frame, Hello, HelloAck, Open, OpenErr, OpenOk, Ping, Pong, RouteReport, Routes, Window,
+    self, kind, Ack, Close, CtrlAck, Data, Frame, Hello, HelloAck, Open, OpenErr, OpenOk, Ping, Pong, RouteReport, Routes,
+    Window,
 };
 
 /// How often the session ticks.
@@ -40,6 +41,18 @@ pub const PROBE_EVERY: Duration = Duration::from_millis(1000);
 
 /// How long a frame may sit unacknowledged before it goes out again, on another route.
 pub const RESEND_AFTER: Duration = Duration::from_millis(400);
+
+/// Unanswered pings in a row before a route counts as down: one lost datagram is not an outage.
+const MISSES_DOWN: u32 = 3;
+
+/// How long a control frame waits for its receipt before it goes out again.
+pub const CTRL_RESEND: Duration = Duration::from_millis(300);
+
+/// How long a control frame is resent before the peer is taken to be gone.
+const CTRL_GIVE_UP: Duration = Duration::from_secs(60);
+
+/// How long `open` waits for the peer to accept or refuse a stream.
+pub const OPEN_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// A frame this big or bigger is treated as bulk: striped across routes rather than pinned.
 const BULK_THRESHOLD: usize = 4096;
@@ -84,6 +97,9 @@ pub enum SessionCommand {
     AddLink { link: Arc<dyn Link> },
     /// Allow or refuse a stream the peer asked for.
     Authorize { stream: StreamId, service: String, ok: bool, reason: String },
+    /// Tell the peer what we expose now (after an expose or unexpose): a fresh hello, which the
+    /// peer answers like any other and uses to update what it knows about us.
+    Advertise { services: Vec<protocol::ServiceInfo> },
     /// Stop the session.
     Shutdown,
 }
@@ -128,7 +144,10 @@ impl SessionHandle {
             .send(SessionCommand::Open { service: service.to_string(), reply })
             .await
             .map_err(|_| self.gone())?;
-        rx.recv().await.ok_or_else(|| self.gone())?
+        match tokio::time::timeout(OPEN_TIMEOUT, rx.recv()).await {
+            Ok(answer) => answer.ok_or_else(|| self.gone())?,
+            Err(_) => Err(OverlayError::Unreachable { node: self.peer_node_id.clone() }),
+        }
     }
 
     /// Queue bytes for a stream. The stream's window decides how much actually moves; the rest
@@ -162,6 +181,11 @@ impl SessionHandle {
             .map_err(|_| self.gone())
     }
 
+    /// Re-announce what we expose.
+    pub async fn advertise(&self, services: Vec<protocol::ServiceInfo>) {
+        let _ = self.commands.send(SessionCommand::Advertise { services }).await;
+    }
+
     /// Stop the session.
     pub async fn shutdown(&self) {
         let _ = self.commands.send(SessionCommand::Shutdown).await;
@@ -187,6 +211,19 @@ impl SessionHandle {
     /// The routes this session measures, for `overlay.peers`.
     pub fn routes(&self) -> Vec<crate::protocol::RouteReport> {
         self.routes.read().clone()
+    }
+
+    /// Wait until the peer has answered our hello (so what it offers is known), at most `limit`.
+    /// False when it did not in time.
+    pub async fn ready(&self, limit: std::time::Duration) -> bool {
+        let deadline = tokio::time::Instant::now() + limit;
+        while self.version() == 0 {
+            if !self.is_live() || tokio::time::Instant::now() >= deadline {
+                return false;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        true
     }
 
     /// The agreed protocol version, or 0 while the session is still negotiating.
@@ -223,6 +260,7 @@ struct WriteQueue {
 struct Session {
     peer_node_id: String,
     links: Vec<Arc<dyn Link>>,
+    wake: Arc<tokio::sync::Notify>,
     mux: Mux,
     /// When each route was last probed.
     last_probe: HashMap<u32, Instant>,
@@ -230,6 +268,8 @@ struct Session {
     sent_at: HashMap<(u64, u64), Instant>,
     /// Which route each open ping went out on, so the answer is credited to the right one.
     pings: HashMap<u64, (u32, Instant)>,
+    /// Pings in a row a route has not answered; it is down after [`MISSES_DOWN`].
+    misses: HashMap<u32, u32>,
     /// Receives still waiting for data.
     pending_reads: HashMap<u64, PendingRead>,
     /// Bytes written by the application that the window has not let out yet, per stream. This
@@ -243,6 +283,10 @@ struct Session {
     services: Vec<protocol::ServiceInfo>,
     /// What we tell the peer about ourselves, in our hello and in an answer to theirs.
     local: Hello,
+    /// Control frames sent and not yet receipted: (frame, first sent, last sent).
+    ctrl_unacked: std::collections::BTreeMap<u64, (Frame, Instant, Instant)>,
+    /// Control frames received, by frame `seq`, so a resent one is acted on once.
+    ctrl_seen: protocol::ReplayWindow,
     version: u8,
     frame_seq: u64,
     ready: bool,
@@ -290,20 +334,29 @@ pub async fn spawn(
     };
     // The two ends allocate stream ids from different halves, decided by who has the lower id.
     let odd = identity.node_id() < peer_node_id.as_str();
+    // Links wake the session when a frame arrives; the tick is only for probes and resends.
+    let wake = Arc::new(tokio::sync::Notify::new());
+    for link in &links {
+        link.set_waker(wake.clone());
+    }
     tokio::spawn(async move {
         let mut s = Session {
             peer_node_id,
             links,
+            wake: wake.clone(),
             mux: Mux::with_parity(odd),
             last_probe: HashMap::new(),
             sent_at: HashMap::new(),
             pings: HashMap::new(),
+            misses: HashMap::new(),
             pending_reads: HashMap::new(),
             write_queue: HashMap::new(),
             pending_opens: HashMap::new(),
             awaiting_open: HashMap::new(),
             services: Vec::new(),
             local: hello.clone(),
+            ctrl_unacked: std::collections::BTreeMap::new(),
+            ctrl_seen: protocol::ReplayWindow::new(4096),
             version: max_version,
             frame_seq: 0,
             ready: false,
@@ -325,6 +378,7 @@ pub async fn spawn(
                     Some(c) => s.handle_command(c).await,
                 },
                 _ = ticker.tick() => s.tick().await,
+                _ = wake.notified() => s.drain_inbound().await,
             }
             if s.stopped {
                 break;
@@ -363,7 +417,46 @@ impl Session {
             seq,
             body,
         };
-        self.dispatch(&frame)
+        let sent = self.dispatch(&frame);
+        if protocol::is_reliable(kind) {
+            // Kept until the peer's receipt comes back; a frame that could not go out at all is
+            // tried again on the next resend, so it still counts as queued.
+            let now = Instant::now();
+            self.ctrl_unacked.insert(seq, (frame, now, now));
+            return true;
+        }
+        sent
+    }
+
+    /// Resend the control frames whose receipt has not come back.
+    fn resend_control(&mut self) {
+        let now = Instant::now();
+        let due: Vec<u64> = self
+            .ctrl_unacked
+            .iter()
+            .filter(|(_, (_, _, last))| now.duration_since(*last) >= CTRL_RESEND)
+            .map(|(seq, _)| *seq)
+            .collect();
+        for seq in due {
+            let Some((frame, first, _)) = self.ctrl_unacked.get(&seq).cloned() else { continue };
+            if now.duration_since(first) > CTRL_GIVE_UP {
+                tracing::warn!("[overlay session] {}: no receipt for a control frame in {CTRL_GIVE_UP:?}; closing", self.peer_node_id);
+                self.stopped = true;
+                return;
+            }
+            self.dispatch(&frame);
+            if let Some(entry) = self.ctrl_unacked.get_mut(&seq) {
+                entry.2 = now;
+            }
+        }
+    }
+
+    /// A control frame arrived: send its receipt, and say whether to act on it (false for a
+    /// copy we have already acted on).
+    fn admit_control(&mut self, frame: &Frame) -> bool {
+        let receipt = Self::encode(&CtrlAck { seq: frame.seq });
+        self.send_frame(kind::CTRL_ACK, receipt, false);
+        self.ctrl_seen.accept(frame.seq)
     }
 
     /// Put a frame on the best live route; a mirrored frame also goes out on every other one.
@@ -437,8 +530,14 @@ impl Session {
     async fn handle_command(&mut self, cmd: SessionCommand) {
         match cmd {
             SessionCommand::Shutdown => self.stopped = true,
+            SessionCommand::Advertise { services } => {
+                self.local.services = services;
+                let hello = Self::encode(&self.local);
+                self.send_frame(kind::HELLO, hello, false);
+            }
             SessionCommand::AddLink { link } => {
                 if !self.links.iter().any(|l| l.id() == link.id()) {
+                    link.set_waker(self.wake.clone());
                     let up = link.is_up();
                     let kind = link.kind();
                     let peer = self.peer_node_id.clone();
@@ -450,6 +549,7 @@ impl Session {
                 let stream = self.mux.open(service.clone());
                 let body =
                     Self::encode(&Open { stream: stream.0, service: service.clone(), node_id: self.local.node_id.clone() });
+                tracing::debug!("[overlay session] {}: open stream {} for {service}", self.peer_node_id, stream.0);
                 if self.send_frame(kind::OPEN, body, false) {
                     // Answered by the peer's OPEN_OK or OPEN_ERR.
                     self.awaiting_open.insert(stream.0, (service, reply));
@@ -470,7 +570,18 @@ impl Session {
                 self.pump(stream);
             }
             SessionCommand::Recv { stream, reply } => {
+                if self.mux.recv_side(stream).is_none() {
+                    // No such stream (closed, refused, never opened): the end, not a wait forever.
+                    let _ = reply.try_send(None);
+                    return;
+                }
                 let ready = self.mux.recv_side(stream).and_then(|r| r.take());
+                let ended = self.mux.recv_side(stream).map(|r| r.finished() && r.buffered() == 0).unwrap_or(true);
+                if ready.is_none() && ended {
+                    // The peer ended the stream and everything has been read: end of stream.
+                    let _ = reply.try_send(None);
+                    return;
+                }
                 match ready {
                     Some(bytes) => {
                         let granted = self.mux.recv_side(stream).map(|r| r.window_update()).unwrap_or(0);
@@ -483,13 +594,23 @@ impl Session {
                 }
             }
             SessionCommand::Authorize { stream, service, ok, reason } => {
-                self.pending_opens.remove(&stream.0);
+                tracing::debug!("[overlay session] {}: stream {} for {service}: {}", self.peer_node_id, stream.0, if ok { "accepted" } else { reason.as_str() });
+                if self.pending_opens.remove(&stream.0).is_none() {
+                    // The peer closed it before we decided: nothing to accept or refuse.
+                    return;
+                }
                 if ok {
                     self.mux.accept(stream, service);
                     let body = Self::encode(&OpenOk { stream: stream.0, route: self.best_route_name() });
                     self.send_frame(kind::OPEN_OK, body, false);
                 } else {
-                    let body = Self::encode(&OpenErr { stream: stream.0, code: "denied".into(), reason });
+                    // The code tells the opener which refusal this was; the reason says it in words.
+                    let code = match reason.as_str() {
+                        "no such service" => "no_such_service",
+                        r if r.contains("a minute") => "rate_limited",
+                        _ => "denied",
+                    };
+                    let body = Self::encode(&OpenErr { stream: stream.0, code: code.into(), reason });
                     self.send_frame(kind::OPEN_ERR, body, false);
                 }
             }
@@ -544,9 +665,9 @@ impl Session {
                     Some(link) => link.send(&frame).is_ok(),
                     None => self.dispatch(&frame),
                 };
-                if sent {
-                    self.sent_at.insert((f.stream.0, f.seq), now);
-                }
+                tracing::trace!("[overlay session] {}: send stream {} seq {} ok {sent}", self.peer_node_id, f.stream.0, f.seq);
+                // Timed from now either way: a frame no route would take is the resend's to send.
+                self.sent_at.insert((f.stream.0, f.seq), now);
             }
             let done = self.write_queue.get(&stream.0).map(|q| q.chunks.is_empty()).unwrap_or(true);
             if done {
@@ -559,6 +680,7 @@ impl Session {
     async fn tick(&mut self) {
         self.drain_inbound().await;
         self.probe();
+        self.resend_control();
         // Republish the measurements so `overlay.peers` and group placement see current numbers.
         *self.handle_routes.write() = self.routes();
         if self.ready {
@@ -569,12 +691,22 @@ impl Session {
     async fn drain_inbound(&mut self) {
         let links = self.links.clone();
         for link in links {
-            // Bounded per tick so one busy route cannot starve the others.
-            for _ in 0..64 {
+            // Bounded per pass so one busy route cannot starve the others; a route that had more
+            // wakes the session again for another pass.
+            for taken in 0..=64 {
+                if taken == 64 {
+                    self.wake.notify_one();
+                    break;
+                }
                 match link.try_recv() {
                     // A ping is answered on the route it came in on, so the answer measures that
                     // route and not whichever one is best right now.
                     Some(frame) if frame.kind == kind::PING => self.answer_ping(&frame, &link),
+                    Some(frame) if protocol::is_reliable(frame.kind) => {
+                        if self.admit_control(&frame) {
+                            self.on_frame(&frame);
+                        }
+                    }
                     Some(frame) => self.on_frame(&frame),
                     None => break,
                 }
@@ -693,6 +825,7 @@ impl Session {
             }
             kind::OPEN_OK => {
                 let Ok(ok) = frame.decode::<OpenOk>() else { return };
+                tracing::debug!("[overlay session] {}: stream {} accepted by the peer", self.peer_node_id, ok.stream);
                 if let Some((_, reply)) = self.awaiting_open.remove(&ok.stream) {
                     let _ = reply.try_send(Ok(StreamId(ok.stream)));
                 }
@@ -719,28 +852,37 @@ impl Session {
                 let fin = data.fin;
                 let stream = data.stream;
                 let seq = data.seq;
+                tracing::trace!("[overlay session] {}: data stream {stream} seq {seq} fin {fin}", self.peer_node_id);
                 let out = OutFrame { stream: StreamId(stream), seq, payload: data.payload, fin };
                 let delivered = match self.mux.recv_side(StreamId(stream)) {
                     Some(recv) => !recv.accept(out).is_empty(),
-                    None => false,
-                };
-                if fin {
-                    if let Some(recv) = self.mux.recv_side(StreamId(stream)) {
-                        recv.close();
+                    // Not a stream we have (yet): no acknowledgement, so the sender sends it again
+                    // rather than believing it arrived.
+                    None => {
+                        tracing::debug!("[overlay session] {}: data for unknown stream {stream}", self.peer_node_id);
+                        return;
                     }
-                }
-                let ack = Self::encode(&Ack { stream, seq });
+                };
+                // The end of the stream is taken in order by `accept`: closing here on a FIN that
+                // overtook earlier frames would throw those frames away.
+                // Cumulative, and sent for a duplicate too: a lost acknowledgement is repaired by
+                // the resend it causes.
+                let next = self.mux.recv_side(StreamId(stream)).map(|r| r.next_expected()).unwrap_or(0);
+                let ack = Self::encode(&Ack { stream, seq: next });
                 self.send_frame(kind::ACK, ack, false);
                 if delivered {
                     self.wake_reader(stream);
+                }
+                if fin {
+                    self.end_reader(stream);
                 }
             }
             kind::ACK => {
                 let Ok(ack) = frame.decode::<Ack>() else { return };
                 if let Some(send) = self.mux.send_side(StreamId(ack.stream)) {
-                    send.ack(ack.seq);
+                    send.ack_below(ack.seq);
                 }
-                self.sent_at.retain(|(s, q), _| *s != ack.stream || *q > ack.seq);
+                self.sent_at.retain(|(s, q), _| *s != ack.stream || *q >= ack.seq);
             }
             kind::WINDOW => {
                 let Ok(w) = frame.decode::<Window>() else { return };
@@ -752,6 +894,7 @@ impl Session {
             }
             kind::CLOSE => {
                 let Ok(c) = frame.decode::<Close>() else { return };
+                self.pending_opens.remove(&c.stream);
                 self.mux.remove_send(StreamId(c.stream));
                 if let Some(recv) = self.mux.recv_side(StreamId(c.stream)) {
                     recv.close();
@@ -767,11 +910,17 @@ impl Session {
                 if let Some(link) = self.links.iter().find(|l| l.id() == route) {
                     link.stats().probe_ok(rtt);
                 }
+                self.misses.remove(&route);
             }
             kind::ROUTES => {
                 // The peer's routes are informational: our own measurements decide where our
                 // frames go, so a peer cannot talk us onto a worse path.
                 let _ = frame.decode::<Routes>();
+            }
+            kind::CTRL_ACK => {
+                if let Ok(receipt) = frame.decode::<CtrlAck>() {
+                    self.ctrl_unacked.remove(&receipt.seq);
+                }
             }
             kind::BYE => self.stopped = true,
             _ => {}
@@ -789,7 +938,22 @@ impl Session {
         }
     }
 
+    /// Tell a waiting reader the stream has ended, once nothing is left to read.
+    fn end_reader(&mut self, stream: u64) {
+        let ended = self.mux.recv_side(StreamId(stream)).map(|r| r.finished() && r.buffered() == 0).unwrap_or(true);
+        if ended {
+            if let Some(PendingRead(reply)) = self.pending_reads.remove(&stream) {
+                let _ = reply.try_send(None);
+            }
+        }
+    }
+
+    /// Hand buffered bytes to a reader that is waiting for them. With nobody waiting they stay
+    /// buffered for the next `recv`: taking them out here would drop them.
     fn wake_reader(&mut self, stream: u64) {
+        if !self.pending_reads.contains_key(&stream) {
+            return;
+        }
         let Some(recv) = self.mux.recv_side(StreamId(stream)) else { return };
         let Some(bytes) = recv.take() else { return };
         let granted = recv.window_update();
@@ -815,6 +979,7 @@ impl Session {
             .filter(|f| self.sent_at.get(&(f.stream.0, f.seq)).map(|t| now.duration_since(*t) >= RESEND_AFTER).unwrap_or(false))
             .collect();
         for f in stale {
+            tracing::trace!("[overlay session] {}: resend stream {} seq {}", self.peer_node_id, f.stream.0, f.seq);
             let frame = self.data_frame(&f, true);
             let target = self.route_for_bulk();
             let sent = match target.and_then(|i| self.links.get(i).cloned()) {
@@ -835,6 +1000,9 @@ impl Session {
                 continue;
             }
             self.last_probe.insert(link.id(), now);
+            // Once per probe round: the loss and throughput estimates are over the last round.
+            link.stats().refresh_loss();
+            link.stats().refresh_bandwidth();
             // The nonce carries the route, so the answer is credited to the route it came from.
             let nonce = (now_micros() ^ ((link.id() as u64) << 40)) & u64::MAX;
             self.pings.insert(nonce, (link.id(), now));
@@ -842,19 +1010,10 @@ impl Session {
             let body = Self::encode(&Ping { nonce, sent_us: now_micros() });
             let seq = self.next_seq();
             let frame = Frame { version: self.version, kind: kind::PING, flags: 0, seq, body };
-            if link.send(&frame).is_err() {
-                link.mark_down();
-            }
+            let _ = link.send(&frame);
         }
-        // Routes that stop answering eventually drop out of rotation.
-        for link in self.links.clone() {
-            link.stats().refresh_loss();
-            link.stats().refresh_bandwidth();
-            if self.last_probe.contains_key(&link.id()) {
-                let _ = link;
-            }
-        }
-        // A ping whose answer never came marks the route as suspect on its own.
+        // A ping whose answer never came is a miss; a route that misses several in a row is down
+        // until a frame arrives on it again.
         let stale: Vec<u64> = self
             .pings
             .iter()
@@ -862,8 +1021,12 @@ impl Session {
             .map(|(nonce, _)| *nonce)
             .collect();
         for nonce in stale {
-            if let Some((route, _)) = self.pings.remove(&nonce) {
+            let Some((route, _)) = self.pings.remove(&nonce) else { continue };
+            let misses = self.misses.entry(route).or_default();
+            *misses += 1;
+            if *misses >= MISSES_DOWN {
                 if let Some(link) = self.links.iter().find(|l| l.id() == route) {
+                    tracing::trace!("[overlay session] {}: route {} marked down (no pong)", self.peer_node_id, link.kind().as_str());
                     link.stats().mark_down();
                 }
             }

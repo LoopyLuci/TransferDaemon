@@ -41,6 +41,7 @@ transferd-relay      = { path = "../transferd-relay" }
 relayd               = { path = "../relayd" }
 transferd-telemetry  = { path = "../transferd-telemetry" }
 transferd-control    = { path = "../transferd-control" }
+transferd-overlay    = { path = "../transferd-overlay" }
 dirs                 = { workspace = true }
 aes-gcm = { workspace = true }
 argon2  = { workspace = true }
@@ -48,6 +49,7 @@ tracing = { workspace = true }
 bytes   = { workspace = true }
 blake3  = { workspace = true }
 netdev  = "0.31"
+tracing-subscriber = { workspace = true }
 
 # The recovery-phrase cache is protected with DPAPI on Windows (phrase_cache.rs).
 [target.'cfg(windows)'.dependencies]
@@ -58,6 +60,5 @@ futures-core     = "0.3"
 futures-util     = "0.3"
 tempfile         = "3"
 transferd-webrtc = { path = "../transferd-webrtc", features = ["grpc-signaling"] }
-tracing-subscriber = { workspace = true }
 tokio-tungstenite = "0.24"
 

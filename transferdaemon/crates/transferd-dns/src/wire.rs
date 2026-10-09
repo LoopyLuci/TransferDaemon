@@ -151,7 +151,7 @@ pub fn encode_name(name: &str, out: &mut Vec<u8>) -> Result<(), BadName> {
 
 /// Read a possibly compressed name at `pos`, returning the presentation name and the offset just past
 /// the name *in this record stream* (a compression pointer is 2 bytes and ends the name here).
-fn decode_name(msg: &[u8], pos: usize) -> Result<(String, usize), DecodeError> {
+pub fn decode_name(msg: &[u8], pos: usize) -> Result<(String, usize), DecodeError> {
     let mut name = String::new();
     let mut p = pos;
     let mut end = None;

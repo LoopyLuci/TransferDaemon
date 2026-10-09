@@ -43,7 +43,13 @@ impl NodeIdentity {
     pub fn generate(name: impl Into<String>) -> Self {
         let mut seed = [0u8; 64];
         rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut seed);
-        Self::new(HybridSigningKey::from_bip39_seed(&seed), name)
+        Self::from_seed(&seed, name)
+    }
+
+    /// The identity a 64-byte seed derives; the same seed always gives the same node id, so a
+    /// stored seed is all a node needs to keep its identity across restarts.
+    pub fn from_seed(seed: &[u8; 64], name: impl Into<String>) -> Self {
+        Self::new(HybridSigningKey::from_bip39_seed(seed), name)
     }
 
     /// The 64-character hex node id.

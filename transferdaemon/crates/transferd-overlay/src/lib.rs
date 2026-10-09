@@ -27,6 +27,7 @@
 //! The wire format, version negotiation and extension rules are specified in `docs/PROTOCOL.md`;
 //! the architecture, the operations and the measured numbers are in `docs/OVERLAY.md`.
 
+pub mod dns;
 pub mod error;
 pub mod events;
 pub mod identity;

@@ -11,7 +11,7 @@ use common::{TestNode, TestRelay, echo_service, eventually, read_exact};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 /// Two nodes with no listener reach each other and move real bytes through a real service.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 16)]
 async fn two_nodes_with_no_inbound_listener_reach_each_other_through_a_relay() {
     common::trace();
     let relay = TestRelay::start().await;
@@ -40,6 +40,11 @@ async fn two_nodes_with_no_inbound_listener_reach_each_other_through_a_relay() {
 
     // The relay really did the work: both tokens are registered there.
     assert!(relay.registered().await >= 2, "both nodes registered their token");
+
+    // Disconnecting closes the endpoint for real: nothing listens there any more.
+    drop(stream);
+    alice.node.disconnect(local).expect("disconnect");
+    eventually("the endpoint to stop listening", || async { tokio::net::TcpStream::connect(local).await.is_err() }).await;
 }
 
 /// Three nodes where the middle one also serves as the relay for the other two.
@@ -47,7 +52,7 @@ async fn two_nodes_with_no_inbound_listener_reach_each_other_through_a_relay() {
 /// The requirement is that "any paired node that is reachable may serve as a relay for the
 /// rest", so here the relay process is not a separate binary: `relayd`'s own relay logic runs
 /// alongside the node that the other two pair with.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 16)]
 async fn three_nodes_reach_each_other_with_a_paired_node_serving_as_the_relay() {
     let hub = TestNode::with_listener("hub", &[]).await;
     // The hub node runs the relay: the same relayd logic, on its own socket.
@@ -81,7 +86,7 @@ async fn three_nodes_reach_each_other_with_a_paired_node_serving_as_the_relay() 
 /// A node with no inbound listener is still reachable *inbound* by a peer that dials it
 /// through the relay — the session is dialled by the peer, answered by the mapping the
 /// victim's own registration created.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 16)]
 async fn a_node_with_no_listener_accepts_a_session_dialed_through_the_relay() {
     let relay = TestRelay::start().await;
     let server = echo_service(0xD4).await;
@@ -103,7 +108,7 @@ async fn a_node_with_no_listener_accepts_a_session_dialed_through_the_relay() {
 }
 
 /// A relay that dies takes the relayed path down, and the nodes report it rather than hanging.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 16)]
 async fn a_relay_that_stops_being_reachable_is_reported_not_hung() {
     let relay = TestRelay::start().await;
     let a = TestNode::inbound_only("a", &[relay.addr]).await;
@@ -133,7 +138,7 @@ async fn a_relay_that_stops_being_reachable_is_reported_not_hung() {
 }
 
 /// A session started with a stale invite still works, because the transport is what decides.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 16)]
 async fn a_pairing_survives_nodes_with_no_stored_state() {
     // Two nodes with no state file at all (the default): pairing and routing still work,
     // because reachability never came from stored state in the first place.
@@ -148,4 +153,30 @@ async fn a_pairing_survives_nodes_with_no_stored_state() {
     let mut buf = [0u8; 3];
     tokio::time::timeout(common::PATIENCE, s.read_exact(&mut buf)).await.expect("in time").expect("read");
     assert_eq!(&buf, b"\x01ok");
+}
+/// A service exposed after the session is up is reachable at once, and one withdrawn is
+/// refused by name: the peer re-announces what it offers, and its answer to an open decides.
+#[tokio::test(flavor = "multi_thread", worker_threads = 16)]
+async fn a_service_exposed_after_the_session_came_up_is_reachable() {
+    let relay = TestRelay::start().await;
+    let a = TestNode::inbound_only("a", &[relay.addr]).await;
+    let b = TestNode::inbound_only("b", &[relay.addr]).await;
+    a.pair_with(&b, "b");
+    b.pair_with(&a, "a");
+    b.node.expose("first", echo_service(1).await, vec!["*paired".into()], "").expect("expose");
+    a.node.connect(&b.id(), "first").await.expect("the session comes up");
+
+    b.node.expose("later", echo_service(2).await, vec!["*paired".into()], "").expect("expose later");
+    let (local, _) = a.node.connect(&b.id(), "later").await.expect("reachable without a new session");
+    let mut s = tokio::net::TcpStream::connect(local).await.expect("listening");
+    s.write_all(b"hi").await.expect("write");
+    assert_eq!(&read_exact(&mut s, 3).await, b"\x02hi");
+
+    b.node.unexpose("later").expect("withdrawn");
+    let err = a.node.connect(&b.id(), "gone").await.expect_err("nothing by that name");
+    assert_eq!(err.code(), "no_such_service", "{err}");
+    eventually("a to learn what b offers now", || async {
+        a.node.peer_list()[0]["services"].as_array().is_some_and(|s| s.len() == 1)
+    })
+    .await;
 }

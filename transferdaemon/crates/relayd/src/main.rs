@@ -8,7 +8,8 @@
 //!   2. Enter the dispatch loop. Clients request the current PoW challenge with a
 //!      `Challenge` datagram, solve it, and register/forward/keepalive.
 //!
-//! Configuration (env): `RELAYD_PORT`, `RELAYD_DIFFICULTY`, `RELAYD_TTL`; ghost key admission (relayd::ghost):
+//! Configuration (env): `RELAYD_PORT`, `RELAYD_BIND` (a whole `host:port`, overriding the port; default
+//! `0.0.0.0:RELAYD_PORT`), `RELAYD_DIFFICULTY`, `RELAYD_TTL`; ghost key admission (relayd::ghost):
 //! `RELAYD_GHOST_ISSUERS` (issuer files, separated like PATH), `RELAYD_REQUIRE_GHOST=1`, `RELAYD_GHOST_SESSIONS`;
 //! `RELAYD_RATE_PER_30S` (datagrams per source address per 30 s, default 300).
 
@@ -37,8 +38,12 @@ async fn main() -> std::io::Result<()> {
     let port = env_u16("RELAYD_PORT", 7777);
     let difficulty = env_u32("RELAYD_DIFFICULTY", 20);
     let ttl_secs = env_u64("RELAYD_TTL", 90);
-    let addr: SocketAddr = format!("0.0.0.0:{port}").parse()
-        .expect("configured address is valid");
+    let addr: SocketAddr = match std::env::var("RELAYD_BIND") {
+        Ok(bind) => bind.trim().parse().map_err(|_| {
+            std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("RELAYD_BIND={bind:?} is not host:port"))
+        })?,
+        Err(_) => SocketAddr::from(([0, 0, 0, 0], port)),
+    };
     let socket = Arc::new(UdpSocket::bind(addr).await?);
     let limits = relayd::limits::RelayLimits::from_env("RELAYD_");
     println!(

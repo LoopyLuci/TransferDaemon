@@ -29,7 +29,8 @@ pub struct Operation {
     pub streaming: bool,
     pub input: Value,
     pub output: Value,
-    /// "grpc" (the daemon's API) or "control" (the hub: gui, tui, relays, the daemon process).
+    /// "grpc" (the daemon's API), "control" (the hub: gui, tui, relays, the daemon process) or
+    /// "extension" (something the daemon plugged into the hub, such as the overlay).
     pub kind: String,
     #[serde(skip)]
     pub rpc: Option<(&'static str, &'static str)>,
@@ -160,6 +161,11 @@ pub fn grpc_ops() -> Vec<Operation> {
             }
         })
         .collect()
+}
+
+/// An operation an extension serves (see `hub::Extension`).
+pub fn extension_op(id: &str, summary: &str, mutating: bool, destructive: bool, input: Value, output: Value) -> Operation {
+    Operation { kind: "extension".into(), output, ..ctl(id, summary, mutating, destructive, input) }
 }
 
 fn ctl(id: &str, summary: &str, mutating: bool, destructive: bool, input: Value) -> Operation {

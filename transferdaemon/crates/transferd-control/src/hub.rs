@@ -58,6 +58,19 @@ struct Attachment {
     last_seen: Instant,
 }
 
+/// Operations served by something the daemon plugs in (the overlay is one), rather than by the
+/// gRPC API or the hub itself. They show up in `/v1/operations`, OpenAPI and MCP like any other.
+pub trait Extension: Send + Sync + 'static {
+    /// The operations this extension answers.
+    fn operations(&self) -> Vec<Operation>;
+    /// Run one of them; an error is `(code, message)`.
+    fn call<'a>(
+        &'a self,
+        op: &'a str,
+        args: Value,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value, (String, String)>> + Send + 'a>>;
+}
+
 struct LocalRelay {
     child: std::process::Child,
     bind: String,
@@ -73,6 +86,7 @@ pub struct Hub {
     attached: Mutex<HashMap<String, Attachment>>,
     relays: std::sync::Mutex<HashMap<String, LocalRelay>>,
     audit_lock: std::sync::Mutex<()>,
+    extensions: std::sync::RwLock<Vec<Arc<dyn Extension>>>,
     /// Fired by `daemon.stop`; the daemon exits when it is.
     pub stop: Arc<tokio::sync::Notify>,
 }
@@ -137,8 +151,36 @@ impl Hub {
             attached: Mutex::new(HashMap::new()),
             relays: std::sync::Mutex::new(HashMap::new()),
             audit_lock: std::sync::Mutex::new(()),
+            extensions: std::sync::RwLock::new(Vec::new()),
             stop: Arc::new(tokio::sync::Notify::new()),
         })
+    }
+
+    /// Plug in an extension: its operations become callable here and are listed with the rest.
+    pub fn add_extension(&self, ext: Arc<dyn Extension>) {
+        self.extensions.write().unwrap_or_else(|e| e.into_inner()).push(ext);
+    }
+
+    fn extensions(&self) -> Vec<Arc<dyn Extension>> {
+        self.extensions.read().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    /// Every operation: the catalog plus whatever the extensions add, sorted by id.
+    pub fn operations(&self) -> Vec<Operation> {
+        let mut ops = catalog::all();
+        for ext in self.extensions() {
+            ops.extend(ext.operations());
+        }
+        ops.sort_by(|a, b| a.id.cmp(&b.id));
+        ops
+    }
+
+    fn find(&self, id: &str) -> Option<Operation> {
+        catalog::find(id).or_else(|| self.extensions().iter().flat_map(|e| e.operations()).find(|o| o.id == id))
+    }
+
+    fn ops_json(&self) -> Vec<Value> {
+        self.operations().iter().map(|o| serde_json::to_value(o).unwrap_or_default()).collect()
     }
 
     async fn channel(&self) -> Result<AuthChannel, CallError> {
@@ -170,7 +212,7 @@ impl Hub {
 
     /// Run one operation (what `/v1/call`, MCP and every client use).
     pub async fn call(self: &Arc<Self>, op_id: &str, args: Value) -> Result<Value, ApiError> {
-        let op = catalog::find(op_id).ok_or_else(|| {
+        let op = self.find(op_id).ok_or_else(|| {
             ApiError::new(StatusCode::NOT_FOUND, "unknown_operation", format!("no operation {op_id:?} (GET /v1/operations lists them)"))
         })?;
         let args = if args.is_null() { json!({}) } else { args };
@@ -192,6 +234,23 @@ impl Hub {
             let args = if op.id == "transfers.send_file" { catalog::complete_send_file(args)? } else { args };
             let ch = self.channel().await?;
             return Ok(catalog::call_rpc(ch, service, rpc, args).await?);
+        }
+        if op.kind == "extension" {
+            for ext in self.extensions() {
+                if ext.operations().iter().any(|o| o.id == op.id) {
+                    return ext.call(&op.id, args).await.map_err(|(code, message)| {
+                        let status = match code.as_str() {
+                            "bad_arguments" | "protocol" | "bad_node_id" => StatusCode::BAD_REQUEST,
+                            "unreachable" | "relay_failed" => StatusCode::SERVICE_UNAVAILABLE,
+                            "denied" | "identity_mismatch" => StatusCode::FORBIDDEN,
+                            "no_such_service" | "group_empty" => StatusCode::NOT_FOUND,
+                            "rate_limited" => StatusCode::TOO_MANY_REQUESTS,
+                            _ => StatusCode::BAD_GATEWAY,
+                        };
+                        ApiError::new(status, &code, message)
+                    });
+                }
+            }
         }
         match op.id.as_str() {
             "daemon.status" => Ok(self.status().await),
@@ -572,22 +631,18 @@ fn authorize(hub: &Hub, headers: &HeaderMap) -> Result<(), ApiError> {
     }
 }
 
-fn ops_json() -> Vec<Value> {
-    catalog::all().iter().map(|o| serde_json::to_value(o).unwrap_or_default()).collect()
-}
-
 async fn health(State(hub): State<Shared>) -> Json<Value> {
     Json(json!({"ok": true, "pid": std::process::id(), "version": hub.cfg.version, "service": "transferdaemon"}))
 }
 
 async fn operations(State(hub): State<Shared>, headers: HeaderMap) -> Result<Json<Value>, ApiError> {
     authorize(&hub, &headers)?;
-    Ok(Json(Value::Array(ops_json())))
+    Ok(Json(Value::Array(hub.ops_json())))
 }
 
 async fn operation(State(hub): State<Shared>, headers: HeaderMap, Path(id): Path<String>) -> Result<Json<Value>, ApiError> {
     authorize(&hub, &headers)?;
-    let op = catalog::find(&id).ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "unknown_operation", format!("no operation {id:?}")))?;
+    let op = hub.find(&id).ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "unknown_operation", format!("no operation {id:?}")))?;
     Ok(Json(serde_json::to_value(op).unwrap_or_default()))
 }
 
@@ -600,7 +655,7 @@ async fn call(State(hub): State<Shared>, headers: HeaderMap, Path(id): Path<Stri
 async fn openapi(State(hub): State<Shared>, headers: HeaderMap) -> Result<Json<Value>, ApiError> {
     authorize(&hub, &headers)?;
     let mut paths = serde_json::Map::new();
-    for o in catalog::all() {
+    for o in hub.operations() {
         paths.insert(format!("/v1/call/{}", o.id), json!({"post": {
             "operationId": o.id.replace('.', "_"), "summary": o.summary, "tags": [o.group],
             "requestBody": {"content": {"application/json": {"schema": o.input}}},
@@ -625,7 +680,7 @@ struct McpQuery {
 async fn mcp_post(State(hub): State<Shared>, headers: HeaderMap, Query(q): Query<McpQuery>, Json(body): Json<Value>) -> Result<Response, ApiError> {
     authorize(&hub, &headers)?;
     let mode = mcp::Mode::parse(q.tools.as_deref().unwrap_or("all"));
-    let ops = ops_json();
+    let ops = hub.ops_json();
     let one = |msg: Value| {
         let hub = hub.clone();
         let ops = ops.clone();

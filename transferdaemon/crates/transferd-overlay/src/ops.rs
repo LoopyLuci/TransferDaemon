@@ -21,6 +21,8 @@
 //! | `overlay.proxies_start` | — | `{socks5_addr, http_proxy_addr}` |
 //! | `overlay.group_set` | `{name, members}` | — |
 //! | `overlay.probe` | `{node_id}` | what one node can reach |
+//! | `overlay.dns_set` | `{upstreams, listen?, service?, timeout_ms?}` | mesh DNS on (empty `upstreams`: off) |
+//! | `overlay.dns_status` | — | the forwarder, its counters per upstream, and what this node shares |
 
 use std::sync::Arc;
 
@@ -135,6 +137,28 @@ pub async fn call(node: &Arc<OverlayNode>, op: &str, args: Value) -> Result<Valu
                 "services": session.services.read().clone(),
             }))
         }
+        "overlay.dns_set" => {
+            let upstreams: Vec<String> = args
+                .get("upstreams")
+                .and_then(Value::as_array)
+                .map(|a| a.iter().filter_map(|v| v.as_str().map(str::trim).map(str::to_string)).filter(|s| !s.is_empty()).collect())
+                .unwrap_or_default();
+            if upstreams.is_empty() {
+                return node.set_mesh_dns(None).await;
+            }
+            let mut config = crate::dns::MeshDnsConfig::new(upstreams);
+            if let Some(listen) = args.get("listen").and_then(Value::as_str) {
+                config.listen = listen.to_string();
+            }
+            if let Some(service) = args.get("service").and_then(Value::as_str).filter(|s| !s.is_empty()) {
+                config.service = service.to_string();
+            }
+            if let Some(ms) = args.get("timeout_ms").and_then(Value::as_u64) {
+                config.timeout_ms = ms;
+            }
+            node.set_mesh_dns(Some(config)).await
+        }
+        "overlay.dns_status" => Ok(node.mesh_dns_status()),
         other => Err(OverlayError::protocol(format!("no overlay operation {other:?}"))),
     }
 }
@@ -181,6 +205,15 @@ pub fn operations() -> Vec<(&'static str, &'static str, bool, Value, Value)> {
         ("overlay.probe", "What one node can reach right now: its routes, protocol version and services", false,
             obj(json!({"node_id": {"type": "string"}}), &["node_id"]),
             obj(json!({"node_id": {"type": "string"}, "routes": {"type": "array"}}), &[])),
+        ("overlay.dns_set", "Mesh DNS: answer DNS on a local address (default 127.0.0.1:53053) through paired nodes' resolvers (their \"dns\" service), tried in order; no upstreams turns it off", true,
+            obj(json!({"upstreams": {"type": "array", "items": {"type": "string"}, "description": "node ids or group names, in order"},
+                       "listen": {"type": "string", "description": "host:port for UDP and TCP"},
+                       "service": {"type": "string", "description": "the service name the resolvers are shared under (default dns)"},
+                       "timeout_ms": {"type": "integer"}}), &["upstreams"]),
+            obj(json!({"enabled": {"type": "boolean"}, "listen": {"type": "string"}}), &[])),
+        ("overlay.dns_status", "Mesh DNS: where it answers, each upstream's health and counters (queries, answered, blocked, NXDOMAIN, timeouts, average ms), and the resolver this node shares", false,
+            obj(json!({}), &[]),
+            obj(json!({"enabled": {"type": "boolean"}, "upstreams": {"type": "array"}, "totals": {"type": "object"}, "serving": {}}), &[])),
     ]
 }
 

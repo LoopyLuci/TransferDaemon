@@ -24,6 +24,7 @@ parking_lot  = "0.12"
 transferd-core   = { path = "../transferd-core" }
 transferd-crypto = { path = "../transferd-crypto" }
 relayd          = { path = "../relayd" }
+transferd-dns   = { path = "../transferd-dns" }
 
 [dev-dependencies]
 tokio      = { workspace = true }

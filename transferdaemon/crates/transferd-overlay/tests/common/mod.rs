@@ -175,3 +175,45 @@ pub fn trace() {
         .with_test_writer()
         .try_init();
 }
+/// A UDP forwarder in front of a relay that drops a share of the datagrams both ways: what a
+/// congested Wi-Fi link or an overflowing socket buffer does to the relayed path.
+pub struct Lossy {
+    pub addr: SocketAddr,
+}
+
+impl Lossy {
+    /// Forward to `relay`, dropping `percent` of the datagrams in each direction.
+    pub async fn start(relay: SocketAddr, percent: u32) -> Lossy {
+        let front = Arc::new(UdpSocket::bind("127.0.0.1:0").await.expect("binds"));
+        let addr = front.local_addr().expect("addr");
+        tokio::spawn(async move {
+            // One socket towards the relay per client, so the relay still sees each client apart.
+            let mut backs: std::collections::HashMap<SocketAddr, Arc<UdpSocket>> = std::collections::HashMap::new();
+            let mut buf = vec![0u8; 65_536];
+            loop {
+                let Ok((n, client)) = front.recv_from(&mut buf).await else { continue };
+                let back = match backs.get(&client) {
+                    Some(b) => b.clone(),
+                    None => {
+                        let b = Arc::new(UdpSocket::bind("127.0.0.1:0").await.expect("binds"));
+                        let (to_client, from_relay) = (front.clone(), b.clone());
+                        tokio::spawn(async move {
+                            let mut buf = vec![0u8; 65_536];
+                            while let Ok((n, _)) = from_relay.recv_from(&mut buf).await {
+                                if rand::random::<u32>() % 100 >= percent {
+                                    let _ = to_client.send_to(&buf[..n], client).await;
+                                }
+                            }
+                        });
+                        backs.insert(client, b.clone());
+                        b
+                    }
+                };
+                if rand::random::<u32>() % 100 >= percent {
+                    let _ = back.send_to(&buf[..n], relay).await;
+                }
+            }
+        });
+        Lossy { addr }
+    }
+}

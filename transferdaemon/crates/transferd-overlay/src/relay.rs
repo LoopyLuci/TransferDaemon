@@ -7,7 +7,8 @@
 //! Over one relay the overlay runs two kinds of payload:
 //!
 //! ```text
-//! [0x01][sender_token: 32][handshake flight]     the authenticated hybrid handshake
+//! [0x01][sender_token: 32][initiator flight]    the authenticated hybrid handshake, opening
+//! [0x03][sender_token: 32][responder flight]    ... and its answer
 //! [0x02][sender_token: 32][sealed tunnel frame] a session's traffic
 //! ```
 //!
@@ -35,6 +36,14 @@ use crate::wire::{LinkKeys, Tunnel};
 pub const PREFIX_HANDSHAKE: u8 = 0x01;
 /// The prefix of a session frame inside a relay payload.
 pub const PREFIX_DATA: u8 = 0x02;
+/// The prefix of a handshake answer. Apart from the opening flight, so two nodes dialling each
+/// other at the same moment never take the other's opening for an answer.
+pub const PREFIX_HANDSHAKE_REPLY: u8 = 0x03;
+
+/// How often an unanswered handshake flight is sent again (a datagram may be lost).
+const FLIGHT_RESEND: Duration = Duration::from_millis(900);
+/// Answers kept so a resent flight gets the same answer instead of a second session key.
+const ANSWERS_KEPT: usize = 64;
 
 /// How long to wait for a handshake or a locate answer.
 const RELAY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -48,6 +57,9 @@ const REREGISTER_EVERY: Duration = Duration::from_secs(30);
 /// moments, so the first frames can overtake the link they belong to.
 const EARLY_PER_PEER: usize = 64;
 const EARLY_PEERS: usize = 64;
+/// Links kept per peer on one relay. Two are normal (each side dialled once, or a route added
+/// while the first was up); the oldest beyond this is closed.
+const LINKS_PER_PEER: usize = 4;
 
 /// One peer's link over this relay, plus the state its reader needs.
 struct PeerLink {
@@ -58,16 +70,20 @@ struct PeerLink {
 
 impl PeerLink {
     /// Open one sealed payload (the tunnel checks authenticity and replay) and pass on its
-    /// frames.
-    fn deliver(&mut self, sealed: &[u8]) {
-        let Ok(plain) = self.tunnel.open(sealed) else {
-            tracing::debug!("[overlay relay] a session payload did not open (replayed or not ours)");
-            return;
-        };
+    /// frames. False when it is not this link's: another link to the same peer may own it.
+    fn deliver(&mut self, sealed: &[u8]) -> bool {
+        let Ok(plain) = self.tunnel.open(sealed) else { return false };
         for frame in self.reader.push(&plain) {
             self.link.push_frame(frame);
         }
+        true
     }
+}
+
+/// Hand a payload to whichever of a peer's links it authenticates for. The payload carries no
+/// link id (the relay sees nothing but ciphertext), so the keys are what tell them apart.
+fn deliver_to(links: &mut [PeerLink], sealed: &[u8]) -> bool {
+    links.iter_mut().any(|l| l.deliver(sealed))
 }
 
 /// A registered relay and the sessions multiplexed over it.
@@ -75,9 +91,11 @@ pub struct RelayHub {
     pub addr: SocketAddr,
     client: Arc<RelayClient>,
     self_token: [u8; 32],
-    peers: Mutex<HashMap<[u8; 32], PeerLink>>,
+    peers: Mutex<HashMap<[u8; 32], Vec<PeerLink>>>,
     /// Payloads that arrived before their peer's link was registered.
     early: Mutex<HashMap<[u8; 32], Vec<Vec<u8>>>>,
+    /// Flights already answered (by a hash of the flight), with the answer sent.
+    answered: Mutex<HashMap<[u8; 32], Vec<u8>>>,
     /// Handshake answers still expected, by the peer's token.
     handshakes: Mutex<HashMap<[u8; 32], oneshot::Sender<Vec<u8>>>>,
     /// Address-location answers still expected, by request id.
@@ -113,6 +131,7 @@ impl RelayHub {
             self_token,
             peers: Mutex::new(HashMap::new()),
             early: Mutex::new(HashMap::new()),
+            answered: Mutex::new(HashMap::new()),
             handshakes: Mutex::new(HashMap::new()),
             locates: Mutex::new(HashMap::new()),
             next_request: std::sync::atomic::AtomicU32::new(1),
@@ -178,10 +197,28 @@ impl RelayHub {
     fn answer_inbound_handshake(self: &Arc<Self>, from: [u8; 32], flight: Vec<u8>) {
         let hub = self.clone();
         tokio::spawn(async move {
-            let Some((keys, peer_id)) = hub.answer_handshake(from, &flight, &hub.identity).await else { return };
+            // A flight we answered already was resent because our answer was lost: send the same
+            // answer again. Answering afresh would make a second key the dialler never sees.
+            let id = *blake3::hash(&flight).as_bytes();
+            let known = hub.answered.lock().get(&id).cloned();
+            if let Some(reply) = known {
+                let _ = hub.send_payload(PREFIX_HANDSHAKE_REPLY, from, &reply).await;
+                return;
+            }
+            let Some((keys, peer_id, reply)) = hub.answer_handshake(&flight, &hub.identity) else { return };
+            {
+                let mut answered = hub.answered.lock();
+                if answered.len() >= ANSWERS_KEPT {
+                    answered.clear();
+                }
+                answered.insert(id, reply.clone());
+            }
             // The token is derived from the node id, so the two are the same key material.
             let peer_token = identity::relay_token_for(&peer_id);
+            // The link is registered before the answer goes out, so the dialler's first frames
+            // find it.
             let link = hub.link(hub.node.next_link_id(), peer_token, &keys).await;
+            let _ = hub.send_payload(PREFIX_HANDSHAKE_REPLY, from, &reply).await;
             hub.node.adopt_relay_link(link, peer_id, from, RouteKind::Relay).await;
         });
     }
@@ -192,20 +229,23 @@ impl RelayHub {
             tracing::debug!("[overlay relay] a payload arrived that is not one of ours");
             return;
         };
-        tracing::debug!("[overlay relay] {} byte payload, prefix {prefix:#04x}", rest.len());
+        tracing::trace!("[overlay relay] {} byte payload, prefix {prefix:#04x}", rest.len());
         match prefix {
-                PREFIX_HANDSHAKE => {
-                    if let Some(tx) = self.handshakes.lock().remove(&from) {
-                        let _ = tx.send(rest.to_vec());
-                    } else {
-                        // Nobody here is waiting for it, so a peer is dialling us: answer.
-                        self.answer_inbound_handshake(from, rest.to_vec());
-                    }
+            PREFIX_HANDSHAKE => self.answer_inbound_handshake(from, rest.to_vec()),
+            PREFIX_HANDSHAKE_REPLY => {
+                // An answer nobody waits for any more (a copy, for a resent flight) is dropped.
+                if let Some(tx) = self.handshakes.lock().remove(&from) {
+                    let _ = tx.send(rest.to_vec());
                 }
+            }
             PREFIX_DATA => {
                 let mut peers = self.peers.lock();
                 match peers.get_mut(&from) {
-                    Some(peer_link) => peer_link.deliver(rest),
+                    Some(links) => {
+                        if !deliver_to(links, rest) {
+                            tracing::debug!("[overlay relay] a session payload did not open (replayed or not ours)");
+                        }
+                    }
                     None => {
                         drop(peers);
                         let mut early = self.early.lock();
@@ -238,15 +278,23 @@ impl RelayHub {
             transferd_crypto::auth_handshake::CIPHERSUITE_HYBRID_X25519_MLKEM768,
             identity.signing_key(),
         );
-        let mut body = Vec::new();
-        body.extend_from_slice(&flight.to_wire());
-        self.send_payload(PREFIX_HANDSHAKE, peer_token, &body).await?;
-        tracing::debug!("[overlay relay] handshake flight sent to {peer_node_id} via {}", self.addr);
-        let reply = match tokio::time::timeout(RELAY_TIMEOUT, rx).await {
-            Ok(Ok(bytes)) => bytes,
-            _ => {
-                self.handshakes.lock().remove(&peer_token);
-                return Err(OverlayError::protocol(format!("{peer_node_id} did not answer through {}", self.addr)));
+        let body = flight.to_wire();
+        tracing::debug!("[overlay relay] handshake flight to {peer_node_id} via {}", self.addr);
+        // The same flight again until it is answered: a datagram may be lost on the way there or
+        // back, and the peer answers a repeat with the answer it already gave.
+        let deadline = tokio::time::Instant::now() + RELAY_TIMEOUT;
+        let mut rx = rx;
+        let reply = loop {
+            self.send_payload(PREFIX_HANDSHAKE, peer_token, &body).await?;
+            let wait = FLIGHT_RESEND.min(deadline.saturating_duration_since(tokio::time::Instant::now()));
+            match tokio::time::timeout(wait, &mut rx).await {
+                Ok(Ok(bytes)) => break bytes,
+                Ok(Err(_)) => return Err(OverlayError::protocol("the handshake was abandoned")),
+                Err(_) if tokio::time::Instant::now() < deadline => continue,
+                Err(_) => {
+                    self.handshakes.lock().remove(&peer_token);
+                    return Err(OverlayError::protocol(format!("{peer_node_id} did not answer through {}", self.addr)));
+                }
             }
         };
         let resp = transferd_crypto::auth_handshake::AuthResponderHello::from_wire(&reply)
@@ -267,8 +315,9 @@ impl RelayHub {
 
     /// Answer an inbound handshake from a peer that dialled us through this relay.
     ///
-    /// Returns the link keys and the peer's node id, taken from the signed flight itself.
-    pub async fn answer_handshake(&self, from: [u8; 32], flight: &[u8], identity: &NodeIdentity) -> Option<(LinkKeys, String)> {
+    /// Returns the link keys, the peer's node id (taken from the signed flight itself) and the
+    /// answer to send back.
+    pub fn answer_handshake(&self, flight: &[u8], identity: &NodeIdentity) -> Option<(LinkKeys, String, Vec<u8>)> {
         let hello = transferd_crypto::auth_handshake::AuthInitiatorHello::from_wire(flight)?;
         if !hello.verify() {
             return None;
@@ -281,9 +330,7 @@ impl RelayHub {
             identity.signing_key(),
         );
         let peer_id = hex::encode(&hello.identity_pk.to_bytes()[..32]);
-        let body = reply.to_wire();
-        self.send_payload(PREFIX_HANDSHAKE, from, &body).await.ok()?;
-        Some((LinkKeys::derive(session.as_bytes()).swapped(), peer_id))
+        Some((LinkKeys::derive(session.as_bytes()).swapped(), peer_id, reply.to_wire()))
     }
 
     /// Open a session link to a peer over this relay.
@@ -302,7 +349,14 @@ impl RelayHub {
             for sealed in self.early.lock().remove(&peer_token).unwrap_or_default() {
                 peer_link.deliver(&sealed);
             }
-            peers.insert(peer_token, peer_link);
+            let links = peers.entry(peer_token).or_default();
+            links.retain(|l| l.link.is_open());
+            links.insert(0, peer_link);
+            while links.len() > LINKS_PER_PEER {
+                if let Some(old) = links.pop() {
+                    old.link.close();
+                }
+            }
         }
         let client = self.client.clone();
         let self_token = self.self_token;
