@@ -117,7 +117,7 @@ frame := magic "TDOV" | version u8 | kind u8 | flags u16 LE | seq u64 LE | len u
 | 0x04 | OPEN_OK | `{stream, route}` | yes |
 | 0x05 | OPEN_ERR | `{stream, code, reason}` (`no_such_service`, `denied`, `rate_limited`, `protocol`) | yes |
 | 0x10 | DATA | `{stream, seq, fin, payload}` | via ACK |
-| 0x11 | ACK | `{stream, seq}`: every DATA frame of the stream below `seq` has arrived | no |
+| 0x11 | ACK | `{stream, seq, sack}`: every DATA frame of the stream below `seq` has arrived; `sack` lists `[from, to)` ranges beyond it that have too (trailing field; older builds ignore it, and an ACK without it reads as no ranges) | no |
 | 0x12 | WINDOW | `{stream, credit}`: the sender may send `credit` more bytes | yes |
 | 0x13 | CLOSE | `{stream, code, reason}` | yes |
 | 0x14 | CTRL_ACK | `{seq}`: the control frame with this frame `seq` arrived | no |

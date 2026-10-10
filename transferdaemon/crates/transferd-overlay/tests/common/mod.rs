@@ -20,8 +20,11 @@ use tokio::sync::Mutex;
 use transferd_overlay::{NodeIdentity, OverlayConfig, OverlayNode};
 
 mod nat;
+mod shaper;
 #[allow(unused_imports)]
 pub use nat::{plain_echo, route_states, Nat, NatKind};
+#[allow(unused_imports)]
+pub use shaper::{Shaped, ShaperStats};
 
 /// How long an integration test waits for something that should already have happened.
 pub const PATIENCE: Duration = Duration::from_secs(20);

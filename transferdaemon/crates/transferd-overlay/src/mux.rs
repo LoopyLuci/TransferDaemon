@@ -11,9 +11,11 @@
 
 use std::collections::{BTreeMap, VecDeque};
 
-/// The largest payload one data frame carries. Small enough to fit a relay datagram with room
-/// for its framing and padding, large enough that per-frame overhead stays under ~1 %.
-pub const MAX_FRAME: usize = 16 * 1024;
+/// The largest payload one data frame carries. A relay pads every datagram to a power of two, so
+/// this leaves room for the data header, the seal and the relay's own framing inside 16 KiB: a
+/// full 16 KiB payload would be padded to 32 KiB and halve a relay path's capacity. Per-frame
+/// overhead stays under ~2 %.
+pub const MAX_FRAME: usize = 16 * 1024 - 192;
 
 /// The window a fresh stream starts with, in bytes.
 pub const DEFAULT_WINDOW: u64 = 256 * 1024;
@@ -182,6 +184,11 @@ impl SendSide {
         self.credit = self.credit.saturating_add(credit);
     }
 
+    /// An unacknowledged frame by sequence number.
+    pub fn unacked_frame(&self, seq: u64) -> Option<&OutFrame> {
+        self.unacked.get(&seq)
+    }
+
     /// Frames to resend: everything still unacknowledged, oldest first.
     pub fn retransmit(&self) -> Vec<OutFrame> {
         self.unacked.values().cloned().collect()
@@ -307,6 +314,22 @@ impl RecvSide {
         let delta = self.consumed.saturating_sub(self.granted);
         self.granted = self.consumed;
         delta
+    }
+
+    /// Ranges `[from, to)` of frames beyond the first gap that have arrived, lowest first, at
+    /// most `max` of them: what an acknowledgement tells the sender besides the gap itself.
+    pub fn sack_ranges(&self, max: usize) -> Vec<(u64, u64)> {
+        let mut out: Vec<(u64, u64)> = Vec::new();
+        for seq in self.pending.keys() {
+            if let Some((_, to)) = out.last_mut().filter(|(_, to)| *to == *seq) {
+                *to += 1;
+            } else if out.len() == max {
+                break;
+            } else {
+                out.push((*seq, *seq + 1));
+            }
+        }
+        out
     }
 
     /// The next sequence number expected: everything below it has arrived. This is what a

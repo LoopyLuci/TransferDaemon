@@ -214,7 +214,12 @@ pub struct Data {
     pub payload: Vec<u8>,
 }
 
-/// Cumulative acknowledgement: everything up to `seq` was received.
+/// Cumulative acknowledgement: everything up to `seq` was received, plus which frames beyond
+/// the first gap have arrived.
+///
+/// The `sack` list trails the body, so a build that only knows [`AckBase`] reads the first two
+/// fields and ignores the rest, and a build that knows this one reads an `AckBase` (no ranges)
+/// from an older peer: see [`Ack::parse`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Ack {
     pub stream: u64,
@@ -222,6 +227,29 @@ pub struct Ack {
     /// expected sequence number). Not the sequence number of the frame that triggered it, so a
     /// frame lost before it is still resent.
     pub seq: u64,
+    /// Ranges `[from, to)` of frames beyond `seq` that have arrived, lowest first.
+    #[serde(default)]
+    pub sack: Vec<(u64, u64)>,
+}
+
+/// An acknowledgement as older builds send it: the cumulative part only.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AckBase {
+    pub stream: u64,
+    pub seq: u64,
+}
+
+impl Ack {
+    /// Read an acknowledgement from either generation of sender.
+    pub fn parse(frame: &Frame) -> Option<Ack> {
+        frame.decode::<Ack>().ok().or_else(|| {
+            frame.decode::<AckBase>().ok().map(|a| Ack {
+                stream: a.stream,
+                seq: a.seq,
+                sack: Vec::new(),
+            })
+        })
+    }
 }
 
 /// The receipt for one control frame (see [`is_reliable`]).
@@ -288,6 +316,21 @@ pub struct RouteReport {
     pub loss: f64,
     pub mbps: f64,
     pub active: bool,
+    /// The congestion window in bytes, and the bytes in flight against it.
+    #[serde(default)]
+    pub cwnd: u64,
+    #[serde(default)]
+    pub in_flight: u64,
+    /// The smoothed round trip of this route's data, and the retransmission timeout it implies.
+    #[serde(default)]
+    pub srtt_ms: f64,
+    #[serde(default)]
+    pub rto_ms: f64,
+    /// Payload bytes sent on this route, and how many of them were resends.
+    #[serde(default)]
+    pub sent_bytes: u64,
+    #[serde(default)]
+    pub retx_bytes: u64,
 }
 
 /// All of this node's routes.

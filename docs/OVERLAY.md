@@ -118,7 +118,7 @@ What works and what does not:
   probes in a row, and up again as soon as an authenticated frame arrives on it. A session never stops sending just
   because its only route looks down.
 - **Streams.** Streams are multiplexed, flow-controlled with a per-stream window, and sequenced. Acknowledgements are
-  cumulative. Unacknowledged data is resent on another route after 400 ms, so a route dying mid-stream does not break
+  cumulative. Unacknowledged data is resent on another route after the route's retransmission timeout (400 ms until a round trip is measured), so a route dying mid-stream does not break
   the TCP connection the application sees (a test cuts a LAN path under a live stream).
 - **Control frames.** Hello, open, accept, window and close carry receipts and are resent until one comes back.
   Pings and route reports are best effort.
@@ -199,10 +199,33 @@ Release build, Windows, one machine, loopback (2026-10). 64 MiB one way, then 20
 | direct (LAN listener) | 143 MB/s (1.1 Gbit/s) | 0.15 ms / 13.9 ms |
 | relayed (relayd's logic, in process) | 96 MB/s (770 Mbit/s) | 0.23 ms / 0.41 ms |
 
-The relayed figure depends on socket buffers. A stream sends a window (256 KiB) at once, and a 64 KiB default UDP
-receive buffer drops most of it; then only the 400 ms resend timer moves the data, at about 1 MB/s. The relay client
-and relayd ask for 4 MiB buffers. Loopback numbers are an upper bound: on a real network the path's own bandwidth
-and RTT decide, and the overlay has no congestion control yet beyond the per-stream window.
+With per-route congestion control (below) the same bench, medians of 6 runs on the same machine: direct 128 MB/s,
+relayed 90 MB/s, against 134 MB/s and 84 MB/s for the previous build measured in the same session (run-to-run spread
+is about 15%, so no regression shows). Loopback numbers are an upper bound: on a real network the path's own
+bandwidth and RTT decide. The relay client and relayd ask for 4 MiB socket buffers.
+
+### Congestion control and retransmission timing
+
+Every route of a session has its own state (`src/cc.rs`):
+- **RTT and RTO** as in RFC 6298: SRTT and RTTVAR from the time between sending a data frame and the ACK that covers it
+  and from probe round trips; `rto = srtt + max(4 * rttvar, 100 ms)`, clamped to 200 ms .. 5 s, 400 ms before the
+  first sample, doubled per timeout until a new sample arrives. A frame unacknowledged for the RTO is resent, on
+  another route when one is up.
+- **Window** in bytes in flight, NewReno style (slow start from 10 full frames, one frame per round trip afterwards),
+  cut to 0.7 on a loss and at most once per window of data. AIMD was chosen over CUBIC: frames are large, paths are
+  short, and AIMD plus pacing is small enough to test exactly. A gap reported by the receiver (SACK ranges in the ACK)
+  counts as a loss without waiting for the timer.
+- **Pacing**: a window is spread over the smoothed round trip (twice as fast in slow start) instead of leaving as a burst.
+- The sender needs room in both the stream window and the route's window; data that does not fit waits and is sent
+  when an ACK frees room. Nothing is dropped.
+- `overlay.peers`, the probe output and the route report carry `cwnd`, `in_flight`, `srtt_ms`, `rto_ms`, `sent_bytes`
+  and `retx_bytes` per route (older peers omit them; they default to 0).
+
+Measured with `tests/congestion.rs` (a token-bucket link emulator with a drop-tail queue and a delay, through a relay,
+debug build): a 16 MiB transfer over 2 MB/s with 40 ms each way and a 96 KiB queue arrives intact at 76-78% of the
+link, resending 1.3-1.5% of the bytes sent, 0.6-0.7% of the bytes offered to the queue dropped, the queue nearly full
+for 1% of the bytes. With plenty of bandwidth the RTO settles at about 220-270 ms for 40 ms each way and about 700 ms
+for 300 ms each way.
 
 ## Tests
 

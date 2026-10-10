@@ -14,6 +14,9 @@
 //!   throughput, so one slow path does not become the ceiling on a transfer.
 //! * **Flow control.** Every stream advertises a window, so a slow reader stops being sent to
 //!   rather than filling the peer's memory.
+//! * **Congestion control.** Every route has its own window, round-trip estimate and
+//!   retransmission timeout (see [`crate::cc`]). Data waits in the session when a route's window
+//!   is full or its pacing says not yet, and goes out when an acknowledgement frees room.
 //!
 //! The session runs in one task that owns all of its mutable state, so no lock is ever held
 //! across an `await`. It is driven by two inputs: a command channel and a 20 ms tick.
@@ -25,6 +28,7 @@ use std::time::{Duration, Instant};
 
 use tokio::sync::mpsc;
 
+use crate::cc::{self, RouteCc};
 use crate::error::{OverlayError, Result};
 use crate::link::{Link, RouteKind};
 use crate::mux::{Mux, OutFrame, StreamId};
@@ -39,8 +43,17 @@ pub const TICK: Duration = Duration::from_millis(20);
 /// How often the prober pings each route.
 pub const PROBE_EVERY: Duration = Duration::from_millis(1000);
 
-/// How long a frame may sit unacknowledged before it goes out again, on another route.
+/// How long an unanswered ping may wait before it counts as missed (a multiple of this).
 pub const RESEND_AFTER: Duration = Duration::from_millis(400);
+
+/// The most frames one reported range is believed to span.
+const MAX_SACK_SPAN: u64 = 1024;
+
+/// How many ranges of frames beyond a gap an acknowledgement reports.
+const SACK_RANGES: usize = 4;
+
+/// Duplicate acknowledgements in a row that show a frame was lost without waiting for its timeout.
+const DUP_ACKS: u32 = 3;
 
 /// Unanswered pings in a row before a route counts as down: one lost datagram is not an outage.
 const MISSES_DOWN: u32 = 3;
@@ -331,6 +344,15 @@ impl SessionHandle {
 
 struct PendingRead(mpsc::Sender<Option<Vec<u8>>>);
 
+/// A data frame on the wire.
+struct InFlight {
+    route: u32,
+    cost: u64,
+    sent_at: Instant,
+    /// A resend: its acknowledgement says nothing about the round trip.
+    retx: bool,
+}
+
 /// Bytes the application asked to send that have not gone out yet.
 #[derive(Default)]
 struct WriteQueue {
@@ -346,8 +368,28 @@ struct Session {
     mux: Mux,
     /// When each route was last probed.
     last_probe: HashMap<u32, Instant>,
-    /// When each unacknowledged frame was last sent, keyed by `(stream, seq)`.
-    sent_at: HashMap<(u64, u64), Instant>,
+    /// Congestion and timing state, per route.
+    cc: HashMap<u32, RouteCc>,
+    /// Every data frame on the wire and not yet acknowledged, keyed by `(stream, seq)`.
+    inflight: std::collections::BTreeMap<(u64, u64), InFlight>,
+    /// Frames the streams released that no route has room for yet, oldest first.
+    outbox: std::collections::VecDeque<OutFrame>,
+    /// Frames given up on and waiting to go out again, with the route that lost them.
+    retx_queue: std::collections::VecDeque<(OutFrame, u32)>,
+    /// The frames in `retx_queue`, so an acknowledgement can cancel the resend.
+    retx_pending: std::collections::HashSet<(u64, u64)>,
+    /// The last cumulative acknowledgement per stream and how often it repeated.
+    dup_acks: HashMap<u64, (u64, u32)>,
+    /// Per stream, the sequence number one past the newest frame on the wire when a loss was
+    /// found: an acknowledgement that stops short of it is a partial one, and the frame it stops
+    /// at was lost too (NewReno), so it is resent now instead of after its timeout.
+    recover: HashMap<u64, u64>,
+    /// Per stream, the highest sequence number the peer reported having beyond a gap.
+    high_sack: HashMap<u64, u64>,
+    /// When an acknowledgement (any, a repeated one too) last came in for each stream.
+    last_ack: HashMap<u64, Instant>,
+    /// When pacing next lets a waiting frame go.
+    pace_at: Option<Instant>,
     /// Which route each open ping went out on, so the answer is credited to the right one.
     pings: HashMap<u64, (u32, Instant)>,
     /// Pings in a row a route has not answered; it is down after [`MISSES_DOWN`].
@@ -447,7 +489,16 @@ pub async fn spawn(
             wake: wake.clone(),
             mux: Mux::with_parity(odd),
             last_probe: HashMap::new(),
-            sent_at: HashMap::new(),
+            cc: HashMap::new(),
+            inflight: std::collections::BTreeMap::new(),
+            outbox: std::collections::VecDeque::new(),
+            retx_queue: std::collections::VecDeque::new(),
+            retx_pending: std::collections::HashSet::new(),
+            dup_acks: HashMap::new(),
+            recover: HashMap::new(),
+            last_ack: HashMap::new(),
+            high_sack: HashMap::new(),
+            pace_at: None,
             pings: HashMap::new(),
             misses: HashMap::new(),
             pending_reads: HashMap::new(),
@@ -480,7 +531,14 @@ pub async fn spawn(
         let mut ticker = tokio::time::interval(TICK);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
+            let pace_at = s.pace_at;
             tokio::select! {
+                _ = async {
+                    match pace_at {
+                        Some(at) => tokio::time::sleep_until(at.into()).await,
+                        None => std::future::pending().await,
+                    }
+                } => s.flush(),
                 cmd = cmd_rx.recv() => match cmd {
                     Some(SessionCommand::Shutdown) | None => break,
                     Some(c) => s.handle_command(c).await,
@@ -616,8 +674,13 @@ impl Session {
     ///
     /// The route with the least (used share − bandwidth share) skew wins, which spreads bulk
     /// traffic across every healthy path instead of hammering the fastest one.
-    fn route_for_bulk(&mut self) -> Option<usize> {
-        let live: Vec<Arc<dyn Link>> = self.links.iter().filter(|l| l.is_up()).cloned().collect();
+    fn route_for_bulk(&mut self, allowed: &[u32]) -> Option<usize> {
+        let live: Vec<Arc<dyn Link>> = self
+            .links
+            .iter()
+            .filter(|l| allowed.contains(&l.id()))
+            .cloned()
+            .collect();
         if live.is_empty() {
             return None;
         }
@@ -669,12 +732,19 @@ impl Session {
             .iter()
             .map(|l| {
                 let m = l.stats().metrics();
+                let cc = self.cc.get(&l.id()).cloned().unwrap_or_default();
                 RouteReport {
                     kind: l.kind().as_str().to_string(),
                     rtt_ms: round3(m.rtt_ms),
                     loss: round3(m.loss),
                     mbps: round3(m.mbps),
                     active: m.up,
+                    cwnd: cc.cwnd(),
+                    in_flight: cc.in_flight(),
+                    srtt_ms: round3(cc.srtt().map_or(0.0, |d| d.as_secs_f64() * 1000.0)),
+                    rto_ms: round3(cc.rto().as_secs_f64() * 1000.0),
+                    sent_bytes: cc.sent_bytes(),
+                    retx_bytes: cc.retx_bytes(),
                 }
             })
             .collect()
@@ -827,6 +897,7 @@ impl Session {
                 self.send_frame(kind::CLOSE, body, false);
                 self.mux.remove_send(stream);
                 self.mux.remove_recv(stream);
+                self.forget_stream(stream.0);
                 self.pending_reads.remove(&stream.0);
             }
         }
@@ -842,10 +913,16 @@ impl Session {
         }
     }
 
-    /// Frame whatever the stream's window allows. Anything left waits for credit: this is the
-    /// point where a slow peer slows the writer down instead of losing data.
+    /// Frame whatever the stream's window allows and send what the routes have room for.
+    /// Anything left waits: for credit from the peer, or for room on a route.
     fn pump(&mut self, stream: StreamId) {
-        let now = Instant::now();
+        self.frame_pending(stream);
+        self.flush();
+    }
+
+    /// Move the stream's queued writes into frames, as far as its window allows. The rest stays
+    /// queued and goes back to the front: dropping it would lose bytes from the middle.
+    fn frame_pending(&mut self, stream: StreamId) {
         loop {
             let chunk = match self.write_queue.get_mut(&stream.0) {
                 Some(q) => q.chunks.pop_front(),
@@ -861,8 +938,6 @@ impl Session {
                 Some(s) => s.frame(&chunk, last),
                 None => return,
             };
-            // The window may take only part of the chunk (or none of it): the rest goes back to the
-            // front of the queue and waits for credit. Dropping it would lose bytes from the middle.
             let taken: usize = frames.iter().map(|f| f.payload.len()).sum();
             if taken < chunk.len() {
                 if let Some(q) = self.write_queue.get_mut(&stream.0) {
@@ -873,23 +948,7 @@ impl Session {
                 return;
             }
             let window_closed = taken < chunk.len();
-            let bulk = chunk.len() >= BULK_THRESHOLD;
-            for f in frames {
-                let frame = self.data_frame(&f, false);
-                let target = if bulk { self.route_for_bulk() } else { None };
-                let sent = match target.and_then(|i| self.links.get(i).cloned()) {
-                    Some(link) => link.send(&frame).is_ok(),
-                    None => self.dispatch(&frame),
-                };
-                tracing::trace!(
-                    "[overlay session] {}: send stream {} seq {} ok {sent}",
-                    self.peer_node_id,
-                    f.stream.0,
-                    f.seq
-                );
-                // Timed from now either way: a frame no route would take is the resend's to send.
-                self.sent_at.insert((f.stream.0, f.seq), now);
-            }
+            self.outbox.extend(frames);
             if window_closed {
                 return; // the rest waits for a WINDOW from the peer
             }
@@ -905,6 +964,340 @@ impl Session {
         }
     }
 
+    /// The routes a frame may use: the live ones, or with none live the best that is not closed.
+    fn usable_links(&self) -> Vec<Arc<dyn Link>> {
+        let live: Vec<Arc<dyn Link>> = self.links.iter().filter(|l| l.is_up()).cloned().collect();
+        if !live.is_empty() {
+            return live;
+        }
+        let refs: Vec<&Arc<dyn Link>> = self.links.iter().collect();
+        crate::link::best_route(&refs)
+            .map(|l| vec![l.clone()])
+            .unwrap_or_default()
+    }
+
+    /// The route a frame of `cost` bytes goes out on now, or `Err` with the time pacing allows it
+    /// (`None`: it waits for an acknowledgement, or for a route).
+    fn pick_route(
+        &mut self,
+        bulk: bool,
+        cost: u64,
+        avoid: Option<u32>,
+        retx: bool,
+        now: Instant,
+    ) -> std::result::Result<Arc<dyn Link>, Option<Instant>> {
+        let usable = self.usable_links();
+        let mut open: Vec<Arc<dyn Link>> = Vec::new();
+        let mut wake: Option<Instant> = None;
+        for link in &usable {
+            // A resend prefers another route than the one that lost the frame, when there is one.
+            if avoid == Some(link.id()) && usable.len() > 1 {
+                continue;
+            }
+            let cc = self.cc.entry(link.id()).or_default();
+            // A resend ignores the window (only pacing holds it back): the frames behind the
+            // lost one are delivered but cannot be acknowledged until it arrives, so they keep
+            // the window full and waiting for room would wait for the very resend that frees it.
+            if !retx && !cc.has_room(cost) {
+                continue;
+            }
+            match cc.pace_wait(now) {
+                None => open.push(link.clone()),
+                Some(at) => wake = Some(wake.map_or(at, |w| w.min(at))),
+            }
+        }
+        if open.is_empty() {
+            return Err(wake);
+        }
+        if bulk {
+            let ids: Vec<u32> = open.iter().map(|l| l.id()).collect();
+            if let Some(i) = self.route_for_bulk(&ids) {
+                return Ok(self.links[i].clone());
+            }
+        }
+        let refs: Vec<&Arc<dyn Link>> = open.iter().collect();
+        crate::link::best_route(&refs).cloned().ok_or(None)
+    }
+
+    /// Send what the routes have room for: resends first, then new data. What does not fit waits;
+    /// an acknowledgement, a tick or the pacing clock brings it back here.
+    fn flush(&mut self) {
+        let now = Instant::now();
+        self.pace_at = None;
+        loop {
+            let (frame, avoid, retx) = if let Some((f, route)) = self.retx_queue.front() {
+                if !self.retx_pending.contains(&(f.stream.0, f.seq)) {
+                    self.retx_queue.pop_front(); // acknowledged while it waited
+                    continue;
+                }
+                (f.clone(), Some(*route), true)
+            } else if let Some(f) = self.outbox.front() {
+                (f.clone(), None, false)
+            } else {
+                return;
+            };
+            if self.mux.send_side(frame.stream).is_none() {
+                // The stream closed while its frame waited.
+                if retx {
+                    self.retx_queue.pop_front();
+                    self.retx_pending.remove(&(frame.stream.0, frame.seq));
+                } else {
+                    self.outbox.pop_front();
+                }
+                continue;
+            }
+            let cost = cc::cost(frame.payload.len());
+            let bulk = frame.payload.len() >= BULK_THRESHOLD;
+            let link = match self.pick_route(bulk, cost, avoid, retx, now) {
+                Ok(link) => link,
+                Err(wake) => {
+                    self.pace_at = wake;
+                    return;
+                }
+            };
+            let wire = self.data_frame(&frame, false);
+            if link.send(&wire).is_err() {
+                return; // the route's queue is full: the next tick tries again
+            }
+            tracing::trace!(
+                "[overlay session] {}: send stream {} seq {} on {} (retx {retx})",
+                self.peer_node_id,
+                frame.stream.0,
+                frame.seq,
+                link.kind().as_str()
+            );
+            if retx {
+                self.retx_queue.pop_front();
+                self.retx_pending.remove(&(frame.stream.0, frame.seq));
+            } else {
+                self.outbox.pop_front();
+            }
+            let route = link.id();
+            self.cc
+                .entry(route)
+                .or_default()
+                .on_sent(cost, frame.payload.len(), retx, now);
+            self.inflight.insert(
+                (frame.stream.0, frame.seq),
+                InFlight {
+                    route,
+                    cost,
+                    sent_at: now,
+                    retx,
+                },
+            );
+        }
+    }
+
+    /// A frame is given up on: off the route's books, and queued to go out again.
+    fn mark_lost(&mut self, key: (u64, u64), now: Instant, why: &str) -> bool {
+        tracing::debug!(
+            "[overlay session] {}: stream {} seq {} lost ({why})",
+            self.peer_node_id,
+            key.0,
+            key.1
+        );
+        let Some(entry) = self.inflight.remove(&key) else {
+            return false;
+        };
+        let newest = self
+            .inflight
+            .range((key.0, 0)..=(key.0, u64::MAX))
+            .next_back()
+            .map_or(key.1, |(k, _)| k.1);
+        let recover = self.recover.entry(key.0).or_default();
+        *recover = (*recover).max(newest + 1);
+        self.cc
+            .entry(entry.route)
+            .or_default()
+            .on_lost(entry.cost, entry.sent_at, now);
+        let frame = self
+            .mux
+            .send_side(StreamId(key.0))
+            .and_then(|s| s.unacked_frame(key.1).cloned());
+        if let Some(frame) = frame {
+            if self.retx_pending.insert(key) {
+                self.retx_queue.push_back((frame, entry.route));
+            }
+        }
+        true
+    }
+
+    /// Frames that outlived their route's timeout are lost: the route's window shrinks, its
+    /// timeout doubles, and the frames go out again, on another route where there is one.
+    fn expire(&mut self) {
+        let now = Instant::now();
+        let mut due: Vec<(u64, u64)> = Vec::new();
+        let mut routes: Vec<u32> = Vec::new();
+        let mut head: Option<u64> = None;
+        for (key, entry) in &self.inflight {
+            let is_head = head != Some(key.0);
+            head = Some(key.0);
+            let rto = self
+                .cc
+                .get(&entry.route)
+                .map_or(cc::INITIAL_RTO, RouteCc::rto);
+            // Behind the oldest unacknowledged frame, a frame is only waiting for the cumulative
+            // acknowledgement to get past the gap in front of it, as long as the peer keeps
+            // answering: it is not lost, and sending it again would only add load to a path that
+            // just dropped something. With no answer since it went out, it counts as lost.
+            let heard = self
+                .last_ack
+                .get(&key.0)
+                .is_some_and(|t| *t > entry.sent_at && now.duration_since(*t) < rto);
+            if now.duration_since(entry.sent_at) >= rto && (is_head || !heard) {
+                due.push(*key);
+                if !routes.contains(&entry.route) {
+                    routes.push(entry.route);
+                }
+            }
+        }
+        for key in due {
+            tracing::trace!(
+                "[overlay session] {}: stream {} seq {} timed out",
+                self.peer_node_id,
+                key.0,
+                key.1
+            );
+            self.mark_lost(key, now, "timeout");
+        }
+        for route in routes {
+            if let Some(cc) = self.cc.get_mut(&route) {
+                cc.back_off();
+            }
+        }
+    }
+
+    /// A stream is gone: nothing of it stays on the books.
+    fn forget_stream(&mut self, stream: u64) {
+        let keys: Vec<(u64, u64)> = self
+            .inflight
+            .range((stream, 0)..=(stream, u64::MAX))
+            .map(|(k, _)| *k)
+            .collect();
+        for key in keys {
+            if let Some(entry) = self.inflight.remove(&key) {
+                if let Some(cc) = self.cc.get_mut(&entry.route) {
+                    cc.release(entry.cost);
+                }
+            }
+        }
+        self.outbox.retain(|f| f.stream.0 != stream);
+        self.retx_queue.retain(|(f, _)| f.stream.0 != stream);
+        self.retx_pending.retain(|(s, _)| *s != stream);
+        self.dup_acks.remove(&stream);
+        self.recover.remove(&stream);
+        self.last_ack.remove(&stream);
+        self.high_sack.remove(&stream);
+    }
+
+    /// An acknowledgement: everything below `next` on the stream has arrived, and so have the
+    /// frames in the `sack` ranges.
+    fn on_ack(&mut self, stream: u64, next: u64, sack: &[(u64, u64)]) {
+        let now = Instant::now();
+        self.last_ack.insert(stream, now);
+        let mut keys: Vec<(u64, u64)> = self
+            .inflight
+            .range((stream, 0)..(stream, next))
+            .map(|(k, _)| *k)
+            .collect();
+        let cumulative = keys.len();
+        let mut high: Option<u64> = None;
+        for &(from, to) in sack {
+            // A range is the peer's word: bound what it can make us walk.
+            let to = to.min(from.saturating_add(MAX_SACK_SPAN));
+            if from < next || from >= to {
+                continue;
+            }
+            keys.extend(
+                self.inflight
+                    .range((stream, from)..(stream, to))
+                    .map(|(k, _)| *k),
+            );
+            high = Some(high.map_or(to - 1, |h| h.max(to - 1)));
+        }
+        // A round trip is measured from the newest frame this acknowledgement covers, and only
+        // when none of them was resent (the acknowledgement could be for either copy).
+        let mut sample: Option<(u32, Duration)> = None;
+        let mut resent = false;
+        for key in &keys {
+            let Some(entry) = self.inflight.remove(key) else {
+                continue;
+            };
+            resent |= entry.retx;
+            sample = Some((entry.route, now.duration_since(entry.sent_at)));
+            let cc = self.cc.entry(entry.route).or_default();
+            // Held back by this window? Then the window may grow.
+            let limited = cc.in_flight() + cc::MSS >= cc.cwnd();
+            cc.on_acked(entry.cost, limited);
+        }
+        if let (Some((route, rtt)), false) = (sample, resent) {
+            self.cc.entry(route).or_default().on_rtt(rtt);
+        }
+        self.retx_pending
+            .retain(|(s, q)| *s != stream || *q >= next);
+        if let Some(h) = high {
+            let top = self.high_sack.entry(stream).or_default();
+            *top = (*top).max(h);
+        }
+        if self.high_sack.get(&stream).is_some_and(|h| *h < next) {
+            self.high_sack.remove(&stream);
+        }
+        if self.recover.get(&stream).is_some_and(|r| next >= *r) {
+            self.recover.remove(&stream);
+        } else if cumulative > 0 && self.recover.contains_key(&stream) {
+            // A partial acknowledgement: what it stops at was lost along with the frame just repaired.
+            let key = (stream, next);
+            if self.inflight.get(&key).is_some_and(|e| !e.retx) {
+                self.mark_lost(key, now, "partial");
+            }
+        }
+        // Frames below the highest one the peer has, that are older than a round trip and a
+        // quarter by now: they went out first and did not arrive, which on one path means lost.
+        // The wait is the slowest route's, so a frame merely overtaken by one that took a faster
+        // route is left alone; a resend, which may still be on its way, waits twice as long.
+        if let Some(top) = self.high_sack.get(&stream).copied() {
+            let slowest = self
+                .cc
+                .values()
+                .filter_map(RouteCc::srtt)
+                .max()
+                .unwrap_or_default();
+            let behind: Vec<(u64, u64)> = self
+                .inflight
+                .range((stream, 0)..(stream, top))
+                .filter(|(_, e)| {
+                    let wait = slowest + slowest / 4;
+                    now.duration_since(e.sent_at) > if e.retx { wait * 2 } else { wait }
+                })
+                .map(|(k, _)| *k)
+                .collect();
+            for key in behind {
+                self.mark_lost(key, now, "sack");
+            }
+        }
+        // The same acknowledgement again and again means a frame after the gap keeps arriving
+        // while `next` does not: it was lost, and waiting for its timeout would waste a round trip.
+        // (A peer that reports ranges is covered above.)
+        let entry = self.dup_acks.entry(stream).or_insert((next, 0));
+        if entry.0 != next || cumulative > 0 {
+            *entry = (next, 0);
+        } else {
+            entry.1 += 1;
+            if entry.1 == DUP_ACKS {
+                let key = (stream, next);
+                let old_enough = self.inflight.get(&key).is_some_and(|e| {
+                    let srtt = self.cc.get(&e.route).and_then(RouteCc::srtt);
+                    now.duration_since(e.sent_at) > srtt.unwrap_or_default()
+                });
+                if old_enough {
+                    self.mark_lost(key, now, "dupack");
+                }
+            }
+        }
+        self.flush();
+    }
+
     async fn tick(&mut self) {
         self.drain_inbound().await;
         self.probe();
@@ -912,8 +1305,9 @@ impl Session {
         // Republish the measurements so `overlay.peers` and group placement see current numbers.
         *self.handle_routes.write() = self.routes();
         if self.ready {
-            self.resend_stale();
+            self.expire();
         }
+        self.flush();
     }
 
     async fn drain_inbound(&mut self) {
@@ -1139,6 +1533,7 @@ impl Session {
                 }
                 self.mux.remove_send(StreamId(err.stream));
                 self.mux.remove_recv(StreamId(err.stream));
+                self.forget_stream(err.stream);
                 if let Some(PendingRead(reply)) = self.pending_reads.remove(&err.stream) {
                     let _ = reply.try_send(None);
                 }
@@ -1181,7 +1576,16 @@ impl Session {
                     .recv_side(StreamId(stream))
                     .map(|r| r.next_expected())
                     .unwrap_or(0);
-                let ack = Self::encode(&Ack { stream, seq: next });
+                let sack = self
+                    .mux
+                    .recv_side(StreamId(stream))
+                    .map(|r| r.sack_ranges(SACK_RANGES))
+                    .unwrap_or_default();
+                let ack = Self::encode(&Ack {
+                    stream,
+                    seq: next,
+                    sack,
+                });
                 self.send_frame(kind::ACK, ack, false);
                 if delivered {
                     self.wake_reader(stream);
@@ -1191,14 +1595,13 @@ impl Session {
                 }
             }
             kind::ACK => {
-                let Ok(ack) = frame.decode::<Ack>() else {
+                let Some(ack) = Ack::parse(frame) else {
                     return;
                 };
                 if let Some(send) = self.mux.send_side(StreamId(ack.stream)) {
                     send.ack_below(ack.seq);
                 }
-                self.sent_at
-                    .retain(|(s, q), _| *s != ack.stream || *q >= ack.seq);
+                self.on_ack(ack.stream, ack.seq, &ack.sack);
             }
             kind::WINDOW => {
                 let Ok(w) = frame.decode::<Window>() else {
@@ -1221,6 +1624,7 @@ impl Session {
                 );
                 self.pending_opens.remove(&c.stream);
                 self.mux.remove_send(StreamId(c.stream));
+                self.forget_stream(c.stream);
                 if let Some(recv) = self.mux.recv_side(StreamId(c.stream)) {
                     recv.close();
                 }
@@ -1239,6 +1643,10 @@ impl Session {
                 if let Some(link) = self.links.iter().find(|l| l.id() == route) {
                     link.stats().probe_ok(rtt);
                 }
+                self.cc
+                    .entry(route)
+                    .or_default()
+                    .on_rtt(Duration::from_secs_f64(rtt / 1000.0));
                 self.misses.remove(&route);
             }
             kind::ROUTES => {
@@ -1326,40 +1734,6 @@ impl Session {
         crate::link::best_route(&refs)
             .map(|l| l.kind().as_str().to_string())
             .unwrap_or_default()
-    }
-
-    /// Re-send what the peer has not acknowledged, on a route other than the one it went out
-    /// on: the mechanism that makes a route failure invisible to the application.
-    fn resend_stale(&mut self) {
-        let now = Instant::now();
-        let stale: Vec<OutFrame> = self
-            .mux
-            .pending_retransmits()
-            .into_iter()
-            .filter(|f| {
-                self.sent_at
-                    .get(&(f.stream.0, f.seq))
-                    .map(|t| now.duration_since(*t) >= RESEND_AFTER)
-                    .unwrap_or(false)
-            })
-            .collect();
-        for f in stale {
-            tracing::trace!(
-                "[overlay session] {}: resend stream {} seq {}",
-                self.peer_node_id,
-                f.stream.0,
-                f.seq
-            );
-            let frame = self.data_frame(&f, true);
-            let target = self.route_for_bulk();
-            let sent = match target.and_then(|i| self.links.get(i).cloned()) {
-                Some(link) => link.send(&frame).is_ok(),
-                None => self.dispatch(&frame),
-            };
-            if sent {
-                self.sent_at.insert((f.stream.0, f.seq), now);
-            }
-        }
     }
 
     fn probe(&mut self) {
