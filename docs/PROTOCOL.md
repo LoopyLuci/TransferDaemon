@@ -124,7 +124,7 @@ frame := magic "TDOV" | version u8 | kind u8 | flags u16 LE | seq u64 LE | len u
 | 0x20 | PING | `{nonce, sent_us}` | no |
 | 0x21 | PONG | `{nonce, sent_us}`, sent on the route the PING came in on | no |
 | 0x30 | ROUTES | the sender's route measurements, informational | no |
-| 0x40 | CANDIDATE | an address for a hole punch (reserved; see OVERLAY.md) | no |
+| 0x40 | CANDIDATE | `{id, reply, nonce, candidates}`: one side of a hole-punch exchange (§8); version 3 and later | yes |
 | 0x7f | BYE | — | no |
 
 ## 5. The session
@@ -182,7 +182,7 @@ invite := "tdov1:" base64url(JSON {version: 1, node_id, name, hybrid_public_key,
 ## 7. Compatibility and evolution
 
 **Versions.**
-- A build speaks a range of protocol versions, from `VERSION_MIN` to `VERSION_CURRENT` (today 1 to 2).
+- A build speaks a range of protocol versions, from `VERSION_MIN` to `VERSION_CURRENT` (today 1 to 3).
 - Two peers use the highest version both speak. A peer outside the range is refused at HELLO with a reason, never
   half-understood.
 - **Raising `VERSION_MIN`** is the only way support for an old version ends. It is a decision taken in a release, never
@@ -206,3 +206,65 @@ So a field a newer build *needs* goes either:
   aside (`state.json.unreadable`) before anything is saved over it.
 - **Tests.** The tests include a current peer talking to an older one (`max_version = 1`) and to a newer one, each
   agreeing on the highest common version.
+
+## 8. Hole punching
+
+A relayed session can gain a direct UDP route. The nodes agree on the attempt over the session, then probe each other
+from the socket they registered on the relay with.
+
+**Version.** CANDIDATE exists from protocol version 3 (`VERSION_PUNCH`). It is reliable (it carries a receipt), and an
+older build would never acknowledge it, so a node sends it only when the session agreed on version 3 or later. A node
+that agreed on less never acts on one either. A peer at version 2 simply gets no punch and keeps its relay route.
+
+**Exchange.** The body of CANDIDATE is a `PunchMsg`:
+
+```
+PunchMsg  := {id u64, reply bool, nonce [32], candidates [Candidate]}
+Candidate := {addr "host:port", private bool}
+```
+
+1. The initiator (the node that dialled) sends `reply = false` with a fresh random `id` and `nonce`, and its candidates:
+   the address the relay saw for its registration socket (`private = false`), and its own address towards the relay when
+   that is not loopback (`private = true`).
+2. The responder answers `reply = true` with the same `id`, its own `nonce` and its own candidates, and starts probing.
+3. The initiator starts probing when the answer arrives.
+
+Only paired peers are served. A request is accepted at most once in 3 s per peer. When both ends ask at once, the lower
+node id's request goes ahead. At most 8 candidates are used.
+
+**Keys.** `material := id (u64 BE) ‖ initiator nonce ‖ responder nonce`.
+
+```
+probe key := BLAKE3-derive_key("transferd-overlay-punch-probe-v1", material)
+link key  := BLAKE3-derive_key("transferd-overlay-punch-link-v1",  material)
+```
+
+The nonces only travel inside the encrypted session, so nobody else can derive either key.
+
+**Probes.** Sent from the relay registration socket as plain datagrams (they are not relay payloads):
+
+```
+probe := "TDPB" | kind u8 | id u64 BE | seq u32 BE | mac [16]            (33 bytes)
+kind  := 1 probe from the initiator   2 probe from the responder
+         3 reply from the initiator   4 reply from the responder
+mac   := BLAKE3-keyed(probe key, every byte before it)[..16]
+```
+
+- A probe is shorter than the smallest tunnel frame, so the two never look alike.
+- Each side sends one probe per candidate every 200 ms for 10 rounds, with `seq` the round number.
+- A valid probe from the other role, from an address in the peer's candidate list, is answered with a reply that echoes
+  its `seq` (at most once per 40 ms per address and 64 per attempt). Anything else gets no answer.
+- The first valid reply, from a named address and for a round already sent, wins: that address becomes the route.
+- An attempt keeps answering probes for 2 s after it ends.
+
+**The punched route.** Tunnel keys come from the link key exactly as in §2 (the initiator takes the `c2s` direction).
+Tunnel frames travel as bare datagrams between the two NAT mappings, one frame per datagram, with no relay prefix. The
+route is added to the session as `holepunch`, marked down until its first PING is answered, and is probed like every
+other route. A datagram from a punched address that does not open under the route's keys is dropped.
+
+**Failure.** If no reply authenticates, nothing changes: no route is added and the relay route is untouched.
+
+**UDP gateway (optional).** A node configured with a gateway sends every datagram that is not for the relay through it,
+and receives such datagrams from it, in an envelope: `"TDGW" | family u8 (4 or 6) | ip octets | port u16 BE | datagram`.
+The gateway sends `datagram` on to the address from its own socket, and wraps what comes back with the sender's address.
+It exists for nodes behind a UDP-aware proxy, and for tests that put a NAT emulator in front of a node on loopback.

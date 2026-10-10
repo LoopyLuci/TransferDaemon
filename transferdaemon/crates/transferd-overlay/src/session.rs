@@ -30,7 +30,7 @@ use crate::link::{Link, RouteKind};
 use crate::mux::{Mux, OutFrame, StreamId};
 use crate::protocol::{
     self, kind, Ack, Close, CtrlAck, Data, Frame, Hello, HelloAck, Open, OpenErr, OpenOk, Ping,
-    Pong, RouteReport, Routes, Window,
+    Pong, PunchMsg, RouteReport, Routes, Window,
 };
 
 /// How often the session ticks.
@@ -92,6 +92,8 @@ pub enum SessionEvent {
         stream: StreamId,
         service: String,
     },
+    /// The peer sent its side of a hole-punch exchange (request or answer).
+    Punch { peer: String, msg: PunchMsg },
     /// The session went away.
     Down { peer: String, reason: String },
 }
@@ -139,6 +141,8 @@ pub enum SessionCommand {
     Advertise {
         services: Vec<protocol::ServiceInfo>,
     },
+    /// Send our side of a hole-punch exchange (only when the agreed version carries it).
+    Punch { msg: PunchMsg },
     /// Stop the session.
     Shutdown,
 }
@@ -248,6 +252,20 @@ impl SessionHandle {
             .commands
             .send(SessionCommand::Advertise { services })
             .await;
+    }
+
+    /// Send our side of a hole-punch exchange. Refused when the session did not agree on a
+    /// version that carries it: an older peer would never acknowledge the frame.
+    pub async fn send_punch(&self, msg: protocol::PunchMsg) -> Result<()> {
+        if self.version() < protocol::VERSION_PUNCH {
+            return Err(OverlayError::protocol(
+                "the peer's protocol version has no hole punching",
+            ));
+        }
+        self.commands
+            .send(SessionCommand::Punch { msg })
+            .await
+            .map_err(|_| self.gone())
     }
 
     /// Stop the session.
@@ -665,6 +683,9 @@ impl Session {
     async fn handle_command(&mut self, cmd: SessionCommand) {
         match cmd {
             SessionCommand::Shutdown => self.stopped = true,
+            SessionCommand::Punch { msg } => {
+                self.send_frame(kind::CANDIDATE, Self::encode(&msg), false);
+            }
             SessionCommand::Advertise { services } => {
                 self.local.services = services;
                 let hello = Self::encode(&self.local);
@@ -1228,6 +1249,18 @@ impl Session {
             kind::CTRL_ACK => {
                 if let Ok(receipt) = frame.decode::<CtrlAck>() {
                     self.ctrl_unacked.remove(&receipt.seq);
+                }
+            }
+            kind::CANDIDATE => {
+                // A build that agreed on less than the punch version never acts on one.
+                if (self.version as u16) < protocol::VERSION_PUNCH {
+                    return;
+                }
+                if let Ok(msg) = frame.decode::<PunchMsg>() {
+                    let _ = self.events.send(SessionEvent::Punch {
+                        peer: self.peer_node_id.clone(),
+                        msg,
+                    });
                 }
             }
             kind::BYE => self.stopped = true,

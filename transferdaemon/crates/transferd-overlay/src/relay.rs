@@ -14,6 +14,11 @@
 //!
 //! both padded to a power of two with a length header, so the relay only ever sees fixed-grid
 //! ciphertext sizes and never learns who is talking to whom.
+//!
+//! The socket the node registered with is also the one its hole punches use (see `punch.rs`): the
+//! NAT mapping the relay saw is the only mapping a peer can be sure to find. So the one inbound
+//! loop here first offers every datagram to the punch table, and what is not a probe or the
+//! traffic of a punched route is a relay datagram as before.
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
@@ -29,7 +34,8 @@ use crate::error::{OverlayError, Result};
 use crate::identity::{self, NodeIdentity};
 use crate::lanes::FramePipe;
 use crate::link::RouteKind;
-use crate::protocol::FrameReader;
+use crate::protocol::{Candidate, FrameReader};
+use crate::punch::{self, PunchTable};
 use crate::wire::{LinkKeys, Tunnel};
 
 /// The prefix of a handshake flight inside a relay payload.
@@ -108,6 +114,8 @@ pub struct RelayHub {
     /// Address-location answers still expected, by request id.
     locates: Mutex<HashMap<u32, oneshot::Sender<LocatedMsg>>>,
     next_request: std::sync::atomic::AtomicU32,
+    /// Hole punches and punched routes on this same socket.
+    punch: Arc<PunchTable>,
     /// This node's own identity, used to answer an inbound handshake.
     identity: NodeIdentity,
     /// The node this hub belongs to, so an inbound handshake becomes a session.
@@ -138,9 +146,11 @@ impl RelayHub {
                 addr: addr.to_string(),
                 reason: e.to_string(),
             })?;
+        let punch = PunchTable::new(client.socket(), node.udp_gateway(), addr.ip().is_loopback());
         let hub = Arc::new(Self {
             addr,
             client,
+            punch,
             self_token,
             peers: Mutex::new(HashMap::new()),
             early: Mutex::new(HashMap::new()),
@@ -183,10 +193,29 @@ impl RelayHub {
         let socket = self.client.socket();
         let mut buf = vec![0u8; 65_536];
         loop {
-            let Ok((n, _)) = socket.recv_from(&mut buf).await else {
+            let Ok((n, from)) = socket.recv_from(&mut buf).await else {
                 continue;
             };
-            let Some((tag, body)) = split(&buf[..n]) else {
+            // A datagram a peer sent through the gateway arrives wrapped with its address; one
+            // that came straight (or the relay's own) is looked at as it is.
+            let (src, data) = match self.punch.gateway() {
+                Some(gateway) if from == gateway => match punch::gateway_unwrap(&buf[..n]) {
+                    Some((src, inner)) => {
+                        if !self.punch.on_datagram(src, inner) {
+                            tracing::trace!(
+                                "[overlay relay] a wrapped datagram from {src} is not ours"
+                            );
+                        }
+                        continue;
+                    }
+                    None => (from, &buf[..n]),
+                },
+                _ => (from, &buf[..n]),
+            };
+            if self.punch.on_datagram(src, data) {
+                continue;
+            }
+            let Some((tag, body)) = split(data) else {
                 continue;
             };
             match tag {
@@ -515,6 +544,34 @@ impl RelayHub {
                 )))
             }
         }
+    }
+
+    /// The addresses a peer may try for a hole punch to this node: the one the relay sees for the
+    /// registration socket (asked on that same socket, so it is the NAT mapping the punch will
+    /// use), and this machine's own address towards the relay when it is not loopback (for a
+    /// peer on the same network, which a NAT would not loop traffic back to).
+    pub async fn punch_candidates(&self, peer_token: [u8; 32]) -> Result<Vec<Candidate>> {
+        let located = self.locate(peer_token).await?;
+        let mut out = vec![Candidate {
+            addr: located.self_addr.to_string(),
+            private: false,
+        }];
+        if let (Some(ip), Some(port)) = (punch::local_ip_toward(self.addr), self.punch.local_port())
+        {
+            let own = SocketAddr::new(ip, port);
+            if own != located.self_addr && punch::acceptable_candidate(own, false) {
+                out.push(Candidate {
+                    addr: own.to_string(),
+                    private: true,
+                });
+            }
+        }
+        Ok(out)
+    }
+
+    /// Register a hole-punch attempt on the registration socket (see `PunchTable::begin`).
+    pub(crate) fn punch_begin(&self, params: punch::PunchParams) -> Result<punch::Running> {
+        self.punch.begin(params)
     }
 
     /// Forget a peer (its session ended).

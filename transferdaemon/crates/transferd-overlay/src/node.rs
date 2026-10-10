@@ -11,8 +11,10 @@
 //! 2. Direct addresses a peer published (its listener, a LAN or tailnet address) are dialled
 //!    first, with a short timeout, and the relay is used when none answers. Once a session is
 //!    up, the other kind of path is added beside it, so a stream can fail over.
-//! 3. A UDP hole punch (to upgrade a relayed pair to a direct path through NAT) is attempted
-//!    only when nothing else answered, and is not finished: the peer does not take part yet.
+//! 3. When a session is up over the relay, the two nodes try a coordinated UDP hole punch over
+//!    it (`punch.rs`): each sends authenticated probes from its relay socket at the addresses
+//!    the other named. If one gets through, the session gains a direct route; if not, nothing
+//!    changes.
 //! 4. The relay is always the fallback, so "always reachable" never depends on a direct path
 //!    existing.
 //!
@@ -41,6 +43,7 @@ use crate::lanes::{self, FramePipe};
 use crate::link::{Link, RouteKind};
 use crate::mux::StreamId;
 use crate::protocol::{self, ServiceInfo};
+use crate::punch;
 use crate::relay::RelayHub;
 use crate::session::{self, SessionEvent, SessionHandle};
 use crate::state::{StoredConnect, StoredExpose, StoredGroup, StoredNode, StoredState};
@@ -69,6 +72,12 @@ pub struct OverlayConfig {
     pub audit_path: Option<PathBuf>,
     /// The highest protocol version to offer. Lower it to simulate an older peer.
     pub max_version: u8,
+    /// Whether to try hole punching to a peer reached over a relay (on by default).
+    pub punch: bool,
+    /// A UDP gateway the datagrams that are not for the relay go through, wrapped (see
+    /// `punch::gateway_wrap`). `None` (the default) sends them straight. For a node behind a
+    /// UDP-aware proxy, and for tests that put a NAT emulator in front of a node.
+    pub udp_gateway: Option<SocketAddr>,
 }
 
 impl OverlayConfig {
@@ -82,9 +91,23 @@ impl OverlayConfig {
             state_path: None,
             audit_path: None,
             max_version: protocol::VERSION_CURRENT as u8,
+            punch: true,
+            udp_gateway: None,
         }
     }
 }
+
+/// A hole punch this node started and has not had an answer to yet.
+struct PunchAttempt {
+    id: u64,
+    nonce: [u8; 32],
+    hub: SocketAddr,
+}
+
+/// The fewest seconds between two punch requests accepted from one peer.
+const PUNCH_REQUEST_GAP: Duration = Duration::from_secs(3);
+/// How long a punch request waits for its answer.
+const PUNCH_ANSWER_WAIT: Duration = Duration::from_secs(10);
 
 /// One peer's session, plus what we know about it.
 struct Peer {
@@ -149,6 +172,10 @@ struct Inner {
     mesh_dns: parking_lot::Mutex<Option<Arc<crate::dns::MeshDns>>>,
     /// Its settings as last asked for, kept in the state file so a restart brings it back.
     mesh_dns_config: parking_lot::Mutex<Option<crate::dns::MeshDnsConfig>>,
+    /// Hole punches we asked a peer for, by peer.
+    punching: parking_lot::Mutex<HashMap<String, PunchAttempt>>,
+    /// When a peer last asked us for one, to hold them to a reasonable rate.
+    punch_asked: parking_lot::Mutex<HashMap<String, std::time::Instant>>,
 }
 
 /// A simple per-minute rate window.
@@ -231,6 +258,8 @@ impl OverlayNode {
                         .collect(),
                 ),
                 mesh_dns: parking_lot::Mutex::new(None),
+                punching: parking_lot::Mutex::new(HashMap::new()),
+                punch_asked: parking_lot::Mutex::new(HashMap::new()),
                 mesh_dns_config: parking_lot::Mutex::new(state.mesh_dns.clone()),
                 direct: parking_lot::Mutex::new(config.direct.clone()),
                 hubs: parking_lot::Mutex::new(Vec::new()),
@@ -522,6 +551,10 @@ impl OverlayNode {
                         break;
                     }
                 }
+                // Still on the relay alone: ask the peer to punch a direct path with us.
+                if have == RouteKind::Relay {
+                    node.start_punch(&node_id).await;
+                }
             } else {
                 let token = identity::relay_token_for(&node_id);
                 for hub in node.relay_hubs() {
@@ -612,68 +645,212 @@ impl OverlayNode {
             }
         }
 
-        // 3. A hole punch: both ends send outbound at each other through the relay.
-        if !hubs.is_empty() {
-            match self.hole_punch(node_id, peer_token, &hubs).await {
-                Ok(handle) => {
-                    self.emit(OverlayEvent::new("route.change", node_id, "holepunch up"));
-                    return Ok((handle, RouteKind::HolePunch));
-                }
-                Err(e) => attempts.push(format!("hole punch: {e}")),
-            }
-        }
-
+        // A hole punch is no way to a first session: it is coordinated over a session that is
+        // already up (see `start_punch`), and a peer the relay cannot reach cannot be punched to.
         tracing::debug!("[overlay] no route to {node_id}: {}", attempts.join("; "));
         Err(OverlayError::Unreachable {
             node: node_id.to_string(),
         })
     }
 
-    /// Upgrade a relayed session to a direct one by punching a hole, when the network allows it.
-    ///
-    /// The relay is asked where it sees us and where it sees the peer — it is the only party
-    /// that can observe a NAT's mapped address. Both ends then send outbound at each other and
-    /// run the same authenticated handshake they would over TCP, so the punched path is proven
-    /// by key material rather than by an address that happened to answer.
-    async fn hole_punch(
-        &self,
-        node_id: &str,
-        peer_token: [u8; 32],
-        hubs: &[Arc<RelayHub>],
-    ) -> Result<SessionHandle> {
-        let located = {
-            let mut last = OverlayError::protocol("no relay answered a locate");
-            let mut answer = None;
-            for hub in hubs {
-                match hub.locate(peer_token).await {
-                    Ok(a) => {
-                        answer = Some(a);
-                        break;
-                    }
-                    Err(e) => last = e,
-                }
-            }
-            answer.ok_or(last)?
+    /// The UDP gateway this node's non-relay datagrams go through, if it has one.
+    pub(crate) fn udp_gateway(&self) -> Option<SocketAddr> {
+        self.inner.config.udp_gateway
+    }
+
+    /// The live session with a paired peer, when hole punching may be tried over it.
+    fn punch_session(&self, peer: &str) -> Option<SessionHandle> {
+        if !self.inner.config.punch || !self.inner.paired.lock().contains(peer) {
+            return None;
+        }
+        self.inner
+            .peers
+            .lock()
+            .get(peer)
+            .map(|p| p.session.clone())
+            .filter(SessionHandle::is_live)
+    }
+
+    /// Ask a peer we reached over the relay for a direct path: our candidates go to it over the
+    /// session, it answers with its own, and both then probe each other (see `punch.rs`). Only
+    /// the node that dialled does this; if the exchange fails, the session is unchanged.
+    async fn start_punch(&self, peer: &str) {
+        let Some(session) = self.punch_session(peer) else {
+            return;
         };
-        let (mine, theirs) = (located.self_addr, located.peer_addr);
-        let theirs = theirs
-            .ok_or_else(|| OverlayError::protocol("the relay does not know that peer yet"))?;
-        // Exactly one side dials, so the two handshakes do not cross.
-        let we_start = self.node_id().as_str() < node_id;
-        let deadline = std::time::Instant::now() + Duration::from_secs(3);
-        let link = lanes::hole_punch(
-            self.next_link_id(),
-            &self.inner.config.identity,
-            node_id,
-            mine,
-            theirs,
-            we_start,
-            deadline,
-        )
-        .await?;
-        Ok(self
-            .attach(node_id, link as Arc<dyn Link>, RouteKind::HolePunch)
-            .await)
+        if !session.ready(Duration::from_secs(5)).await
+            || session.version() < protocol::VERSION_PUNCH
+        {
+            return;
+        }
+        let direct = |r: &protocol::RouteReport| {
+            r.active && r.kind != RouteKind::Relay.as_str() && r.kind != RouteKind::WsRelay.as_str()
+        };
+        if session.routes().iter().any(direct) {
+            return;
+        }
+        let peer_token = identity::relay_token_for(peer);
+        let mut found = None;
+        for hub in self.relay_hubs() {
+            match hub.punch_candidates(peer_token).await {
+                Ok(candidates) => {
+                    found = Some((hub.addr, candidates));
+                    break;
+                }
+                Err(e) => tracing::debug!("[overlay punch] {}: {e}", hub.addr),
+            }
+        }
+        let Some((hub, candidates)) = found else {
+            return;
+        };
+        let id = rand::random::<u64>();
+        let nonce = rand::random::<[u8; 32]>();
+        self.inner
+            .punching
+            .lock()
+            .insert(peer.to_string(), PunchAttempt { id, nonce, hub });
+        let msg = protocol::PunchMsg {
+            id,
+            reply: false,
+            nonce,
+            candidates,
+        };
+        if session.send_punch(msg).await.is_err() {
+            self.inner.punching.lock().remove(peer);
+            return;
+        }
+        // An answer that never comes is forgotten, so the next try starts clean.
+        let node = self.clone();
+        let peer = peer.to_string();
+        tokio::spawn(async move {
+            tokio::time::sleep(PUNCH_ANSWER_WAIT).await;
+            let mut punching = node.inner.punching.lock();
+            if punching.get(&peer).is_some_and(|a| a.id == id) {
+                punching.remove(&peer);
+            }
+        });
+    }
+
+    /// The peer's side of a punch exchange arrived over the session.
+    async fn on_punch(&self, peer: String, msg: protocol::PunchMsg) {
+        let Some(session) = self.punch_session(&peer) else {
+            return;
+        };
+        let named: Vec<SocketAddr> = msg
+            .candidates
+            .iter()
+            .take(punch::MAX_CANDIDATES)
+            .filter_map(|c| c.addr.parse().ok())
+            .collect();
+        let peer_token = identity::relay_token_for(&peer);
+        if msg.reply {
+            // The answer to a request of ours: only the one we are waiting for.
+            let attempt = {
+                let mut punching = self.inner.punching.lock();
+                match punching.get(&peer) {
+                    Some(a) if a.id == msg.id => punching.remove(&peer),
+                    _ => None,
+                }
+            };
+            let Some(attempt) = attempt else { return };
+            let Some(hub) = self
+                .relay_hubs()
+                .into_iter()
+                .find(|h| h.addr == attempt.hub)
+            else {
+                return;
+            };
+            let params = punch::PunchParams {
+                id: msg.id,
+                initiator: true,
+                keys: punch::PunchKeys::derive(msg.id, &attempt.nonce, &msg.nonce),
+                candidates: named,
+                link_id: self.next_link_id(),
+            };
+            match hub.punch_begin(params) {
+                Ok(running) => self.finish_punch(&peer, running).await,
+                Err(e) => self.punch_failed(&peer, &e.to_string()),
+            }
+            return;
+        }
+        // A request. Peers are held to a rate, and when both ends asked at once the lower node
+        // id's request is the one that goes ahead.
+        {
+            let mut asked = self.inner.punch_asked.lock();
+            let now = std::time::Instant::now();
+            if asked
+                .get(&peer)
+                .is_some_and(|t| now.duration_since(*t) < PUNCH_REQUEST_GAP)
+            {
+                return;
+            }
+            asked.insert(peer.clone(), now);
+        }
+        {
+            let mut punching = self.inner.punching.lock();
+            if punching.contains_key(&peer) {
+                if self.node_id().as_str() < peer.as_str() {
+                    return;
+                }
+                punching.remove(&peer);
+            }
+        }
+        let mut chosen = None;
+        for hub in self.relay_hubs() {
+            if let Ok(candidates) = hub.punch_candidates(peer_token).await {
+                chosen = Some((hub, candidates));
+                break;
+            }
+        }
+        let Some((hub, candidates)) = chosen else {
+            return;
+        };
+        let nonce = rand::random::<[u8; 32]>();
+        let params = punch::PunchParams {
+            id: msg.id,
+            initiator: false,
+            keys: punch::PunchKeys::derive(msg.id, &msg.nonce, &nonce),
+            candidates: named,
+            link_id: self.next_link_id(),
+        };
+        // Registered before the answer goes out, so the first probes of the peer find the attempt.
+        let running = match hub.punch_begin(params) {
+            Ok(running) => running,
+            Err(e) => {
+                self.punch_failed(&peer, &e.to_string());
+                return;
+            }
+        };
+        let reply = protocol::PunchMsg {
+            id: msg.id,
+            reply: true,
+            nonce,
+            candidates,
+        };
+        if session.send_punch(reply).await.is_err() {
+            return;
+        }
+        self.finish_punch(&peer, running).await;
+    }
+
+    fn punch_failed(&self, peer: &str, why: &str) {
+        self.emit(OverlayEvent::new(
+            "route.change",
+            peer,
+            format!("holepunch failed: {why}"),
+        ));
+    }
+
+    /// Probe until the attempt wins or runs out, and on a win add the route to the session.
+    async fn finish_punch(&self, peer: &str, running: punch::Running) {
+        match running.finish().await {
+            Ok(link) => {
+                self.attach(peer, link as Arc<dyn Link>, RouteKind::HolePunch)
+                    .await;
+                self.emit(OverlayEvent::new("route.change", peer, "holepunch up"));
+            }
+            Err(e) => self.punch_failed(peer, &e.to_string()),
+        }
     }
 
     /// Record a live session for a peer, keeping what we already know about it (the name it
@@ -829,6 +1006,11 @@ impl OverlayNode {
                         service,
                     } => {
                         node.authorize_open(&peer, stream, &service);
+                    }
+                    SessionEvent::Punch { peer, msg } => {
+                        // Off this loop: a punch takes seconds, and the session keeps talking.
+                        let node = node.clone();
+                        tokio::spawn(async move { node.on_punch(peer, msg).await });
                     }
                     SessionEvent::Down { peer, reason } => {
                         node.emit(OverlayEvent::new("peer.down", &peer, reason));

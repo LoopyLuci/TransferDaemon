@@ -19,6 +19,10 @@ use tokio::net::UdpSocket;
 use tokio::sync::Mutex;
 use transferd_overlay::{NodeIdentity, OverlayConfig, OverlayNode};
 
+mod nat;
+#[allow(unused_imports)]
+pub use nat::{plain_echo, route_states, Nat, NatKind};
+
 /// How long an integration test waits for something that should already have happened.
 pub const PATIENCE: Duration = Duration::from_secs(20);
 

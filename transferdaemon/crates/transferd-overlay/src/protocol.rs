@@ -43,7 +43,11 @@ pub const MAGIC: [u8; 4] = *b"TDOV";
 pub const VERSION_MIN: u16 = 1;
 
 /// The version this build speaks when the peer allows a choice.
-pub const VERSION_CURRENT: u16 = 2;
+pub const VERSION_CURRENT: u16 = 3;
+
+/// The first version that carries [`kind::CANDIDATE`] (the hole-punch coordination). A session
+/// that agreed on a lower one never gets the frame: an older build would not acknowledge it.
+pub const VERSION_PUNCH: u16 = 3;
 
 /// Bytes before the body: magic(4) version(1) kind(1) flags(2) seq(8) len(4).
 pub const HEADER_LEN: usize = 20;
@@ -73,7 +77,7 @@ pub mod kind {
     pub const PONG: u8 = 0x21;
     /// Report this node's routes, so the peer knows what it can use.
     pub const ROUTES: u8 = 0x30;
-    /// NAT candidate exchange for a hole punch.
+    /// Hole-punch coordination: a `PunchMsg` (version 3 and later).
     pub const CANDIDATE: u8 = 0x40;
     /// Close the session cleanly.
     pub const BYE: u8 = 0x7f;
@@ -240,6 +244,7 @@ pub fn is_reliable(kind: u8) -> bool {
             | kind::OPEN_ERR
             | kind::WINDOW
             | kind::CLOSE
+            | kind::CANDIDATE
     )
 }
 
@@ -289,6 +294,25 @@ pub struct RouteReport {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Routes {
     pub routes: Vec<RouteReport>,
+}
+
+/// One side of a hole-punch exchange, carried by [`kind::CANDIDATE`] (reliable, and sent only
+/// when the session agreed on [`VERSION_PUNCH`] or later).
+///
+/// The initiator sends `reply: false` with its candidates and a fresh `nonce`; the responder
+/// answers with `reply: true`, the same `id`, its own `nonce` and its own candidates. Both
+/// nonces travel inside the encrypted session, so only the two nodes know the probe key
+/// derived from them (see `punch.rs`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PunchMsg {
+    /// Chosen by the initiator; ties a reply (and every probe) to one attempt.
+    pub id: u64,
+    /// False for the request, true for the answer.
+    pub reply: bool,
+    /// The sender's secret contribution to the probe key.
+    pub nonce: [u8; 32],
+    /// Where the sender may be reached from outside its NAT, and on its own network.
+    pub candidates: Vec<Candidate>,
 }
 
 /// A NAT candidate for a hole punch: where to send punch packets.
@@ -705,8 +729,13 @@ mod tests {
     fn version_negotiation_picks_the_highest_common_version() {
         // A peer that only speaks v1: we drop to v1.
         assert_eq!(negotiate(1, 1, VERSION_MIN, VERSION_CURRENT), Some(1));
-        // A future peer that speaks 2..9: we take our maximum, 2.
-        assert_eq!(negotiate(2, 9, VERSION_MIN, VERSION_CURRENT), Some(2));
+        // A future peer that speaks 2..9: we take our maximum.
+        assert_eq!(
+            negotiate(2, 9, VERSION_MIN, VERSION_CURRENT),
+            Some(VERSION_CURRENT)
+        );
+        // A peer that stops at 2 (before hole punching): we agree on 2, and never send it a punch frame.
+        assert_eq!(negotiate(1, 2, VERSION_MIN, VERSION_CURRENT), Some(2));
         // A peer far in the future, with nothing we speak: refused.
         assert_eq!(negotiate(9, 12, VERSION_MIN, VERSION_CURRENT), None);
         // A peer that only speaks v0 (pre-history): refused.

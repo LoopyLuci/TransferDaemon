@@ -68,11 +68,48 @@ curl http://127.0.0.1:50123/
    retried in the background.
 3. Once a session is up on one kind of path, the node adds the other kind beside it. The session then has a second
    route to fail over to, and the cheaper one carries the traffic.
+4. **Hole punch.** When the dialling node holds a session over the relay (and the peer is paired and speaks protocol
+   version 3 or later), it asks the peer for a direct UDP path. The relay stays; the punch only adds a route.
 
-**Not done yet: UDP hole punching.** The relay already answers a STUN-like `Locate` (the address it sees for each
-token), and the dialler tries a punch when no other path works. But the peer does not take part yet, and the punch
-uses a fresh socket rather than the one the relay saw. So today it succeeds only where no NAT is in the way. The relay
-path is what makes every pair reachable; a working punch would only make some relayed pairs faster.
+**UDP hole punching.**
+
+How it goes:
+- Each node asks the relay (`Locate`) which address it sees for its registration socket. That is the NAT mapping a peer
+  can be sure to find. The question goes out on the same socket the node registered with.
+- A node also names its own address towards the relay, when that is not loopback, for a peer on the same network.
+- The dialler sends its candidates over the existing session (frame CANDIDATE, see PROTOCOL.md section 8). The peer
+  answers with its own. Both add a random nonce. The nonces never leave the encrypted session, so only the two nodes can
+  derive the probe key.
+- Both then send authenticated probes **from the registration socket** to every address the other named: ten rounds,
+  200 ms apart, so about two seconds. A port-restricted cone NAT lets a probe in once the inside has sent to that
+  address, which is exactly what the two nodes' own probes arrange.
+- The first authenticated reply wins. The session gains a `holepunch` route (marked down until its first ping is
+  answered, so nothing is sent into a hole that is one-way), and the cheaper route carries the traffic.
+
+What keeps it safe:
+- A probe is a 33-byte datagram with a MAC under the attempt's key. Anything else is dropped without an answer, from the
+  wrong role, from an address the peer did not name, or after the attempt is over (two seconds).
+- Probes go only to addresses the peer named, at most eight, and never to loopback, link-local, multicast or
+  unspecified ones (loopback only when the relay itself is on loopback). A stranger who replays a captured probe from
+  another address gets nothing back.
+- Replies are rate-limited per address and per attempt. A request is accepted from a paired peer, at most once in
+  three seconds.
+- If it fails, nothing changes: the relay route is untouched, and the node logs a `route.change` event
+  "holepunch failed".
+
+What works and what does not:
+- **Works:** two nodes behind cone NATs (tested with the strictest, port-restricted; full and restricted are more
+  permissive), a node with a public address behind
+  nothing, two nodes on the same network (the private candidate).
+- **Does not:** a symmetric NAT on either side (it gives each destination a different port, so the address the relay
+  saw is useless to the peer), a NAT or firewall that drops unsolicited UDP from a new address even after the inside
+  sent to it, and a network that blocks UDP. These stay on the relay, which loses nothing.
+- Not tried: guessing ports (birthday punching), IPv6 candidates, UPnP / NAT-PMP / PCP, or a punch toward a relay that
+  is not on the node's first reachable relay. The punch is tried once, when the session comes up over the relay; it is
+  not retried when a NAT mapping changes later (the session then keeps using the relay).
+- A route that goes quiet stays alive by the session's own one-second pings, which also keep the NAT mapping open.
+- `OverlayConfig::punch` turns it off. `OverlayConfig::udp_gateway` sends every datagram that is not for the relay
+  through a UDP-aware proxy, wrapped with its real destination (a NAT emulator in the tests is one).
 
 ## Inside a session
 
@@ -178,4 +215,7 @@ and RTT decide, and the overlay has no congestion control yet beyond the per-str
 - older and newer peers agreeing on a version;
 - a service exposed after the session came up;
 - a 20%-loss relay path;
+- hole punching through userspace NAT emulators: two port-restricted cone NATs give a punched route that carries a
+  stream with the relay gone, a symmetric NAT fails cleanly and the relay carries the stream, and a stranger's replayed
+  probe is ignored and never answered;
 - mesh DNS: answers, blocked and NXDOMAIN counted, failover, SERVFAIL, the setting surviving a restart.

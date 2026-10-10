@@ -11,8 +11,8 @@
 //!   can serve as a relay for the rest), and to peers directly when a path exists. Nothing is
 //!   ever dialled *into*, so no NAT, firewall or CGNAT mapping has to be configured. Direct
 //!   addresses a peer publishes are tried first, and the relay is the path that always works.
-//!   (UDP hole punching, to turn a relayed path into a direct one, is not finished: see
-//!   `docs/OVERLAY.md`.)
+//!   (Where the NATs allow it, the two nodes also punch a direct UDP route through them,
+//!   coordinated over the relayed session: see `docs/OVERLAY.md`.)
 //! * **Services are forwarded, not exposed.** A node publishes a local service with an ACL by
 //!   node identity. Another node asks for it by node id (or by service group) and gets a stable
 //!   local endpoint that survives reconnects. A local SOCKS5 and HTTP-CONNECT proxy let any
@@ -40,6 +40,7 @@ pub mod node;
 pub mod ops;
 pub mod protocol;
 pub mod proxy;
+pub mod punch;
 pub mod relay;
 pub mod session;
 pub mod state;
