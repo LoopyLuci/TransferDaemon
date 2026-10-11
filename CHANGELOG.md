@@ -1,6 +1,23 @@
 # Changelog
 
-## Unreleased
+## 2.3.0 — 2026-10-10
+
+### The overlay: a private network between your devices
+
+See [docs/OVERLAY.md](docs/OVERLAY.md).
+
+- **`transferd-overlay`**, inside the daemon. Paired devices expose and reach TCP services on each other through one
+  encrypted session per peer, over every route that works: LAN, Tailscale, direct, or a relay.
+- **Pairing that means pairing.** One invite pairs both ways; a session alone is not a pairing.
+- **Mesh DNS.** Peers' services get host names, resolved by a resolver that checks DNSSEC upstream.
+- **Reliable over bad links.** Streams are multiplexed, flow controlled and sequenced; data lost on one route is resent
+  on another; a route cut mid-stream does not break the application's connection. Half-close works.
+- **UDP hole punching** through cone NATs beside the relay: candidates are exchanged over the session and probes are
+  authenticated (protocol v3).
+- **Congestion control per route:** RTO from RFC 6298 (SRTT/RTTVAR), an AIMD window with slow start, pacing over the
+  round trip, and SACK-style gap reports. On an emulated 2 MB/s, 40 ms link a stream uses 75-85% of it with about 1%
+  resent. Older peers still parse the new ACK and route-report fields.
+- **Throughput** on one machine: 125-144 MB/s direct, 85-96 MB/s relayed.
 
 ### Control from anywhere: the control hub, `transferd-cli`, MCP, and the GUI and TUI driven from outside
 
