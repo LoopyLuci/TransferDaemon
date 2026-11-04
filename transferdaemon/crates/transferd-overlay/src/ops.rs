@@ -416,6 +416,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_node_paired_by_invite_is_reached_when_it_presents_the_key_its_invite_names() {
+        let a = OverlayNode::start(crate::OverlayConfig {
+            listen: Some("127.0.0.1:0".parse().expect("an address")),
+            ..crate::OverlayConfig::local(crate::NodeIdentity::generate("a"))
+        })
+        .await
+        .expect("a node");
+        let b = OverlayNode::start(crate::OverlayConfig::local(crate::NodeIdentity::generate(
+            "b",
+        )))
+        .await
+        .expect("a node");
+        b.invite_accept(&a.invite_create(600), Some("a".into()))
+            .expect("pair");
+        if let Err(e) = b.ensure_session(&a.node_id()).await {
+            panic!("the first contact presents the fingerprinted key: {e}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_node_presenting_a_key_its_invite_did_not_name_is_refused_on_first_contact() {
+        let a = OverlayNode::start(crate::OverlayConfig {
+            listen: Some("127.0.0.1:0".parse().expect("an address")),
+            ..crate::OverlayConfig::local(crate::NodeIdentity::generate("a"))
+        })
+        .await
+        .expect("a node");
+        let b = OverlayNode::start(crate::OverlayConfig::local(crate::NodeIdentity::generate(
+            "b",
+        )))
+        .await
+        .expect("a node");
+        let stranger = crate::NodeIdentity::generate("stranger");
+        // Signed by a, so it verifies, but it names the stranger's key. a presents its own.
+        let listen = a.listener_addr().expect("a listens");
+        let invite = crate::identity::invite_naming(
+            &a.identity(),
+            crate::identity::key_fingerprint(&stranger.hybrid_public_key()),
+            vec![listen.to_string()],
+            600,
+        );
+        b.invite_accept(&invite, None)
+            .expect("the signature verifies");
+        let err = match b.ensure_session(&a.node_id()).await {
+            Ok(_) => panic!("a node that presents another key must not be reached"),
+            Err(e) => e,
+        };
+        assert!(matches!(err, OverlayError::Unreachable { .. }), "{err}");
+    }
+
+    #[tokio::test]
     async fn every_published_operation_is_runnable_or_explicitly_about_the_network() {
         // The catalog must not drift from the dispatcher: anything published has to exist.
         let node = OverlayNode::start(crate::OverlayConfig::local(crate::NodeIdentity::generate(

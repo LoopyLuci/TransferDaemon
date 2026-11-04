@@ -16,12 +16,19 @@ pub use transferd_crypto::{HybridSigningKey, HybridVerifyingKey};
 /// How long an invite stays valid by default.
 pub const DEFAULT_INVITE_TTL_S: u64 = 900;
 
-/// The largest invite this build will parse. An invite carries a 2624-byte hybrid identity and
-/// a 4691-byte hybrid signature, so it is a few kilobytes of JSON before base64.
-const MAX_INVITE_BYTES: usize = 64 * 1024;
+/// The prefix every invite starts with. The version is in it, so an invite from an older build is
+/// refused by name rather than misread.
+const INVITE_PREFIX: &str = "tdov2:";
+
+/// The largest invite this build will parse. A short invite is a few hundred bytes; the cap only
+/// stops an oversized one from being read.
+const MAX_INVITE_BYTES: usize = 4 * 1024;
 
 /// The domain context that binds an invite signature to its contents.
-const INVITE_CONTEXT: &str = "TransferDaemon-overlay-invite-v1";
+const INVITE_CONTEXT: &str = "TransferDaemon-overlay-invite-v2";
+
+/// The domain context of a key fingerprint: BLAKE3 of a hybrid public key under this context.
+const FINGERPRINT_CONTEXT: &str = "TransferDaemon-overlay-key-fingerprint-v1";
 
 /// This node's identity: the signing key, the node id it derives, and a display name.
 #[derive(Clone)]
@@ -207,8 +214,11 @@ impl NodeRecord {
     }
 }
 
-/// A pairing invite: this node's identity plus how to reach it, signed so it cannot be
-/// edited in transit.
+/// A pairing invite, version 2: the inviting node's id, a fingerprint of its hybrid key, and how
+/// to reach it. The 2624-byte hybrid key is not carried. The first contact must present a key
+/// that hashes to the fingerprint (see [`key_fingerprint`]), so the invite stays short enough for a
+/// QR code. It is signed with the node's Ed25519 key, which is its node id, so an edit in transit
+/// is refused.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Invite {
     /// Invite format version, so a future format can be recognised.
@@ -218,8 +228,8 @@ pub struct Invite {
     /// The inviting node's display name.
     #[serde(default)]
     pub name: String,
-    /// The inviting node's 2624-byte hybrid public key.
-    pub hybrid_public_key: Vec<u8>,
+    /// The fingerprint of the inviting node's hybrid public key, as hex.
+    pub key_fingerprint: String,
     /// Relays the node is registered on, as `host:port`.
     #[serde(default)]
     pub relays: Vec<String>,
@@ -228,34 +238,48 @@ pub struct Invite {
     pub direct: Vec<String>,
     /// Unix seconds after which the invite is refused.
     pub expires_at: u64,
-    /// A random value, so two invites from the same node differ.
-    pub nonce: [u8; 16],
-    /// The hybrid signature over everything above.
-    pub signature: Vec<u8>,
+    /// A random value, so two invites from the same node differ. Hex.
+    pub nonce: String,
+    /// The Ed25519 signature over everything above, as hex.
+    pub signature: String,
 }
 
-/// The bytes an invite signature covers.
-fn invite_binding(i: &Invite) -> Vec<u8> {
+/// The fingerprint of a hybrid public key: a 32-byte BLAKE3 digest, which an invite carries in
+/// place of the key itself.
+pub fn key_fingerprint(hybrid_public_key: &[u8]) -> [u8; 32] {
+    blake3::derive_key(FINGERPRINT_CONTEXT, hybrid_public_key)
+}
+
+/// The bytes an invite signature covers: a digest of every field except the signature.
+fn invite_binding(i: &Invite) -> [u8; 32] {
     let mut h = blake3::Hasher::new();
     h.update(INVITE_CONTEXT.as_bytes());
     h.update(&i.version.to_le_bytes());
-    h.update(i.node_id.as_bytes());
-    h.update(i.name.as_bytes());
-    h.update(&(i.hybrid_public_key.len() as u32).to_le_bytes());
-    h.update(&i.hybrid_public_key);
+    put_field(&mut h, i.node_id.as_bytes());
+    put_field(&mut h, i.name.as_bytes());
+    put_field(&mut h, i.key_fingerprint.as_bytes());
     h.update(&(i.relays.len() as u32).to_le_bytes());
     for r in &i.relays {
-        h.update(r.as_bytes());
-        h.update(&[0u8]);
+        put_field(&mut h, r.as_bytes());
     }
     h.update(&(i.direct.len() as u32).to_le_bytes());
     for d in &i.direct {
-        h.update(d.as_bytes());
-        h.update(&[0u8]);
+        put_field(&mut h, d.as_bytes());
     }
     h.update(&i.expires_at.to_le_bytes());
-    h.update(&i.nonce);
-    h.finalize().as_bytes().to_vec()
+    put_field(&mut h, i.nonce.as_bytes());
+    *h.finalize().as_bytes()
+}
+
+/// Hash one field with its length in front, so two different field sequences never hash alike.
+fn put_field(h: &mut blake3::Hasher, bytes: &[u8]) {
+    h.update(&(bytes.len() as u32).to_le_bytes());
+    h.update(bytes);
+}
+
+/// Decode a hex string into a fixed-size array, or nothing when it is the wrong length.
+fn hex_array<const N: usize>(text: &str) -> Option<[u8; N]> {
+    hex::decode(text).ok()?.try_into().ok()
 }
 
 /// Build and sign an invite for this node.
@@ -279,80 +303,125 @@ pub fn make_invite_with_nonce(
     let ttl_s = ttl_s.clamp(30, 86_400);
     let mut nonce = [0u8; 16];
     rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut nonce);
+    let expires_at = now_secs() + ttl_s;
+    let fingerprint = key_fingerprint(&identity.hybrid_public_key());
+    let invite = sign_invite(identity, fingerprint, relays, direct, nonce, expires_at);
+    (invite, nonce, expires_at)
+}
+
+/// Build an invite's text from its fields, signed with the node's Ed25519 key.
+fn sign_invite(
+    identity: &NodeIdentity,
+    fingerprint: [u8; 32],
+    relays: Vec<String>,
+    direct: Vec<String>,
+    nonce: [u8; 16],
+    expires_at: u64,
+) -> String {
     let mut invite = Invite {
-        version: 1,
+        version: 2,
         node_id: identity.node_id().to_string(),
         name: identity.name().to_string(),
-        hybrid_public_key: identity.hybrid_public_key(),
+        key_fingerprint: hex::encode(fingerprint),
         relays,
         direct,
-        expires_at: now_secs() + ttl_s,
-        nonce,
-        signature: Vec::new(),
+        expires_at,
+        nonce: hex::encode(nonce),
+        signature: String::new(),
     };
-    invite.signature = identity
-        .signing_key()
-        .sign(&invite_binding(&invite))
-        .to_bytes();
+    invite.signature = hex::encode(
+        identity
+            .signing_key()
+            .sign_ed25519(&invite_binding(&invite)),
+    );
     let json = serde_json::to_string(&invite).unwrap_or_default();
-    (
-        format!("tdov1:{}", base64_url_encode(json.as_bytes())),
-        invite.nonce,
-        invite.expires_at,
+    format!("{INVITE_PREFIX}{}", base64_url_encode(json.as_bytes()))
+}
+
+/// An invite that names `fingerprint` for this identity, signed as usual. For tests of a node
+/// whose key is not the one its invite names: that node must be refused on first contact.
+#[cfg(test)]
+pub(crate) fn invite_naming(
+    identity: &NodeIdentity,
+    fingerprint: [u8; 32],
+    direct: Vec<String>,
+    ttl_s: u64,
+) -> String {
+    sign_invite(
+        identity,
+        fingerprint,
+        Vec::new(),
+        direct,
+        [7; 16],
+        now_secs() + ttl_s,
     )
 }
 
-/// An invite's nonce, read without verifying (the caller verified it with [`accept_invite`]).
-pub fn invite_nonce(invite: &str) -> Option<[u8; 16]> {
-    let raw = base64_url_decode(invite.strip_prefix("tdov1:")?).ok()?;
-    serde_json::from_slice::<Invite>(&raw).ok().map(|i| i.nonce)
-}
-
-/// Verify an invite and return the record to pair with.
-///
-/// The signature is checked against the invite's own key material, so an invite cannot be
-/// edited; the caller still applies trust-on-first-use when it already knows the node.
-pub fn accept_invite(invite: &str) -> Result<NodeRecord> {
+/// Read an invite's fields without checking its signature. Only a caller that goes on to verify
+/// the invite may trust them; the dialling and matching helpers below use them for no more.
+fn decode_invite(invite: &str) -> Result<Invite> {
     let body = invite
-        .strip_prefix("tdov1:")
-        .ok_or_else(|| OverlayError::protocol("an invite starts with tdov1:"))?;
+        .strip_prefix(INVITE_PREFIX)
+        .ok_or_else(|| OverlayError::protocol("an invite starts with tdov2:"))?;
     let raw = base64_url_decode(body)?;
     if raw.len() > MAX_INVITE_BYTES {
         return Err(OverlayError::protocol("invite is too large"));
     }
-    let invite: Invite =
-        serde_json::from_slice(&raw).map_err(|e| OverlayError::protocol(e.to_string()))?;
+    serde_json::from_slice(&raw).map_err(|e| OverlayError::protocol(e.to_string()))
+}
+
+/// An invite's nonce, read without verifying (the caller verified it with [`accept_invite`]).
+pub fn invite_nonce(invite: &str) -> Option<[u8; 16]> {
+    hex_array(&decode_invite(invite).ok()?.nonce)
+}
+
+/// An invite that has been verified: the node it names, and the key fingerprint its first contact
+/// must match.
+#[derive(Debug, Clone)]
+pub struct VerifiedInvite {
+    pub node_id: String,
+    pub name: String,
+    /// The fingerprint of the node's hybrid public key, see [`key_fingerprint`].
+    pub key_fingerprint: [u8; 32],
+}
+
+/// Verify an invite.
+///
+/// The signature is checked against the node id itself, so only the node that owns the id could
+/// have made the invite. The key the node presents is not in the invite; it is checked against
+/// the fingerprint when the node is first reached.
+pub fn accept_invite(invite: &str) -> Result<VerifiedInvite> {
+    let invite = decode_invite(invite)?;
     if invite.expires_at <= now_secs() {
         return Err(OverlayError::protocol("invite has expired"));
     }
-    let vk = HybridVerifyingKey::from_bytes(&invite.hybrid_public_key)
-        .ok_or_else(|| OverlayError::protocol("invite carries an invalid hybrid identity"))?;
-    let sig = transferd_crypto::HybridSignature::from_bytes(&invite.signature)
+    check_node_id(&invite.node_id)?;
+    let public_key: [u8; 32] = hex_array(&invite.node_id)
+        .ok_or_else(|| OverlayError::BadNodeId(invite.node_id.clone()))?;
+    let signature: [u8; 64] = hex_array(&invite.signature)
         .ok_or_else(|| OverlayError::protocol("invite signature is malformed"))?;
-    let binding = invite_binding(&invite);
-    if !vk.verify(&binding, &sig) {
+    if !transferd_crypto::identity::verify_ed25519(
+        &public_key,
+        &invite_binding(&invite),
+        &signature,
+    ) {
         return Err(OverlayError::IdentityMismatch {
             node: invite.node_id.clone(),
             reason: "invite signature does not verify".into(),
         });
     }
-    let expected = hex::decode(&invite.node_id)
-        .map_err(|_| OverlayError::BadNodeId(invite.node_id.clone()))?;
-    if expected.len() != 32 || invite.hybrid_public_key[..32] != expected {
-        return Err(OverlayError::IdentityMismatch {
-            node: invite.node_id.clone(),
-            reason: "the node id is not the invite's identity".into(),
-        });
-    }
-    let mut name = invite.name.clone();
-    if name.is_empty() {
-        name = short_name(&invite.node_id);
-    }
-    Ok(NodeRecord::new(
-        invite.node_id,
+    let key_fingerprint: [u8; 32] = hex_array(&invite.key_fingerprint)
+        .ok_or_else(|| OverlayError::protocol("invite key fingerprint is malformed"))?;
+    let name = if invite.name.is_empty() {
+        short_name(&invite.node_id)
+    } else {
+        invite.name
+    };
+    Ok(VerifiedInvite {
+        node_id: invite.node_id,
         name,
-        invite.hybrid_public_key,
-    ))
+        key_fingerprint,
+    })
 }
 
 /// The reachability an invite carried, for the caller to dial.
@@ -365,18 +434,12 @@ pub struct InviteReach {
 /// Split an invite's reachability out without trusting it: used for a first dial attempt,
 /// before the invite has been verified.
 pub fn invite_reach(invite: &str) -> InviteReach {
-    let Some(body) = invite.strip_prefix("tdov1:") else {
-        return InviteReach::default();
-    };
-    let Ok(raw) = base64_url_decode(body) else {
-        return InviteReach::default();
-    };
-    let Ok(i) = serde_json::from_slice::<Invite>(&raw) else {
-        return InviteReach::default();
-    };
-    InviteReach {
-        relays: i.relays,
-        direct: i.direct,
+    match decode_invite(invite) {
+        Ok(i) => InviteReach {
+            relays: i.relays,
+            direct: i.direct,
+        },
+        Err(_) => InviteReach::default(),
     }
 }
 
@@ -499,10 +562,13 @@ mod tests {
             vec!["10.0.0.5:9000".into()],
             600,
         );
-        let record = accept_invite(&invite).expect("accept");
-        assert_eq!(record.node_id, id.node_id());
-        assert_eq!(record.name, "phone");
-        assert_eq!(record.hybrid_public_key, id.hybrid_public_key());
+        let verified = accept_invite(&invite).expect("accept");
+        assert_eq!(verified.node_id, id.node_id());
+        assert_eq!(verified.name, "phone");
+        assert_eq!(
+            verified.key_fingerprint,
+            key_fingerprint(&id.hybrid_public_key())
+        );
 
         let reach = invite_reach(&invite);
         assert_eq!(reach.relays, vec!["relay.example:7777".to_string()]);
@@ -510,10 +576,23 @@ mod tests {
     }
 
     #[test]
+    fn a_short_invite_fits_a_qr_code_and_carries_no_hybrid_key() {
+        let id = NodeIdentity::generate("phone");
+        let invite = make_invite(
+            &id,
+            vec!["relay.example:7777".into()],
+            vec!["10.0.0.5:9000".into()],
+            600,
+        );
+        assert!(invite.starts_with("tdov2:"));
+        assert!(invite.len() < 1024, "{} bytes", invite.len());
+    }
+
+    #[test]
     fn a_tampered_invite_is_refused() {
         let id = NodeIdentity::generate("phone");
         let invite = make_invite(&id, vec!["r:1".into()], vec![], 600);
-        let body = invite.strip_prefix("tdov1:").expect("prefix");
+        let body = invite.strip_prefix(INVITE_PREFIX).expect("prefix");
         let mut raw = base64_url_decode(body).expect("decode");
         // Flip a byte inside the relays list.
         let pos = raw
@@ -521,9 +600,40 @@ mod tests {
             .position(|w| w == b"r:")
             .expect("relay entry");
         raw[pos] = b'x';
-        let forged = format!("tdov1:{}", base64_url_encode(&raw));
+        let forged = format!("{INVITE_PREFIX}{}", base64_url_encode(&raw));
         let err = accept_invite(&forged).expect_err("must refuse a tampered invite");
         assert_eq!(err.code(), "identity_mismatch");
+    }
+
+    #[test]
+    fn an_invite_naming_another_node_is_refused() {
+        let a = NodeIdentity::generate("a");
+        let b = NodeIdentity::generate("b");
+        let invite = make_invite(&b, vec![], vec![], 600);
+        let body = invite.strip_prefix(INVITE_PREFIX).expect("prefix");
+        let raw = String::from_utf8(base64_url_decode(body).expect("decode")).expect("utf-8");
+        // Put a's id where b's was: the signature is b's, so it must not verify against a.
+        let swapped = raw.replace(b.node_id(), a.node_id());
+        assert_ne!(swapped, raw, "the id appears in the invite");
+        let forged = format!("{INVITE_PREFIX}{}", base64_url_encode(swapped.as_bytes()));
+        let err = accept_invite(&forged).expect_err("must refuse an invite signed by another key");
+        assert_eq!(err.code(), "identity_mismatch");
+    }
+
+    #[test]
+    fn a_key_fingerprint_is_specific_to_its_key() {
+        let a = NodeIdentity::generate("a");
+        let b = NodeIdentity::generate("b");
+        assert_eq!(
+            key_fingerprint(&a.hybrid_public_key()),
+            key_fingerprint(&a.hybrid_public_key()),
+            "same key, same fingerprint"
+        );
+        assert_ne!(
+            key_fingerprint(&a.hybrid_public_key()),
+            key_fingerprint(&b.hybrid_public_key()),
+            "different keys, different fingerprints"
+        );
     }
 
     #[test]
@@ -537,7 +647,14 @@ mod tests {
 
     #[test]
     fn garbage_is_not_an_invite() {
-        for bad in ["", "nope", "tdov1:", "tdov1:!!!!", "tdov1:YWJj"] {
+        for bad in [
+            "",
+            "nope",
+            "tdov2:",
+            "tdov2:!!!!",
+            "tdov2:YWJj",
+            "tdov1:YWJj",
+        ] {
             assert!(accept_invite(bad).is_err(), "{bad:?} must not parse");
         }
     }

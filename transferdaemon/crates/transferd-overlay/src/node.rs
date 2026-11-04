@@ -126,6 +126,12 @@ fn nonce_from_hex(text: &str) -> Option<[u8; 16]> {
         .and_then(|b| <[u8; 16]>::try_from(b).ok())
 }
 
+fn fingerprint_from_hex(text: &str) -> Option<[u8; 32]> {
+    hex::decode(text)
+        .ok()
+        .and_then(|b| <[u8; 32]>::try_from(b).ok())
+}
+
 /// Where the local proxies are listening.
 #[derive(Clone, Copy, Default)]
 pub struct ProxyAddrs {
@@ -166,6 +172,10 @@ struct Inner {
     paired: parking_lot::Mutex<std::collections::HashSet<String>>,
     /// Nonces of the invites we accepted, by the node that issued them: presented in our hello.
     presented: parking_lot::Mutex<HashMap<String, [u8; 16]>>,
+    /// The key fingerprint each accepted invite named, by node id. The key a node presents on
+    /// first contact must hash to it (see `check_presented_key`). Kept here as well as in the state
+    /// file, so the check holds for a node that has no state file.
+    fingerprints: parking_lot::Mutex<HashMap<String, [u8; 32]>>,
     /// Invites issued and not used yet: nonce -> expiry.
     invites: parking_lot::Mutex<HashMap<[u8; 16], u64>>,
     /// The mesh DNS forwarder, when it is on.
@@ -247,6 +257,15 @@ impl OverlayNode {
                         .nodes
                         .values()
                         .filter_map(|n| Some((n.node_id.clone(), nonce_from_hex(&n.pairing)?)))
+                        .collect(),
+                ),
+                fingerprints: parking_lot::Mutex::new(
+                    state
+                        .nodes
+                        .values()
+                        .filter_map(|n| {
+                            Some((n.node_id.clone(), fingerprint_from_hex(&n.key_fingerprint)?))
+                        })
                         .collect(),
                 ),
                 invites: parking_lot::Mutex::new(
@@ -464,19 +483,10 @@ impl OverlayNode {
             link.mark_down();
             return;
         }
-        // Trust on first use: a node we already know must present the same identity.
-        if let Some(existing) = self.inner.peers.lock().get(&peer_id) {
-            if !existing.record.hybrid_public_key.is_empty()
-                && existing.record.hybrid_public_key != hybrid
-            {
-                link.mark_down();
-                self.emit(OverlayEvent::new(
-                    "peer.denied",
-                    &peer_id,
-                    "the identity changed",
-                ));
-                return;
-            }
+        if let Err(e) = self.check_presented_key(&peer_id, &hybrid) {
+            link.mark_down();
+            self.emit(OverlayEvent::new("peer.denied", &peer_id, e.to_string()));
+            return;
         }
         {
             let mut peers = self.inner.peers.lock();
@@ -558,12 +568,16 @@ impl OverlayNode {
             } else {
                 let token = identity::relay_token_for(&node_id);
                 for hub in node.relay_hubs() {
-                    if let Ok(keys) = hub
+                    if let Ok((keys, hybrid)) = hub
                         .handshake(&node_id, token, &node.inner.config.identity)
                         .await
                     {
+                        if node.check_presented_key(&node_id, &hybrid).is_err() {
+                            continue;
+                        }
                         let link: Arc<dyn Link> = hub.link(node.next_link_id(), token, &keys).await;
                         node.attach(&node_id, link, RouteKind::Relay).await;
+                        node.remember_identity(&node_id, hybrid);
                         node.emit(OverlayEvent::new("route.change", &node_id, "relay added"));
                         break;
                     }
@@ -621,6 +635,11 @@ impl OverlayNode {
             .await
             {
                 Ok((link, _keys, _peer, hybrid)) => {
+                    if let Err(e) = self.check_presented_key(node_id, &hybrid) {
+                        link.mark_down();
+                        attempts.push(format!("tcp {addr}: {e}"));
+                        continue;
+                    }
                     let handle = self.attach(node_id, link as Arc<dyn Link>, kind).await;
                     self.remember_identity(node_id, hybrid);
                     return Ok((handle, kind));
@@ -635,10 +654,16 @@ impl OverlayNode {
                 .handshake(node_id, peer_token, &self.inner.config.identity)
                 .await
             {
-                Ok(keys) => {
+                Ok((keys, hybrid)) => {
+                    // The key is checked before any link exists, so a refused peer gets none.
+                    if let Err(e) = self.check_presented_key(node_id, &hybrid) {
+                        attempts.push(format!("relay {}: {e}", hub.addr));
+                        continue;
+                    }
                     let link: Arc<dyn Link> =
                         hub.link(self.next_link_id(), peer_token, &keys).await;
                     let handle = self.attach(node_id, link, RouteKind::Relay).await;
+                    self.remember_identity(node_id, hybrid);
                     return Ok((handle, RouteKind::Relay));
                 }
                 Err(e) => attempts.push(format!("relay {}: {e}", hub.addr)),
@@ -928,6 +953,35 @@ impl OverlayNode {
             .unwrap_or_default()
     }
 
+    /// Check the hybrid key a peer presented on first contact. A node paired by invite must present
+    /// the key its invite fingerprinted, and a node we have met before must present the key it
+    /// presented then. Anything else is refused before a link is attached.
+    fn check_presented_key(&self, node_id: &str, presented: &[u8]) -> Result<()> {
+        let fingerprint = self.inner.fingerprints.lock().get(node_id).copied();
+        if let Some(fingerprint) = fingerprint {
+            if identity::key_fingerprint(presented) != fingerprint {
+                return Err(OverlayError::IdentityMismatch {
+                    node: node_id.to_string(),
+                    reason: "the key it presents is not the one its invite named".into(),
+                });
+            }
+        }
+        let known = self
+            .inner
+            .peers
+            .lock()
+            .get(node_id)
+            .map(|p| p.record.hybrid_public_key.clone())
+            .filter(|k| !k.is_empty());
+        if known.is_some_and(|k| k.as_slice() != presented) {
+            return Err(OverlayError::IdentityMismatch {
+                node: node_id.to_string(),
+                reason: "this node id now presents a different identity".into(),
+            });
+        }
+        Ok(())
+    }
+
     fn remember_identity(&self, node_id: &str, hybrid: Vec<u8>) {
         {
             let mut peers = self.inner.peers.lock();
@@ -1062,6 +1116,7 @@ impl OverlayNode {
                 node_id: peer.to_string(),
                 name: label.clone(),
                 hybrid_public_key: Vec::new(),
+                key_fingerprint: String::new(),
                 relays: Vec::new(),
                 direct: Vec::new(),
                 paired_at: now_secs(),
@@ -1691,21 +1746,30 @@ impl OverlayNode {
         invite
     }
 
-    /// Verify an invite and pair with it. Trust on first use: a node we already know must
-    /// present the same identity.
+    /// Verify an invite and pair with it. The invite carries the node's key fingerprint, not its
+    /// key: the first contact must present a key that matches (see `check_presented_key`). A node
+    /// we already hold a key for must keep it, so an invite that fingerprints another key is refused.
     pub fn invite_accept(&self, invite: &str, name: Option<String>) -> Result<NodeRecord> {
-        let record = identity::accept_invite(invite)?;
+        let verified = identity::accept_invite(invite)?;
         let mut state = self.load_state();
-        if let Some(existing) = state.nodes.get(&record.node_id) {
-            if !existing.hybrid_public_key.is_empty()
-                && existing.hybrid_public_key != record.hybrid_public_key
-            {
+        let known_key = state
+            .nodes
+            .get(&verified.node_id)
+            .map(|n| n.hybrid_public_key.clone())
+            .filter(|k| !k.is_empty());
+        if let Some(key) = &known_key {
+            if identity::key_fingerprint(key) != verified.key_fingerprint {
                 return Err(OverlayError::IdentityMismatch {
-                    node: record.node_id,
+                    node: verified.node_id,
                     reason: "this node id now presents a different identity".into(),
                 });
             }
         }
+        let record = NodeRecord::new(
+            verified.node_id.clone(),
+            verified.name.clone(),
+            known_key.unwrap_or_default(),
+        );
         let reach = identity::invite_reach(invite);
         let label = name
             .unwrap_or_else(|| record.name.clone())
@@ -1717,6 +1781,7 @@ impl OverlayNode {
                 node_id: record.node_id.clone(),
                 name: label.clone(),
                 hybrid_public_key: record.hybrid_public_key.clone(),
+                key_fingerprint: hex::encode(verified.key_fingerprint),
                 relays: reach.relays.clone(),
                 direct: reach.direct.clone(),
                 paired_at: record.paired_at,
@@ -1728,6 +1793,10 @@ impl OverlayNode {
         );
         self.save_state_with(&state);
         self.inner.paired.lock().insert(record.node_id.clone());
+        self.inner
+            .fingerprints
+            .lock()
+            .insert(record.node_id.clone(), verified.key_fingerprint);
         if let Some(nonce) = identity::invite_nonce(invite) {
             self.inner
                 .presented

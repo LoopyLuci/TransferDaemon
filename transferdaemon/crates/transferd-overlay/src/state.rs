@@ -21,6 +21,10 @@ pub struct StoredNode {
     /// The hybrid public key verified on first contact (trust on first use).
     #[serde(default)]
     pub hybrid_public_key: Vec<u8>,
+    /// The key fingerprint its invite named (hex): the key it presents on first contact must
+    /// hash to this. Empty for a node that was not paired by invite.
+    #[serde(default)]
+    pub key_fingerprint: String,
     /// Relays this node published, as `host:port`.
     #[serde(default)]
     pub relays: Vec<String>,
