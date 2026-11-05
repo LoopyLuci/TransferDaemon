@@ -483,9 +483,8 @@ impl OverlayNode {
             link.mark_down();
             return;
         }
-        if let Err(e) = self.check_presented_key(&peer_id, &hybrid) {
+        if !self.admit_presented_key(&peer_id, &hybrid) {
             link.mark_down();
-            self.emit(OverlayEvent::new("peer.denied", &peer_id, e.to_string()));
             return;
         }
         {
@@ -911,6 +910,7 @@ impl OverlayNode {
         &self,
         link: Arc<FramePipe>,
         peer_id: String,
+        hybrid: Vec<u8>,
         _from: [u8; 32],
         route: RouteKind,
     ) {
@@ -921,11 +921,7 @@ impl OverlayNode {
         {
             let mut peers = self.inner.peers.lock();
             peers.entry(peer_id.clone()).or_insert_with(|| Peer {
-                record: NodeRecord::new(
-                    peer_id.clone(),
-                    identity::short_name(&peer_id),
-                    Vec::new(),
-                ),
+                record: NodeRecord::new(peer_id.clone(), identity::short_name(&peer_id), hybrid),
                 session: detached_session(&peer_id),
                 route,
                 reachable: Vec::new(),
@@ -980,6 +976,18 @@ impl OverlayNode {
             });
         }
         Ok(())
+    }
+
+    /// Whether a first contact may be answered or attached. A refusal goes into the event log, so
+    /// a node that is turned away can be seen to be.
+    pub(crate) fn admit_presented_key(&self, node_id: &str, presented: &[u8]) -> bool {
+        match self.check_presented_key(node_id, presented) {
+            Ok(()) => true,
+            Err(e) => {
+                self.emit(OverlayEvent::new("peer.denied", node_id, e.to_string()));
+                false
+            }
+        }
     }
 
     fn remember_identity(&self, node_id: &str, hybrid: Vec<u8>) {

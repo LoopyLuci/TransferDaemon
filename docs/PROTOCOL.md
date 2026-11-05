@@ -185,8 +185,9 @@ invite := "tdov2:" base64url(JSON {version: 2, node_id, name, key_fingerprint, r
 - An invite lives 30 s to 24 h.
 - Its `nonce` is the one-time pairing secret described in §5.
 - **First contact.** A node dialled from an invite must present a hybrid public key that hashes to `key_fingerprint`.
-  This is checked on the direct path and on the relay path, before any link is attached. A key that does not match
-  closes the link, and the dial moves on to the next route.
+  This is checked on the direct path and on the relay path, in both directions, before any link is attached. A key
+  that does not match closes the link, and the dial moves on to the next route. A relayed flight that does not match
+  gets no answer, so the dialler's handshake times out.
 - **Trust.** The Ed25519 signature is classical, so the invite is only as trusted as the channel it arrives on. The
   fingerprint is what binds the post-quantum key: a dialled node must present the key the invite fingerprinted.
 - An invite of version 1 (`tdov1:`) is refused.

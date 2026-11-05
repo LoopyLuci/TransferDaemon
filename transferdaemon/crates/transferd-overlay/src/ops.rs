@@ -466,6 +466,82 @@ mod tests {
         assert!(matches!(err, OverlayError::Unreachable { .. }), "{err}");
     }
 
+    /// A relay on a real socket, running relayd's own logic, for the tests that dial through one.
+    async fn a_relay() -> String {
+        let socket = tokio::net::UdpSocket::bind("127.0.0.1:0")
+            .await
+            .expect("the relay binds");
+        let addr = socket.local_addr().expect("the relay's address");
+        let mut relay = relayd::relay::Relay::new(0, 300, 64 * 1024);
+        // Every test node is on 127.0.0.1, so the per-address budget is raised for overlay traffic.
+        relay.set_rate_limit(30, 1_000_000);
+        let core = std::sync::Arc::new(tokio::sync::Mutex::new(relay));
+        let reader = std::sync::Arc::new(socket);
+        tokio::spawn(async move {
+            relayd::server::serve(reader, core).await;
+        });
+        addr.to_string()
+    }
+
+    /// A node with no listener at all, reachable only through the relay it registers with.
+    async fn relayed_node(name: &str, relay: &str) -> std::sync::Arc<OverlayNode> {
+        OverlayNode::start(crate::OverlayConfig {
+            relays: vec![relay.to_string()],
+            ..crate::OverlayConfig::local(crate::NodeIdentity::generate(name))
+        })
+        .await
+        .expect("a node")
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_node_dialled_through_a_relay_is_answered_when_it_presents_the_key_its_invite_names()
+    {
+        let relay = a_relay().await;
+        let alice = relayed_node("alice", &relay).await;
+        let bob = relayed_node("bob", &relay).await;
+        alice
+            .invite_accept(&bob.invite_create(600), None)
+            .expect("alice pairs with bob");
+        bob.invite_accept(&alice.invite_create(600), None)
+            .expect("bob pairs with alice");
+        alice
+            .ensure_session(&bob.node_id())
+            .await
+            .expect("the relayed first contact presents the fingerprinted key");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_node_dialled_through_a_relay_is_not_answered_when_it_presents_another_key() {
+        let relay = a_relay().await;
+        let alice = relayed_node("alice", &relay).await;
+        let bob = relayed_node("bob", &relay).await;
+        let stranger = crate::NodeIdentity::generate("stranger");
+        // bob's invite for alice names the stranger's key. alice presents her own, through the relay.
+        let invite = crate::identity::invite_naming(
+            &alice.identity(),
+            crate::identity::key_fingerprint(&stranger.hybrid_public_key()),
+            Vec::new(),
+            600,
+        );
+        bob.invite_accept(&invite, None)
+            .expect("the signature verifies");
+        alice
+            .invite_accept(&bob.invite_create(600), None)
+            .expect("alice pairs with bob");
+        let err = match alice.ensure_session(&bob.node_id()).await {
+            Ok(_) => panic!("a node that presents another key must not be reached through a relay"),
+            Err(e) => e,
+        };
+        assert!(matches!(err, OverlayError::Unreachable { .. }), "{err}");
+        assert!(
+            bob.events()
+                .recent(100)
+                .iter()
+                .any(|event| event.kind == "peer.denied"),
+            "bob records the refusal"
+        );
+    }
+
     #[tokio::test]
     async fn every_published_operation_is_runnable_or_explicitly_about_the_network() {
         // The catalog must not drift from the dispatcher: anything published has to exist.
