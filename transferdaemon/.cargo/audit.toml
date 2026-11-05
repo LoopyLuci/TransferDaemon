@@ -52,4 +52,11 @@ ignore = [
     # a compatible bump; the affected methods are not exercised by our stack.
     "RUSTSEC-2026-0002",
     "RUSTSEC-2026-0253",
+
+    # crypto-bigint 0.5.5 — timing variability in constant-time operations. The fix is
+    # only in crypto-bigint 0.7.x, a major version that 0.5 dependents cannot take in a
+    # compatible bump. It is reached only through the WebRTC DTLS stack (webrtc-dtls ->
+    # p256/p384 -> elliptic-curve), used by the UI and mobile crates. The overlay the
+    # core builds on does not depend on it.
+    "RUSTSEC-2026-0387",
 ]
