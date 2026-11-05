@@ -226,6 +226,18 @@ impl MeshDns {
         Ok(dns)
     }
 
+    /// Stop answering. Returns once the listeners have dropped their sockets, so the address
+    /// can be bound again straight away.
+    pub async fn stop(&self) {
+        let tasks: Vec<JoinHandle<()>> = self.tasks.lock().drain(..).collect();
+        for task in &tasks {
+            task.abort();
+        }
+        for task in tasks {
+            let _ = task.await;
+        }
+    }
+
     /// The settings it runs with.
     pub fn config(&self) -> &MeshDnsConfig {
         &self.config

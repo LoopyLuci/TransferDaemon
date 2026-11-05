@@ -1698,9 +1698,12 @@ impl OverlayNode {
         &self,
         config: Option<crate::dns::MeshDnsConfig>,
     ) -> Result<serde_json::Value> {
-        // Stop the old one first: the new one usually wants the same port.
+        // Stop the old one first, and wait until it has let go of its port: the new one usually
+        // wants the same port, and so does a caller that turns the resolver off and rebinds it.
         let old = self.inner.mesh_dns.lock().take();
-        drop(old);
+        if let Some(old) = old {
+            old.stop().await;
+        }
         let Some(config) = config else {
             *self.inner.mesh_dns_config.lock() = None;
             self.emit(OverlayEvent::new("dns.off", self.node_id(), ""));
