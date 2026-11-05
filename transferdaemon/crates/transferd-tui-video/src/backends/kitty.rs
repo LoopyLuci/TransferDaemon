@@ -25,13 +25,17 @@ const CHUNK_BYTES: usize = 3072;
 pub struct KittyBackend;
 
 impl KittyBackend {
-    pub fn kind(&self) -> TerminalGraphics { TerminalGraphics::Kitty }
+    pub fn kind(&self) -> TerminalGraphics {
+        TerminalGraphics::Kitty
+    }
 
     /// Scale `frame` to fit within `cols`×`rows` cells and return the escape
     /// sequence string.  Callers should move the cursor to the target position
     /// then `print!("{}", sequence)`.
     pub fn render_to_string(&self, frame: &RgbaImage, cols: u16, rows: u16) -> String {
-        if cols == 0 || rows == 0 { return String::new(); }
+        if cols == 0 || rows == 0 {
+            return String::new();
+        }
 
         // Each terminal cell is typically ~2× taller in pixels than it is wide
         // (e.g. 8×16 px).  We use 2:1 for safe sizing.

@@ -10,17 +10,23 @@
 //! `RELAYD_WS_MAX_MB_PER_DAY|WEEK|MONTH`; ghost key admission: `RELAYD_GHOST_ISSUERS`, `RELAYD_REQUIRE_GHOST`,
 //! `RELAYD_GHOST_SESSIONS` (as relayd).
 
-use relayd::ws::{WsRelay, handle_connection, maintenance_loop};
+use relayd::ws::{handle_connection, maintenance_loop, WsRelay};
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::sync::Mutex;
 
 fn env_u32(name: &str, default: u32) -> u32 {
-    std::env::var(name).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
+    std::env::var(name)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
 }
 
 fn env_u64(name: &str, default: u64) -> u64 {
-    std::env::var(name).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
+    std::env::var(name)
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(default)
 }
 
 #[tokio::main]
@@ -33,12 +39,22 @@ async fn main() -> std::io::Result<()> {
 
     let mut core = WsRelay::with_limits(difficulty, ttl_secs, limits);
     let issuers: Vec<String> = std::env::var_os("RELAYD_GHOST_ISSUERS")
-        .map(|v| std::env::split_paths(&v).map(|p| p.display().to_string()).collect())
+        .map(|v| {
+            std::env::split_paths(&v)
+                .map(|p| p.display().to_string())
+                .collect()
+        })
         .unwrap_or_default();
-    let require_ghost = std::env::var("RELAYD_REQUIRE_GHOST").map(|v| v == "1" || v.eq_ignore_ascii_case("true")).unwrap_or(false);
+    let require_ghost = std::env::var("RELAYD_REQUIRE_GHOST")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
     if !issuers.is_empty() || require_ghost {
-        core.ghost = relayd::ghost::GhostPolicy::from_files(&issuers, require_ghost, env_u64("RELAYD_GHOST_SESSIONS", 8) as usize)
-            .map_err(std::io::Error::other)?;
+        core.ghost = relayd::ghost::GhostPolicy::from_files(
+            &issuers,
+            require_ghost,
+            env_u64("RELAYD_GHOST_SESSIONS", 8) as usize,
+        )
+        .map_err(std::io::Error::other)?;
     }
     let relay = Arc::new(Mutex::new(core));
     tokio::spawn(maintenance_loop(relay.clone()));
@@ -47,10 +63,22 @@ async fn main() -> std::io::Result<()> {
     println!(
         "relayd-ws: listening on {addr} (difficulty={difficulty}, ttl={ttl_secs}s, \
          max_blob={} day={} week={} month={})",
-        limits.max_blob_bytes.map(relayd::limits::format_bytes).unwrap_or_else(|| "unlimited".into()),
-        limits.daily_bytes.map(relayd::limits::format_bytes).unwrap_or_else(|| "unlimited".into()),
-        limits.weekly_bytes.map(relayd::limits::format_bytes).unwrap_or_else(|| "unlimited".into()),
-        limits.monthly_bytes.map(relayd::limits::format_bytes).unwrap_or_else(|| "unlimited".into()),
+        limits
+            .max_blob_bytes
+            .map(relayd::limits::format_bytes)
+            .unwrap_or_else(|| "unlimited".into()),
+        limits
+            .daily_bytes
+            .map(relayd::limits::format_bytes)
+            .unwrap_or_else(|| "unlimited".into()),
+        limits
+            .weekly_bytes
+            .map(relayd::limits::format_bytes)
+            .unwrap_or_else(|| "unlimited".into()),
+        limits
+            .monthly_bytes
+            .map(relayd::limits::format_bytes)
+            .unwrap_or_else(|| "unlimited".into()),
     );
 
     loop {

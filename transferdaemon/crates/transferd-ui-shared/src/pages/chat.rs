@@ -5,8 +5,13 @@
 use crate::app::{AppState, Page};
 use crate::design::{self, DesignTokens};
 use crate::types::{Message, MessageContent, MessageStatus};
-use crate::widgets::message_bubble::{message_bubble, DEFAULT_INBOUND_COLOR, DEFAULT_OUTBOUND_COLOR};
-use egui::{Color32, ColorImage, Key, Modifiers, RichText, ScrollArea, TextureHandle, TextureOptions, Ui, Vec2};
+use crate::widgets::message_bubble::{
+    message_bubble, DEFAULT_INBOUND_COLOR, DEFAULT_OUTBOUND_COLOR,
+};
+use egui::{
+    Color32, ColorImage, Key, Modifiers, RichText, ScrollArea, TextureHandle, TextureOptions, Ui,
+    Vec2,
+};
 use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -16,16 +21,16 @@ const POLL_INTERVAL: Duration = Duration::from_millis(500);
 
 /// Preset palette for inbound bubble colors.
 const COLOR_PALETTE: &[(Color32, &str)] = &[
-    (Color32::from_rgb(44,  44,  46),  "Default"),
-    (Color32::from_rgb(52,  199, 89),  "Green"),
-    (Color32::from_rgb(90,  200, 250), "Sky"),
-    (Color32::from_rgb(255, 149, 0),   "Orange"),
-    (Color32::from_rgb(175, 82,  222), "Purple"),
-    (Color32::from_rgb(255, 55,  95),  "Pink"),
-    (Color32::from_rgb(255, 204, 0),   "Yellow"),
-    (Color32::from_rgb(88,  86,  214), "Indigo"),
-    (Color32::from_rgb(0,   122, 255), "Blue"),
-    (Color32::from_rgb(162, 132, 94),  "Tan"),
+    (Color32::from_rgb(44, 44, 46), "Default"),
+    (Color32::from_rgb(52, 199, 89), "Green"),
+    (Color32::from_rgb(90, 200, 250), "Sky"),
+    (Color32::from_rgb(255, 149, 0), "Orange"),
+    (Color32::from_rgb(175, 82, 222), "Purple"),
+    (Color32::from_rgb(255, 55, 95), "Pink"),
+    (Color32::from_rgb(255, 204, 0), "Yellow"),
+    (Color32::from_rgb(88, 86, 214), "Indigo"),
+    (Color32::from_rgb(0, 122, 255), "Blue"),
+    (Color32::from_rgb(162, 132, 94), "Tan"),
 ];
 
 fn now_secs() -> u64 {
@@ -36,7 +41,8 @@ fn now_secs() -> u64 {
 }
 
 /// Messages sent in the background: (contact, text, the daemon's answer).
-type SentOutcomes = std::sync::Arc<std::sync::Mutex<Vec<(String, String, Result<Message, String>)>>>;
+type SentOutcomes =
+    std::sync::Arc<std::sync::Mutex<Vec<(String, String, Result<Message, String>)>>>;
 
 pub struct ChatPage {
     /// Sends run on the runtime, not the UI thread (reaching a peer can take seconds); the outcomes land here and
@@ -146,7 +152,10 @@ impl ChatPage {
             if cid != self.last_contact_id {
                 // Save the previous conversation's draft.
                 if !self.last_contact_id.is_empty() && !self.input.is_empty() {
-                    state.drafts.insert(self.last_contact_id.clone(), std::mem::take(&mut self.input));
+                    state.drafts.insert(
+                        self.last_contact_id.clone(),
+                        std::mem::take(&mut self.input),
+                    );
                 }
                 self.messages.clear();
                 self.seen_ids.clear();
@@ -254,11 +263,7 @@ impl ChatPage {
                         } else {
                             ("○", tokens.palette.text_disabled)
                         };
-                        ui.label(
-                            RichText::new(dot)
-                                .color(dot_col)
-                                .size(10.0),
-                        );
+                        ui.label(RichText::new(dot).color(dot_col).size(10.0));
                         ui.label(
                             RichText::new(c.display_name())
                                 .strong()
@@ -269,7 +274,6 @@ impl ChatPage {
                         if c.typing {
                             ui.label(
                                 RichText::new("is typing…")
-                                    
                                     .size(12.0)
                                     .color(tokens.palette.accent),
                             );
@@ -278,25 +282,38 @@ impl ChatPage {
 
                     // Search toggle
                     if !self.search_active {
-                        if ui.add_sized(
-                            [40.0, 40.0],
-                            egui::Button::new(RichText::new("🔍").size(16.0).color(tokens.palette.text_secondary))
+                        if ui
+                            .add_sized(
+                                [40.0, 40.0],
+                                egui::Button::new(
+                                    RichText::new("🔍")
+                                        .size(16.0)
+                                        .color(tokens.palette.text_secondary),
+                                )
                                 .frame(false),
-                        ).clicked() {
+                            )
+                            .clicked()
+                        {
                             self.search_active = true;
                             self.search_query = String::new();
                         }
                     } else {
                         ui.add_sized(
                             [120.0, 32.0],
-                            egui::TextEdit::singleline(&mut self.search_query)
-                                .hint_text("Search…"),
+                            egui::TextEdit::singleline(&mut self.search_query).hint_text("Search…"),
                         );
-                        if ui.add_sized(
-                            [28.0, 28.0],
-                            egui::Button::new(RichText::new("✕").size(12.0).color(tokens.palette.text_disabled))
+                        if ui
+                            .add_sized(
+                                [28.0, 28.0],
+                                egui::Button::new(
+                                    RichText::new("✕")
+                                        .size(12.0)
+                                        .color(tokens.palette.text_disabled),
+                                )
                                 .frame(false),
-                        ).clicked() {
+                            )
+                            .clicked()
+                        {
                             self.search_query.clear();
                             self.search_active = false;
                             self.search_results.clear();
@@ -304,138 +321,131 @@ impl ChatPage {
                         }
                     }
 
-                    ui.with_layout(
-                        egui::Layout::right_to_left(egui::Align::Center),
-                        |ui| {
-                            // Safety number
-                            let shield_col = if self.show_safety {
-                                tokens.palette.accent
-                            } else {
-                                tokens.palette.text_secondary
-                            };
-                            if ui
-                                .add_sized(
-                                    [40.0, 40.0],
-                                    egui::Button::new(
-                                        RichText::new("🔒")
-                                            .size(16.0)
-                                            .color(shield_col),
-                                    )
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        // Safety number
+                        let shield_col = if self.show_safety {
+                            tokens.palette.accent
+                        } else {
+                            tokens.palette.text_secondary
+                        };
+                        if ui
+                            .add_sized(
+                                [40.0, 40.0],
+                                egui::Button::new(RichText::new("🔒").size(16.0).color(shield_col))
                                     .frame(false),
-                                )
-                                .clicked()
-                            {
-                                self.show_safety = !self.show_safety;
-                                if self.show_safety {
-                                    if let Some(cid) = &state.open_chat.clone() {
-                                        let (num, verified) =
-                                            rt.block_on(state.daemon.get_safety_number(cid));
-                                        self.safety_number = num;
-                                        self.safety_verified = verified;
-                                    }
+                            )
+                            .clicked()
+                        {
+                            self.show_safety = !self.show_safety;
+                            if self.show_safety {
+                                if let Some(cid) = &state.open_chat.clone() {
+                                    let (num, verified) =
+                                        rt.block_on(state.daemon.get_safety_number(cid));
+                                    self.safety_number = num;
+                                    self.safety_verified = verified;
                                 }
                             }
+                        }
 
-                            // Settings gear
-                            let gear_col = if self.show_settings {
-                                tokens.palette.accent
-                            } else {
-                                tokens.palette.text_secondary
-                            };
-                            if ui
-                                .add_sized(
-                                    [40.0, 40.0],
-                                    egui::Button::new(
-                                        RichText::new("⚙")
-                                            .size(18.0)
-                                            .color(gear_col),
-                                    )
+                        // Settings gear
+                        let gear_col = if self.show_settings {
+                            tokens.palette.accent
+                        } else {
+                            tokens.palette.text_secondary
+                        };
+                        if ui
+                            .add_sized(
+                                [40.0, 40.0],
+                                egui::Button::new(RichText::new("⚙").size(18.0).color(gear_col))
                                     .frame(false),
-                                )
-                                .clicked()
-                            {
-                                self.show_settings = !self.show_settings;
-                            }
+                            )
+                            .clicked()
+                        {
+                            self.show_settings = !self.show_settings;
+                        }
 
-                            // Call controls
-                            match &call_state {
-                                CallState::Active { .. } => {
-                                    if ui
-                                        .add_sized(
-                                            [40.0, 40.0],
-                                            egui::Button::new("📵")
-                                                .fill(tokens.palette.error)
-                                                .rounding(20.0),
+                        // Call controls
+                        match &call_state {
+                            CallState::Active { .. } => {
+                                if ui
+                                    .add_sized(
+                                        [40.0, 40.0],
+                                        egui::Button::new("📵")
+                                            .fill(tokens.palette.error)
+                                            .rounding(20.0),
+                                    )
+                                    .clicked()
+                                {
+                                    rt.block_on(self.call_manager.end_call());
+                                    self.call_start_ts = None;
+                                }
+                            }
+                            CallState::Outgoing { .. } => {
+                                ui.label(
+                                    RichText::new("Calling…")
+                                        .color(tokens.palette.text_secondary)
+                                        .size(13.0),
+                                );
+                                if ui
+                                    .add_sized(
+                                        [60.0, 36.0],
+                                        egui::Button::new(
+                                            RichText::new("Cancel")
+                                                .color(tokens.palette.text_primary),
                                         )
-                                        .clicked()
-                                    {
-                                        rt.block_on(self.call_manager.end_call());
-                                        self.call_start_ts = None;
-                                    }
+                                        .fill(tokens.palette.surface)
+                                        .rounding(tokens.spacing.button_rounding),
+                                    )
+                                    .clicked()
+                                {
+                                    rt.block_on(self.call_manager.end_call());
+                                    self.call_start_ts = None;
                                 }
-                                CallState::Outgoing { .. } => {
-                                    ui.label(
-                                        RichText::new("Calling…")
-                                            .color(tokens.palette.text_secondary)
-                                            .size(13.0),
-                                    );
-                                    if ui
-                                        .add_sized(
-                                            [60.0, 36.0],
-                                            egui::Button::new(
-                                                RichText::new("Cancel")
-                                                    .color(tokens.palette.text_primary),
-                                            )
+                            }
+                            _ => {
+                                if ui
+                                    .add_sized(
+                                        [40.0, 40.0],
+                                        egui::Button::new("📹")
                                             .fill(tokens.palette.surface)
-                                            .rounding(tokens.spacing.button_rounding),
-                                        )
-                                        .clicked()
-                                    {
-                                        rt.block_on(self.call_manager.end_call());
+                                            .rounding(20.0),
+                                    )
+                                    .clicked()
+                                {
+                                    if let Some(cid) = &state.open_chat.clone() {
+                                        let media = self.make_capture(true);
+                                        let _ = rt.block_on(self.call_manager.start_call(
+                                            cid.clone(),
+                                            true,
+                                            media,
+                                            crate::call_caps::call_kbps(),
+                                        ));
                                         self.call_start_ts = None;
                                     }
                                 }
-                                _ => {
-                                    if ui
-                                        .add_sized(
-                                            [40.0, 40.0],
-                                            egui::Button::new("📹")
-                                                .fill(tokens.palette.surface)
-                                                .rounding(20.0),
-                                        )
-                                        .clicked()
-                                    {
-                                        if let Some(cid) = &state.open_chat.clone() {
-                                            let media = self.make_capture(true);
-                                            let _ = rt.block_on(
-                                                self.call_manager
-                                                    .start_call(cid.clone(), true, media, crate::call_caps::call_kbps()),
-                                            );
-                                            self.call_start_ts = None;
-                                        }
-                                    }
-                                    if ui
-                                        .add_sized(
-                                            [40.0, 40.0],
-                                            egui::Button::new("📞")
-                                                .fill(tokens.palette.surface)
-                                                .rounding(20.0),
-                                        )
-                                        .clicked()
-                                    {
-                                        if let Some(cid) = &state.open_chat.clone() {
-                                            let media = self.make_capture(false);
-                                            let _ = rt.block_on(
-                                                self.call_manager
-                                                    .start_call(cid.clone(), false, media, crate::call_caps::call_kbps()),
-                                            );
-                                            self.call_start_ts = None;
-                                        }
+                                if ui
+                                    .add_sized(
+                                        [40.0, 40.0],
+                                        egui::Button::new("📞")
+                                            .fill(tokens.palette.surface)
+                                            .rounding(20.0),
+                                    )
+                                    .clicked()
+                                {
+                                    if let Some(cid) = &state.open_chat.clone() {
+                                        let media = self.make_capture(false);
+                                        let _ = rt.block_on(self.call_manager.start_call(
+                                            cid.clone(),
+                                            false,
+                                            media,
+                                            crate::call_caps::call_kbps(),
+                                        ));
+                                        self.call_start_ts = None;
                                     }
                                 }
                             }
-                        },
-                    );
+                        }
+                    });
                 });
             });
 
@@ -472,8 +482,7 @@ impl ChatPage {
                             };
                             let (rect, resp) =
                                 ui.allocate_exact_size(Vec2::splat(32.0), egui::Sense::click());
-                            ui.painter()
-                                .rect_filled(rect, 8.0, *color);
+                            ui.painter().rect_filled(rect, 8.0, *color);
                             ui.painter().rect_stroke(rect, 8.0, stroke);
                             if resp.hovered() {
                                 ui.painter().rect_stroke(
@@ -483,8 +492,7 @@ impl ChatPage {
                                 );
                             }
                             if resp.clicked() {
-                                self.pending_color_save =
-                                    Some((contact_id.clone(), *color));
+                                self.pending_color_save = Some((contact_id.clone(), *color));
                             }
                             resp.on_hover_text(*label);
                         }
@@ -500,8 +508,7 @@ impl ChatPage {
                     );
                     ui.add_space(tokens.spacing.xxs);
                     ui.horizontal(|ui| {
-                        let preview_color =
-                            inbound_color.unwrap_or(DEFAULT_INBOUND_COLOR);
+                        let preview_color = inbound_color.unwrap_or(DEFAULT_INBOUND_COLOR);
                         let avail = ui.available_width();
                         // Inbound preview
                         let (r, _) = ui.allocate_exact_size(
@@ -522,8 +529,7 @@ impl ChatPage {
                             Vec2::new(avail * 0.4, 28.0),
                             egui::Sense::hover(),
                         );
-                        ui.painter()
-                            .rect_filled(r2, 10.0, DEFAULT_OUTBOUND_COLOR);
+                        ui.painter().rect_filled(r2, 10.0, DEFAULT_OUTBOUND_COLOR);
                         ui.painter().text(
                             r2.center(),
                             egui::Align2::CENTER_CENTER,
@@ -552,21 +558,17 @@ impl ChatPage {
                     ui.add_space(tokens.spacing.xs);
                     if self.safety_number.is_empty() {
                         ui.label(
-                            RichText::new(
-                                "No verified identity yet — establish a session first.",
-                            )
-                            .size(13.0)
-                            .color(tokens.palette.text_disabled),
+                            RichText::new("No verified identity yet — establish a session first.")
+                                .size(13.0)
+                                .color(tokens.palette.text_disabled),
                         );
                     } else {
-                        ui.add(
-                            egui::Label::new(
-                                RichText::new(&self.safety_number)
-                                    .monospace()
-                                    .size(18.0)
-                                    .color(tokens.palette.text_primary),
-                            ),
-                        );
+                        ui.add(egui::Label::new(
+                            RichText::new(&self.safety_number)
+                                .monospace()
+                                .size(18.0)
+                                .color(tokens.palette.text_primary),
+                        ));
                         ui.add_space(tokens.spacing.xxs);
                         ui.horizontal(|ui| {
                             if self.safety_verified {
@@ -607,7 +609,7 @@ impl ChatPage {
             )
             .show_inside(ui, |ui| {
                 if self.show_file_input {
-                design::card_frame(&tokens).show(ui, |ui| {
+                    design::card_frame(&tokens).show(ui, |ui| {
                         ui.horizontal(|ui| {
                             ui.label(RichText::new("📁").size(16.0));
                             let input_frame = design::input_frame(&tokens);
@@ -660,12 +662,8 @@ impl ChatPage {
                     if ui
                         .add_sized(
                             [40.0, 40.0],
-                            egui::Button::new(
-                                RichText::new("📎")
-                                    .size(18.0)
-                                    .color(attach_col),
-                            )
-                            .frame(false),
+                            egui::Button::new(RichText::new("📎").size(18.0).color(attach_col))
+                                .frame(false),
                         )
                         .clicked()
                     {
@@ -685,7 +683,8 @@ impl ChatPage {
                     let input_frame = design::input_frame(&tokens);
                     // The frame's padding and border and the text box's own margin (8 each side) sit outside the
                     // text width, so take them off or the row overflows and the send button is cut off.
-                    let chrome = input_frame.inner_margin.sum().x + 2.0 * input_frame.stroke.width + 16.0;
+                    let chrome =
+                        input_frame.inner_margin.sum().x + 2.0 * input_frame.stroke.width + 16.0;
                     let input_resp = input_frame
                         .show(ui, |ui| {
                             ui.add(
@@ -710,7 +709,9 @@ impl ChatPage {
                             // Fire and forget: the indicator must never hold up typing.
                             let d = state.daemon.clone();
                             let cid = contact_id.clone();
-                            tokio::runtime::Handle::current().spawn(async move { d.send_typing(&cid, true).await; });
+                            tokio::runtime::Handle::current().spawn(async move {
+                                d.send_typing(&cid, true).await;
+                            });
                         }
                     }
 
@@ -781,13 +782,11 @@ impl ChatPage {
                         match &mut self.remote_video_texture {
                             Some(tex) => tex.set(color_image, TextureOptions::LINEAR),
                             None => {
-                                self.remote_video_texture = Some(
-                                    ui.ctx().load_texture(
-                                        "remote_video",
-                                        color_image,
-                                        TextureOptions::LINEAR,
-                                    ),
-                                );
+                                self.remote_video_texture = Some(ui.ctx().load_texture(
+                                    "remote_video",
+                                    color_image,
+                                    TextureOptions::LINEAR,
+                                ));
                             }
                         }
                     }
@@ -843,15 +842,20 @@ impl ChatPage {
                         if self.last_search_query != self.search_query {
                             self.last_search_query = self.search_query.clone();
                             let rt = tokio::runtime::Handle::current();
-                            self.search_results =
-                                rt.block_on(state.daemon.search_messages(&contact_id, &self.search_query));
+                            self.search_results = rt.block_on(
+                                state
+                                    .daemon
+                                    .search_messages(&contact_id, &self.search_query),
+                            );
                         }
                         Box::new(self.search_results.iter())
                     };
                     let mut pending_actions = Vec::new();
                     for msg in iter {
                         let msgs = self.messages.clone();
-                        if let Some(action) = message_bubble(ui, msg, bubble_max_w, inbound_color, &msgs) {
+                        if let Some(action) =
+                            message_bubble(ui, msg, bubble_max_w, inbound_color, &msgs)
+                        {
                             pending_actions.push(action);
                         }
                         ui.add_space(tokens.spacing.xxs);
@@ -864,9 +868,16 @@ impl ChatPage {
                             crate::widgets::message_bubble::BubbleAction::Reply(id) => {
                                 self.replying_to = Some(id);
                             }
-                            crate::widgets::message_bubble::BubbleAction::React { msg_id, emoji } => {
+                            crate::widgets::message_bubble::BubbleAction::React {
+                                msg_id,
+                                emoji,
+                            } => {
                                 let rt = tokio::runtime::Handle::current();
-                                rt.block_on(state.daemon.toggle_reaction(&contact_id, &msg_id, &emoji));
+                                rt.block_on(state.daemon.toggle_reaction(
+                                    &contact_id,
+                                    &msg_id,
+                                    &emoji,
+                                ));
                                 let all = rt.block_on(state.daemon.get_messages(&contact_id));
                                 self.messages = all;
                                 self.seen_ids.clear();
@@ -909,52 +920,43 @@ impl ChatPage {
 
         design::card_frame(tokens).show(ui, |ui| {
             ui.horizontal(|ui| {
-                ui.label(
-                    RichText::new("●")
-                        .color(tokens.palette.success)
-                        .size(12.0),
-                );
+                ui.label(RichText::new("●").color(tokens.palette.success).size(12.0));
                 ui.label(
                     RichText::new(format!("Call in progress  {duration}"))
                         .color(tokens.palette.text_primary)
                         .size(13.0),
                 );
 
-                ui.with_layout(
-                    egui::Layout::right_to_left(egui::Align::Center),
-                    |ui| {
-                        if ui
-                            .add_sized(
-                                [32.0, 32.0],
-                                egui::Button::new("📵")
-                                    .fill(tokens.palette.error)
-                                    .rounding(16.0),
-                            )
-                            .clicked()
-                        {
-                            rt.block_on(self.call_manager.end_call());
-                            self.call_start_ts = None;
-                        }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .add_sized(
+                            [32.0, 32.0],
+                            egui::Button::new("📵")
+                                .fill(tokens.palette.error)
+                                .rounding(16.0),
+                        )
+                        .clicked()
+                    {
+                        rt.block_on(self.call_manager.end_call());
+                        self.call_start_ts = None;
+                    }
 
-                        let mute_lbl = if self.muted { "🔇" } else { "🔊" };
-                        let mute_col = if self.muted {
-                            tokens.palette.error
-                        } else {
-                            tokens.palette.surface
-                        };
-                        if ui
-                            .add_sized(
-                                [32.0, 32.0],
-                                egui::Button::new(mute_lbl)
-                                    .fill(mute_col)
-                                    .rounding(16.0),
-                            )
-                            .clicked()
-                        {
-                            self.muted = !self.muted;
-                        }
-                    },
-                );
+                    let mute_lbl = if self.muted { "🔇" } else { "🔊" };
+                    let mute_col = if self.muted {
+                        tokens.palette.error
+                    } else {
+                        tokens.palette.surface
+                    };
+                    if ui
+                        .add_sized(
+                            [32.0, 32.0],
+                            egui::Button::new(mute_lbl).fill(mute_col).rounding(16.0),
+                        )
+                        .clicked()
+                    {
+                        self.muted = !self.muted;
+                    }
+                });
             });
         });
         ui.add_space(tokens.spacing.sm);
@@ -1038,7 +1040,13 @@ impl ChatPage {
         }
     }
 
-    fn show_sent(&mut self, state: &mut AppState, cid: String, text: String, result: Result<Message, String>) {
+    fn show_sent(
+        &mut self,
+        state: &mut AppState,
+        cid: String,
+        text: String,
+        result: Result<Message, String>,
+    ) {
         match result {
             Ok(msg) => {
                 state

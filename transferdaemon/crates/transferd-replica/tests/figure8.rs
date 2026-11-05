@@ -5,7 +5,10 @@ use std::collections::{BTreeMap, VecDeque};
 use transferd_replica::raft::{Entry, HardState, Msg, NodeId, Raft, Role};
 
 fn e(term: u64, data: &str) -> Entry {
-    Entry { term, data: data.as_bytes().to_vec() }
+    Entry {
+        term,
+        data: data.as_bytes().to_vec(),
+    }
 }
 
 struct Net {
@@ -65,11 +68,24 @@ impl Net {
 fn an_old_term_entry_is_not_committed_by_counting_replicas() {
     let ids: Vec<NodeId> = (1..=5).collect();
     let mk = |id: NodeId, term: u64, log: Vec<Entry>| {
-        let mut r = Raft::new(id, ids.clone(), HardState { term, voted_for: None }, log, id);
+        let mut r = Raft::new(
+            id,
+            ids.clone(),
+            HardState {
+                term,
+                voted_for: None,
+            },
+            log,
+            id,
+        );
         r.max_batch = 1;
         r
     };
-    let mut net = Net { nodes: BTreeMap::new(), q: VecDeque::new(), applied: BTreeMap::new() };
+    let mut net = Net {
+        nodes: BTreeMap::new(),
+        q: VecDeque::new(),
+        applied: BTreeMap::new(),
+    };
     // S1 wrote "A" at index 2 when it led term 2; S5 wrote "B" there when it led term 3; nobody else has either
     net.nodes.insert(1, mk(1, 3, vec![e(1, "init"), e(2, "A")]));
     for id in 2..=4 {
@@ -87,10 +103,24 @@ fn an_old_term_entry_is_not_committed_by_counting_replicas() {
             return None;
         }
         match m {
-            Msg::Append { term, prev_index, prev_term, mut entries, commit, read_seq } => {
+            Msg::Append {
+                term,
+                prev_index,
+                prev_term,
+                mut entries,
+                commit,
+                read_seq,
+            } => {
                 let keep = 2u64.saturating_sub(prev_index) as usize;
                 entries.truncate(keep);
-                Some(Msg::Append { term, prev_index, prev_term, entries, commit, read_seq })
+                Some(Msg::Append {
+                    term,
+                    prev_index,
+                    prev_term,
+                    entries,
+                    commit,
+                    read_seq,
+                })
             }
             other => Some(other),
         }
@@ -103,9 +133,24 @@ fn an_old_term_entry_is_not_committed_by_counting_replicas() {
         net.collect(1);
         net.deliver_map(s1_phase);
     }
-    assert!(net.nodes[&2].entries_from(2).first().is_some_and(|x| x.data == b"A"), "S2 holds A");
-    assert!(net.nodes[&3].entries_from(2).first().is_some_and(|x| x.data == b"A"), "S3 holds A");
-    assert!(net.nodes[&2].last_index() == 2 && net.nodes[&3].last_index() == 2, "and nothing from term 4");
+    assert!(
+        net.nodes[&2]
+            .entries_from(2)
+            .first()
+            .is_some_and(|x| x.data == b"A"),
+        "S2 holds A"
+    );
+    assert!(
+        net.nodes[&3]
+            .entries_from(2)
+            .first()
+            .is_some_and(|x| x.data == b"A"),
+        "S3 holds A"
+    );
+    assert!(
+        net.nodes[&2].last_index() == 2 && net.nodes[&3].last_index() == 2,
+        "and nothing from term 4"
+    );
     let s1_commit = net.nodes[&1].commit;
     // S1 crashes
     net.nodes.remove(&1);
@@ -128,11 +173,23 @@ fn an_old_term_entry_is_not_committed_by_counting_replicas() {
         net.deliver(|_, _, _| true);
     }
     assert_eq!(net.nodes[&5].role, Role::Leader, "S5 leads term 5");
-    let others_at_2: Vec<_> = [2, 3, 4, 5].iter().filter_map(|id| net.applied.get(id).and_then(|a| a.get(&2))).collect();
-    assert!(others_at_2.iter().all(|d| d.as_slice() == b"B"), "the term-5 leader's entry is what everyone applied at 2");
+    let others_at_2: Vec<_> = [2, 3, 4, 5]
+        .iter()
+        .filter_map(|id| net.applied.get(id).and_then(|a| a.get(&2)))
+        .collect();
+    assert!(
+        others_at_2.iter().all(|d| d.as_slice() == b"B"),
+        "the term-5 leader's entry is what everyone applied at 2"
+    );
     // the point: S1 must not have treated "A" as committed (else it would disagree with everyone forever)
-    assert!(s1_commit < 2, "S1 committed index 2 (an entry from term 2) by counting replicas: commit = {s1_commit}");
+    assert!(
+        s1_commit < 2,
+        "S1 committed index 2 (an entry from term 2) by counting replicas: commit = {s1_commit}"
+    );
     if let Some(a) = net.applied.get(&1).and_then(|a| a.get(&2)) {
-        panic!("S1 applied {:?} at index 2 while the cluster applied B", String::from_utf8_lossy(a));
+        panic!(
+            "S1 applied {:?} at index 2 while the cluster applied B",
+            String::from_utf8_lossy(a)
+        );
     }
 }

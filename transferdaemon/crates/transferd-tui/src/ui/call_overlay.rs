@@ -26,25 +26,51 @@ fn render_audio_call(f: &mut Frame, cs: &CallState) {
     let h = elapsed / 3600;
     let m = (elapsed % 3600) / 60;
     let s = elapsed % 60;
-    let duration = if h > 0 { format!("{h:02}:{m:02}:{s:02}") } else { format!("{m:02}:{s:02}") };
-    let mute_label = if cs.muted { "Muted  [M] unmute" } else { "[M] Mute" };
+    let duration = if h > 0 {
+        format!("{h:02}:{m:02}:{s:02}")
+    } else {
+        format!("{m:02}:{s:02}")
+    };
+    let mute_label = if cs.muted {
+        "Muted  [M] unmute"
+    } else {
+        "[M] Mute"
+    };
 
     let lines = vec![
         Line::from(Span::styled(
             format!("📞 {}", cs.contact_name),
-            Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
         )),
-        Line::from(Span::styled(duration, Style::default().fg(Color::Green).add_modifier(Modifier::BOLD))),
+        Line::from(Span::styled(
+            duration,
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        )),
         Line::from(""),
         Line::from(Span::styled(mute_label, Style::default().fg(Color::Yellow))),
-        Line::from(Span::styled("[H] Hang Up", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD))),
-        Line::from(Span::styled("[Ctrl+V] Video", Style::default().fg(Color::Cyan))),
+        Line::from(Span::styled(
+            "[H] Hang Up",
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        )),
+        Line::from(Span::styled(
+            "[Ctrl+V] Video",
+            Style::default().fg(Color::Cyan),
+        )),
     ];
 
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Green))
-        .title(Span::styled(" Call ", Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)));
+        .title(Span::styled(
+            " Call ",
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        ));
     f.render_widget(Paragraph::new(lines).block(block), area);
 }
 
@@ -67,12 +93,22 @@ fn render_video_call(f: &mut Frame, cs: &mut CallState) {
     let mute_label = if cs.muted { "Muted" } else { "Live" };
     let elapsed = cs.started_at.elapsed().as_secs();
     let controls = Line::from(vec![
-        Span::styled(format!(" {:02}:{:02} ", elapsed / 60, elapsed % 60),
-            Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)),
-        Span::styled(format!("  {mute_label}  "), Style::default().fg(Color::Yellow)),
+        Span::styled(
+            format!(" {:02}:{:02} ", elapsed / 60, elapsed % 60),
+            Style::default()
+                .fg(Color::Green)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!("  {mute_label}  "),
+            Style::default().fg(Color::Yellow),
+        ),
         Span::styled("[M] mute  ", Style::default().fg(Color::DarkGray)),
         Span::styled("[V] hide video  ", Style::default().fg(Color::DarkGray)),
-        Span::styled("[H] hang up", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+        Span::styled(
+            "[H] hang up",
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        ),
     ]);
     let ctrl_block = Block::default()
         .borders(Borders::TOP)

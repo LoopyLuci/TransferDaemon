@@ -6,9 +6,9 @@
 //! - `TestAssertions`: custom assertion helpers
 //! - `TestPort`: random port allocation
 
+pub mod assertions;
 pub mod daemon;
 pub mod fixtures;
-pub mod assertions;
 
 /// Re-export key types for convenience.
 pub use daemon::TestDaemon;

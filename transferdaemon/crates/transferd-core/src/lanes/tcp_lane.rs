@@ -27,14 +27,14 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{mpsc, Mutex};
 use transferd_crypto::{DmiDecryptor, DmiEncryptor};
 
-const HEADER_LEN: usize = 4;      // u32 BE frame length prefix
-const TYPE_LEN: usize   = 1;
-const NONCE_LEN: usize  = 12;
-const TAG_LEN: usize    = 16;
-const OVERHEAD: usize   = NONCE_LEN + TAG_LEN; // 28 bytes of crypto overhead per DATA frame
+const HEADER_LEN: usize = 4; // u32 BE frame length prefix
+const TYPE_LEN: usize = 1;
+const NONCE_LEN: usize = 12;
+const TAG_LEN: usize = 16;
+const OVERHEAD: usize = NONCE_LEN + TAG_LEN; // 28 bytes of crypto overhead per DATA frame
 
 const TYPE_DATA: u8 = 0;
-const TYPE_ACK: u8  = 1;
+const TYPE_ACK: u8 = 1;
 const TYPE_PING: u8 = 2;
 const TYPE_PONG: u8 = 3;
 
@@ -73,7 +73,10 @@ impl TcpLane {
         let listener = TcpListener::bind(bind_addr).await?;
         let local_addr = listener.local_addr()?;
         let (stream, _peer) = listener.accept().await?;
-        Ok((local_addr, Self::from_stream(id, stream, send_key, recv_key)?))
+        Ok((
+            local_addr,
+            Self::from_stream(id, stream, send_key, recv_key)?,
+        ))
     }
 
     pub fn from_stream(
@@ -88,7 +91,7 @@ impl TcpLane {
         let metrics = Arc::new(LaneMetrics::default());
         // Conservative defaults; updated by the LaneHealthMonitor in production.
         metrics.bandwidth_bps.store(100_000_000, Ordering::Relaxed); // 100 Mbps
-        metrics.rtt_ms.store(5_000, Ordering::Relaxed);              // 5 ms (stored as µs×1000)
+        metrics.rtt_ms.store(5_000, Ordering::Relaxed); // 5 ms (stored as µs×1000)
 
         let (reader, writer) = stream.into_split();
         let writer = Arc::new(Mutex::new(writer));
@@ -133,15 +136,26 @@ impl TcpLane {
 
 #[async_trait]
 impl TransportLane for TcpLane {
-    fn id(&self) -> u32 { self.id }
-    fn metrics(&self) -> Arc<LaneMetrics> { self.metrics.clone() }
-    fn capacity(&self) -> usize { if self.alive.load(Ordering::Relaxed) { 64 } else { 0 } }
-    fn is_alive(&self) -> bool { self.alive.load(Ordering::Relaxed) }
+    fn id(&self) -> u32 {
+        self.id
+    }
+    fn metrics(&self) -> Arc<LaneMetrics> {
+        self.metrics.clone()
+    }
+    fn capacity(&self) -> usize {
+        if self.alive.load(Ordering::Relaxed) {
+            64
+        } else {
+            0
+        }
+    }
+    fn is_alive(&self) -> bool {
+        self.alive.load(Ordering::Relaxed)
+    }
 
     async fn send(&self, chunk: Chunk) -> Result<(), TransportError> {
         let wire = WireChunk::from(&chunk);
-        let plaintext = bincode::serialize(&wire)
-            .map_err(|_| TransportError::ProtocolViolation)?;
+        let plaintext = bincode::serialize(&wire).map_err(|_| TransportError::ProtocolViolation)?;
 
         let gsn = chunk.gsn.0;
         let nonce = DmiEncryptor::nonce_for(gsn, chunk.key_epoch);
@@ -240,7 +254,9 @@ async fn recv_task(
         }
 
         let mut body = vec![0u8; frame_len];
-        if reader.read_exact(&mut body).await.is_err() { break; }
+        if reader.read_exact(&mut body).await.is_err() {
+            break;
+        }
 
         let frame_type = body[0];
         let payload = &body[1..];
@@ -251,8 +267,12 @@ async fn recv_task(
                     metrics.record_error(10);
                     continue;
                 }
-                let Ok(nonce) = <[u8; NONCE_LEN]>::try_from(&payload[..NONCE_LEN]) else { continue };
-                let Ok(gcm_tag) = <[u8; TAG_LEN]>::try_from(&payload[NONCE_LEN..OVERHEAD]) else { continue };
+                let Ok(nonce) = <[u8; NONCE_LEN]>::try_from(&payload[..NONCE_LEN]) else {
+                    continue;
+                };
+                let Ok(gcm_tag) = <[u8; TAG_LEN]>::try_from(&payload[NONCE_LEN..OVERHEAD]) else {
+                    continue;
+                };
                 let mut ct = payload[OVERHEAD..].to_vec();
 
                 let aad = (ct.len() as u64).to_le_bytes();
@@ -264,7 +284,9 @@ async fn recv_task(
                     metrics.record_error(10);
                     continue;
                 }
-                let Ok(wire) = bincode::deserialize::<WireChunk>(&ct) else { continue };
+                let Ok(wire) = bincode::deserialize::<WireChunk>(&ct) else {
+                    continue;
+                };
                 let chunk = Chunk::from(wire);
 
                 // Auto-ack so the peer can free its in-flight budget.
@@ -291,7 +313,13 @@ async fn recv_task(
             }
             TYPE_PING => {
                 // Echo back as PONG.
-                if writer.lock().await.write_all(&build_frame(TYPE_PONG, payload)).await.is_err() {
+                if writer
+                    .lock()
+                    .await
+                    .write_all(&build_frame(TYPE_PONG, payload))
+                    .await
+                    .is_err()
+                {
                     break;
                 }
             }
@@ -303,7 +331,9 @@ async fn recv_task(
                     let _ = control_tx.try_send(ControlMsg::Pong { nonce, sent_ts });
                 }
             }
-            _ => { metrics.record_error(10); }
+            _ => {
+                metrics.record_error(10);
+            }
         }
     }
     alive.store(false, Ordering::Relaxed);

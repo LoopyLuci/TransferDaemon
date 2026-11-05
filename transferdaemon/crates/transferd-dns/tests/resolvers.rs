@@ -62,11 +62,16 @@ async fn the_mesh_forwarder_is_asked_like_a_plain_resolver_and_named_as_mesh() {
         return;
     };
     let client = Client::new(Config {
-        resolvers: vec![Resolver::Mesh { addr: server.addr() }],
+        resolvers: vec![Resolver::Mesh {
+            addr: server.addr(),
+        }],
         require_validated: false,
         timeout: Duration::from_millis(1500),
     });
-    let r = client.lookup(NAME, 443).await.expect("the forwarder answers");
+    let r = client
+        .lookup(NAME, 443)
+        .await
+        .expect("the forwarder answers");
     assert_eq!(r.resolver, "mesh");
     assert!(r.validated, "AD from the resolver behind it is passed on");
 }

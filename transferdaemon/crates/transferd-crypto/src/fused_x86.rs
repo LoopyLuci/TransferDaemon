@@ -72,7 +72,11 @@ impl DmiEncryptor {
         epoch: u8,
         aad: &[u8],
     ) -> EncryptResult {
-        assert_eq!(plaintext.len(), dst.len(), "dst must match plaintext length");
+        assert_eq!(
+            plaintext.len(),
+            dst.len(),
+            "dst must match plaintext length"
+        );
 
         self.hasher.reset();
         let nonce_bytes = Self::nonce_for(gsn, epoch);
@@ -117,7 +121,9 @@ impl DmiEncryptor {
         aad: &[u8],
     ) -> Result<[u8; 16], aes_gcm::Error> {
         let nonce = Nonce::from_slice(nonce);
-        let tag = self.cipher.encrypt_in_place_detached(nonce, aad, buf.as_mut_slice())?;
+        let tag = self
+            .cipher
+            .encrypt_in_place_detached(nonce, aad, buf.as_mut_slice())?;
         Ok(tag.into())
     }
 
@@ -134,7 +140,7 @@ impl DmiEncryptor {
                 let src = buf.as_ptr().add(i) as *const __m256i;
                 let dst = buf.as_ptr().add(i) as *mut __m256i;
                 let v = _mm256_load_si256(src); // aligned load
-                _mm256_stream_si256(dst, v);    // non-temporal store
+                _mm256_stream_si256(dst, v); // non-temporal store
                 i += 32;
             }
             _mm_sfence(); // ensure all NT stores are globally visible
@@ -165,7 +171,10 @@ impl DmiDecryptor {
         let aes_key = Key::<Aes256Gcm>::from_slice(key);
         let mut _key_bytes = Zeroizing::new([0u8; 32]);
         _key_bytes.copy_from_slice(key);
-        Self { cipher: Aes256Gcm::new(aes_key), _key_bytes }
+        Self {
+            cipher: Aes256Gcm::new(aes_key),
+            _key_bytes,
+        }
     }
 
     /// Decrypts `ciphertext` in-place and verifies the GCM tag.
@@ -186,4 +195,3 @@ impl DmiDecryptor {
         Ok(hash)
     }
 }
-

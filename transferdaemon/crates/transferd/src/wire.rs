@@ -17,27 +17,27 @@ pub enum WireMsg {
     /// group id and uses `sender` as the author).
     /// `reply_to` references another message id in the same thread.
     Text {
-        sender:   String,
-        msg_id:   String,
-        text:     String,
-        ts:       u64,
+        sender: String,
+        msg_id: String,
+        text: String,
+        ts: u64,
         group_id: Option<String>,
         reply_to: Option<String>,
     },
     /// File transfer chunk. `msg_id` is the sender's message/transfer id and is
     /// used for delivery acks; `seq`/`total_chunks` reassemble the file.
     File {
-        sender:       String,
-        msg_id:       String,
-        file_name:    String,
-        file_size:    u64,
-        mime:         String,
-        ts:           u64,
+        sender: String,
+        msg_id: String,
+        file_name: String,
+        file_size: u64,
+        mime: String,
+        ts: u64,
         /// 0-based sequence of this chunk within the file.
-        seq:          u32,
+        seq: u32,
         /// Total number of chunks in the transfer (last chunk carries `seq + 1 == total`).
         total_chunks: u32,
-        data:         Vec<u8>,
+        data: Vec<u8>,
     },
     /// Delivery acknowledgment for a previously sent message.
     Ack { msg_id: String },
@@ -48,7 +48,11 @@ pub enum WireMsg {
     Typing { sender: String, is_typing: bool },
     /// Toggle an emoji reaction on a previously received message.
     /// `target_msg_id` is the id of the message in the same thread.
-    Reaction { sender: String, target_msg_id: String, emoji: String },
+    Reaction {
+        sender: String,
+        target_msg_id: String,
+        emoji: String,
+    },
 }
 
 impl WireMsg {

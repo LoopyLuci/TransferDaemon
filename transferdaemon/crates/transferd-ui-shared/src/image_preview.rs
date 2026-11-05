@@ -43,9 +43,7 @@ pub fn received_path(file_name: &str) -> PathBuf {
 pub fn is_image(mime: Option<&str>, name: &str) -> bool {
     let name = name.to_lowercase();
     let by_mime = mime.map(|m| m.starts_with("image/")).unwrap_or(false);
-    let by_ext = name.ends_with(".png")
-        || name.ends_with(".jpg")
-        || name.ends_with(".jpeg");
+    let by_ext = name.ends_with(".png") || name.ends_with(".jpg") || name.ends_with(".jpeg");
     by_mime || by_ext
 }
 
@@ -71,19 +69,12 @@ pub fn thumbnail(ui: &Ui, path: &PathBuf) -> Option<TextureHandle> {
     } else {
         (w, h)
     };
-    let resized = image::imageops::resize(
-        &img,
-        nw,
-        nh,
-        image::imageops::FilterType::Triangle,
-    );
+    let resized = image::imageops::resize(&img, nw, nh, image::imageops::FilterType::Triangle);
 
     let color = ColorImage::from_rgba_unmultiplied([nw as usize, nh as usize], resized.as_raw());
-    let texture = ui.ctx().load_texture(
-        format!("media-{:?}", path),
-        color,
-        TextureOptions::LINEAR,
-    );
+    let texture = ui
+        .ctx()
+        .load_texture(format!("media-{:?}", path), color, TextureOptions::LINEAR);
 
     {
         let mut guard = cache().lock().unwrap_or_else(|e| e.into_inner());
@@ -107,13 +98,23 @@ mod tests {
         assert!(!is_image(None, "archive.tar.zst"));
     }
 
-#[test]
+    #[test]
     fn received_path_sanitizes_traversal() {
         let p = received_path("../../etc/passwd");
         // The file component (after the downloads dir) must contain no
         // separators, so a hostile name can never escape the downloads dir.
-        let file = p.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
-        assert!(!file.contains('/') && !file.contains('\\'), "separators removed from name: {file}");
-        assert!(p.starts_with(downloads_dir()), "stays under downloads dir: {}", p.display());
+        let file = p
+            .file_name()
+            .map(|f| f.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        assert!(
+            !file.contains('/') && !file.contains('\\'),
+            "separators removed from name: {file}"
+        );
+        assert!(
+            p.starts_with(downloads_dir()),
+            "stays under downloads dir: {}",
+            p.display()
+        );
     }
 }

@@ -1,9 +1,11 @@
 //! Core relay state: forwarding table, registration, forwarding, TTL pruning.
 
+use crate::ghost::GhostPolicy;
 use crate::limits::{BandwidthTracker, RelayLimits};
 use crate::pow::PowChallenge;
-use crate::ghost::GhostPolicy;
-use crate::protocol::{ErrorCode, ForwardMsg, GhostRegisterMsg, KeepaliveMsg, LocateMsg, LocatedMsg, RegisterMsg};
+use crate::protocol::{
+    ErrorCode, ForwardMsg, GhostRegisterMsg, KeepaliveMsg, LocateMsg, LocatedMsg, RegisterMsg,
+};
 use std::collections::HashMap;
 use std::net::{IpAddr, SocketAddr};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -36,14 +38,14 @@ pub enum RelayError {
 impl RelayError {
     pub fn code(&self) -> ErrorCode {
         match self {
-            Self::InvalidPoW          => ErrorCode::InvalidPoW,
-            Self::TokenNotFound       => ErrorCode::TokenNotFound,
-            Self::PayloadTooLarge     => ErrorCode::PayloadTooLarge,
-            Self::SeqReplay           => ErrorCode::SeqReplay,
-            Self::RateLimited         => ErrorCode::RateLimited,
-            Self::BandwidthExceeded   => ErrorCode::BandwidthExceeded,
-            Self::GhostRequired       => ErrorCode::GhostRequired,
-            Self::GhostRejected(_)    => ErrorCode::GhostRejected,
+            Self::InvalidPoW => ErrorCode::InvalidPoW,
+            Self::TokenNotFound => ErrorCode::TokenNotFound,
+            Self::PayloadTooLarge => ErrorCode::PayloadTooLarge,
+            Self::SeqReplay => ErrorCode::SeqReplay,
+            Self::RateLimited => ErrorCode::RateLimited,
+            Self::BandwidthExceeded => ErrorCode::BandwidthExceeded,
+            Self::GhostRequired => ErrorCode::GhostRequired,
+            Self::GhostRejected(_) => ErrorCode::GhostRejected,
         }
     }
 }
@@ -86,10 +88,20 @@ pub struct Relay {
 
 impl Relay {
     pub fn new(difficulty: u32, ttl_secs: u64, max_payload: usize) -> Self {
-        Self::with_limits(difficulty, ttl_secs, max_payload, RelayLimits::unrestricted())
+        Self::with_limits(
+            difficulty,
+            ttl_secs,
+            max_payload,
+            RelayLimits::unrestricted(),
+        )
     }
 
-    pub fn with_limits(difficulty: u32, ttl_secs: u64, max_payload: usize, limits: RelayLimits) -> Self {
+    pub fn with_limits(
+        difficulty: u32,
+        ttl_secs: u64,
+        max_payload: usize,
+        limits: RelayLimits,
+    ) -> Self {
         let challenge = PowChallenge::new(difficulty, now_secs() + 60);
         Self {
             table: HashMap::new(),
@@ -115,14 +127,24 @@ impl Relay {
     }
 
     /// A registration with a ghost key certificate: checked against the policy, then registered as usual (PoW too).
-    pub fn register_ghost(&mut self, msg: &GhostRegisterMsg, addr: SocketAddr) -> Result<(), RelayError> {
+    pub fn register_ghost(
+        &mut self,
+        msg: &GhostRegisterMsg,
+        addr: SocketAddr,
+    ) -> Result<(), RelayError> {
         let key = self.ghost.admit(msg).map_err(RelayError::GhostRejected)?;
         let now = now_secs();
-        let held = self.table.iter()
-            .filter(|(t, e)| e.ghost == Some(key) && e.expires_at_secs > now && **t != msg.register.session_token)
+        let held = self
+            .table
+            .iter()
+            .filter(|(t, e)| {
+                e.ghost == Some(key) && e.expires_at_secs > now && **t != msg.register.session_token
+            })
             .count();
         if held >= self.ghost.max_sessions_per_key {
-            return Err(RelayError::GhostRejected(format!("this ghost key already holds {held} sessions here")));
+            return Err(RelayError::GhostRejected(format!(
+                "this ghost key already holds {held} sessions here"
+            )));
         }
         self.register_inner(&msg.register, addr, Some(key))
     }
@@ -178,7 +200,12 @@ impl Relay {
         self.register_inner(msg, addr, None)
     }
 
-    fn register_inner(&mut self, msg: &RegisterMsg, addr: SocketAddr, ghost: Option<[u8; 32]>) -> Result<(), RelayError> {
+    fn register_inner(
+        &mut self,
+        msg: &RegisterMsg,
+        addr: SocketAddr,
+        ghost: Option<[u8; 32]>,
+    ) -> Result<(), RelayError> {
         if !self.challenge.verify(&msg.session_token, msg.pow_nonce) {
             return Err(RelayError::InvalidPoW);
         }
@@ -197,13 +224,16 @@ impl Relay {
                 }
             }
             None => {
-                self.table.insert(msg.session_token, Entry {
-                    addr,
-                    expires_at_secs,
-                    last_reg_seq: msg.seq,
-                    bytes_forwarded: 0,
-                    ghost,
-                });
+                self.table.insert(
+                    msg.session_token,
+                    Entry {
+                        addr,
+                        expires_at_secs,
+                        last_reg_seq: msg.seq,
+                        bytes_forwarded: 0,
+                        ghost,
+                    },
+                );
             }
         }
         Ok(())
@@ -228,7 +258,9 @@ impl Relay {
         if !self.challenge.verify(&msg.session_token, msg.pow_nonce) {
             return Err(RelayError::InvalidPoW);
         }
-        let entry = self.table.get_mut(&msg.session_token)
+        let entry = self
+            .table
+            .get_mut(&msg.session_token)
             .ok_or(RelayError::TokenNotFound)?;
         if entry.expires_at_secs <= now_secs() {
             return Err(RelayError::TokenNotFound);
@@ -270,7 +302,11 @@ impl Relay {
     ///
     /// Only a registered token may ask, and only about tokens it already knows — the relay
     /// hands out no more than the two addresses the two nodes would exchange anyway.
-    pub fn locate_answer(&mut self, msg: &LocateMsg, src: SocketAddr) -> Result<LocatedMsg, RelayError> {
+    pub fn locate_answer(
+        &mut self,
+        msg: &LocateMsg,
+        src: SocketAddr,
+    ) -> Result<LocatedMsg, RelayError> {
         if !self.challenge.verify(&msg.self_token, msg.pow_nonce) {
             return Err(RelayError::InvalidPoW);
         }
@@ -286,7 +322,11 @@ impl Relay {
             return Err(RelayError::TokenNotFound);
         }
         let peer_addr = self.locate(&msg.peer_token);
-        Ok(LocatedMsg { self_addr: src, peer_addr, request: msg.seq })
+        Ok(LocatedMsg {
+            self_addr: src,
+            peer_addr,
+            request: msg.seq,
+        })
     }
 
     /// Refreshes the TTL for a registered session.
@@ -294,7 +334,9 @@ impl Relay {
         if !self.challenge.verify(&msg.session_token, msg.pow_nonce) {
             return Err(RelayError::InvalidPoW);
         }
-        let entry = self.table.get_mut(&msg.session_token)
+        let entry = self
+            .table
+            .get_mut(&msg.session_token)
             .ok_or(RelayError::TokenNotFound)?;
         if msg.seq <= entry.last_reg_seq {
             return Err(RelayError::SeqReplay);
@@ -390,7 +432,11 @@ mod tests {
     fn test_register_and_forward() {
         let mut relay = make_relay();
         let t = token(0xAA);
-        let reg = RegisterMsg { session_token: t, pow_nonce: 0, seq: 0 };
+        let reg = RegisterMsg {
+            session_token: t,
+            pow_nonce: 0,
+            seq: 0,
+        };
         relay.register(&reg, addr()).expect("register");
 
         let fwd = ForwardMsg {
@@ -403,7 +449,7 @@ mod tests {
         assert_eq!(dst, addr());
     }
 
-#[test]
+    #[test]
     fn test_forward_unknown_token_fails() {
         let mut relay = make_relay();
         let fwd = ForwardMsg {
@@ -420,14 +466,26 @@ mod tests {
     fn test_payload_too_large_rejected() {
         let mut relay = make_relay();
         let t = token(0x01);
-        relay.register(&RegisterMsg { session_token: t, pow_nonce: 0, seq: 0 }, addr()).unwrap();
+        relay
+            .register(
+                &RegisterMsg {
+                    session_token: t,
+                    pow_nonce: 0,
+                    seq: 0,
+                },
+                addr(),
+            )
+            .unwrap();
         let fwd = ForwardMsg {
             session_token: t,
             pow_nonce: 0,
             sender_seq: 0,
             ciphertext: vec![0u8; 64 * 1024 + 1], // one byte over limit
         };
-        assert!(matches!(relay.forward(&fwd), Err(RelayError::PayloadTooLarge)));
+        assert!(matches!(
+            relay.forward(&fwd),
+            Err(RelayError::PayloadTooLarge)
+        ));
     }
 
     #[test]
@@ -441,14 +499,26 @@ mod tests {
         };
         let mut relay = Relay::with_limits(0, 90, 64 * 1024, limits);
         let t = token(0x02);
-        relay.register(&RegisterMsg { session_token: t, pow_nonce: 0, seq: 0 }, addr()).unwrap();
+        relay
+            .register(
+                &RegisterMsg {
+                    session_token: t,
+                    pow_nonce: 0,
+                    seq: 0,
+                },
+                addr(),
+            )
+            .unwrap();
         let big = ForwardMsg {
             session_token: t,
             pow_nonce: 0,
             sender_seq: 0,
             ciphertext: vec![0u8; 2048],
         };
-        assert!(matches!(relay.forward(&big), Err(RelayError::PayloadTooLarge)));
+        assert!(matches!(
+            relay.forward(&big),
+            Err(RelayError::PayloadTooLarge)
+        ));
         let small = ForwardMsg {
             session_token: t,
             pow_nonce: 0,
@@ -469,7 +539,16 @@ mod tests {
         };
         let mut relay = Relay::with_limits(0, 90, 64 * 1024, limits);
         let t = token(0x03);
-        relay.register(&RegisterMsg { session_token: t, pow_nonce: 0, seq: 0 }, addr()).unwrap();
+        relay
+            .register(
+                &RegisterMsg {
+                    session_token: t,
+                    pow_nonce: 0,
+                    seq: 0,
+                },
+                addr(),
+            )
+            .unwrap();
         let fwd = |seq: u16| ForwardMsg {
             session_token: t,
             pow_nonce: 0,
@@ -491,9 +570,23 @@ mod tests {
     fn test_prune_expired() {
         let mut relay = Relay::new(0, 0, 64 * 1024); // TTL=0 → immediately expired
         let t = token(0x77);
-        relay.register(&RegisterMsg { session_token: t, pow_nonce: 0, seq: 0 }, addr()).unwrap();
+        relay
+            .register(
+                &RegisterMsg {
+                    session_token: t,
+                    pow_nonce: 0,
+                    seq: 0,
+                },
+                addr(),
+            )
+            .unwrap();
         // Forward should fail (expired)
-        let fwd = ForwardMsg { session_token: t, pow_nonce: 0, sender_seq: 0, ciphertext: vec![1] };
+        let fwd = ForwardMsg {
+            session_token: t,
+            pow_nonce: 0,
+            sender_seq: 0,
+            ciphertext: vec![1],
+        };
         assert!(relay.forward(&fwd).is_err());
         // Prune removes it
         let pruned = relay.prune_expired();
@@ -505,10 +598,30 @@ mod tests {
     fn test_keepalive_refreshes_ttl() {
         let mut relay = make_relay();
         let t = token(0x55);
-        relay.register(&RegisterMsg { session_token: t, pow_nonce: 0, seq: 0 }, addr()).unwrap();
-        relay.keepalive(&KeepaliveMsg { session_token: t, pow_nonce: 0, seq: 1 }).expect("keepalive");
+        relay
+            .register(
+                &RegisterMsg {
+                    session_token: t,
+                    pow_nonce: 0,
+                    seq: 0,
+                },
+                addr(),
+            )
+            .unwrap();
+        relay
+            .keepalive(&KeepaliveMsg {
+                session_token: t,
+                pow_nonce: 0,
+                seq: 1,
+            })
+            .expect("keepalive");
         // After keepalive the entry is still alive
-        let fwd = ForwardMsg { session_token: t, pow_nonce: 0, sender_seq: 0, ciphertext: vec![42] };
+        let fwd = ForwardMsg {
+            session_token: t,
+            pow_nonce: 0,
+            sender_seq: 0,
+            ciphertext: vec![42],
+        };
         assert!(relay.forward(&fwd).is_ok());
     }
 
@@ -516,8 +629,26 @@ mod tests {
     fn test_active_count() {
         let mut relay = make_relay();
         assert_eq!(relay.active_count(), 0);
-        relay.register(&RegisterMsg { session_token: token(1), pow_nonce: 0, seq: 0 }, addr()).unwrap();
-        relay.register(&RegisterMsg { session_token: token(2), pow_nonce: 0, seq: 0 }, addr()).unwrap();
+        relay
+            .register(
+                &RegisterMsg {
+                    session_token: token(1),
+                    pow_nonce: 0,
+                    seq: 0,
+                },
+                addr(),
+            )
+            .unwrap();
+        relay
+            .register(
+                &RegisterMsg {
+                    session_token: token(2),
+                    pow_nonce: 0,
+                    seq: 0,
+                },
+                addr(),
+            )
+            .unwrap();
         assert_eq!(relay.active_count(), 2);
     }
 
@@ -525,12 +656,35 @@ mod tests {
     fn test_register_replay_rejected() {
         let mut relay = make_relay();
         let t = token(0x10);
-        relay.register(&RegisterMsg { session_token: t, pow_nonce: 0, seq: 5 }, addr()).unwrap();
+        relay
+            .register(
+                &RegisterMsg {
+                    session_token: t,
+                    pow_nonce: 0,
+                    seq: 5,
+                },
+                addr(),
+            )
+            .unwrap();
         // Replaying the same seq from a different address must be rejected.
-        let err = relay.register(&RegisterMsg { session_token: t, pow_nonce: 0, seq: 5 }, "1.2.3.4:9000".parse().unwrap());
+        let err = relay.register(
+            &RegisterMsg {
+                session_token: t,
+                pow_nonce: 0,
+                seq: 5,
+            },
+            "1.2.3.4:9000".parse().unwrap(),
+        );
         assert!(matches!(err, Err(RelayError::SeqReplay)));
         // An older seq is also rejected.
-        let err = relay.register(&RegisterMsg { session_token: t, pow_nonce: 0, seq: 4 }, "1.2.3.4:9000".parse().unwrap());
+        let err = relay.register(
+            &RegisterMsg {
+                session_token: t,
+                pow_nonce: 0,
+                seq: 4,
+            },
+            "1.2.3.4:9000".parse().unwrap(),
+        );
         assert!(matches!(err, Err(RelayError::SeqReplay)));
     }
 
@@ -538,8 +692,22 @@ mod tests {
     fn test_forward_replayed_delivers_duplicate() {
         let mut relay = make_relay();
         let t = token(0x11);
-        relay.register(&RegisterMsg { session_token: t, pow_nonce: 0, seq: 0 }, addr()).unwrap();
-        let fwd = ForwardMsg { session_token: t, pow_nonce: 0, sender_seq: 7, ciphertext: vec![1, 2, 3] };
+        relay
+            .register(
+                &RegisterMsg {
+                    session_token: t,
+                    pow_nonce: 0,
+                    seq: 0,
+                },
+                addr(),
+            )
+            .unwrap();
+        let fwd = ForwardMsg {
+            session_token: t,
+            pow_nonce: 0,
+            sender_seq: 7,
+            ciphertext: vec![1, 2, 3],
+        };
         assert!(relay.forward(&fwd).is_ok());
         // Re-forwarding is allowed: the endpoint dedups identical ciphertext.
         assert!(relay.forward(&fwd).is_ok());
@@ -549,9 +717,28 @@ mod tests {
     fn test_keepalive_replay_rejected() {
         let mut relay = make_relay();
         let t = token(0x12);
-        relay.register(&RegisterMsg { session_token: t, pow_nonce: 0, seq: 0 }, addr()).unwrap();
-        relay.keepalive(&KeepaliveMsg { session_token: t, pow_nonce: 0, seq: 1 }).unwrap();
-        let err = relay.keepalive(&KeepaliveMsg { session_token: t, pow_nonce: 0, seq: 1 });
+        relay
+            .register(
+                &RegisterMsg {
+                    session_token: t,
+                    pow_nonce: 0,
+                    seq: 0,
+                },
+                addr(),
+            )
+            .unwrap();
+        relay
+            .keepalive(&KeepaliveMsg {
+                session_token: t,
+                pow_nonce: 0,
+                seq: 1,
+            })
+            .unwrap();
+        let err = relay.keepalive(&KeepaliveMsg {
+            session_token: t,
+            pow_nonce: 0,
+            seq: 1,
+        });
         assert!(matches!(err, Err(RelayError::SeqReplay)));
     }
 
@@ -563,7 +750,10 @@ mod tests {
         assert!(!relay.rate_limited(ip));
         assert!(!relay.rate_limited(ip));
         assert!(!relay.rate_limited(ip));
-        assert!(relay.rate_limited(ip), "4th datagram in the window must be blocked");
+        assert!(
+            relay.rate_limited(ip),
+            "4th datagram in the window must be blocked"
+        );
         // A different IP is unaffected.
         let other: IpAddr = "203.0.113.10".parse().unwrap();
         assert!(!relay.rate_limited(other));

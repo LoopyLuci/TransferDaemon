@@ -22,10 +22,10 @@ pub enum Tab {
 impl Tab {
     pub fn index(self) -> usize {
         match self {
-            Self::Chats     => 0,
-            Self::Contacts  => 1,
+            Self::Chats => 0,
+            Self::Contacts => 1,
             Self::Transfers => 2,
-            Self::Settings  => 3,
+            Self::Settings => 3,
             Self::Telemetry => 4,
         }
     }
@@ -36,9 +36,9 @@ impl Tab {
 // ---------------------------------------------------------------------------
 
 pub struct TelemetryState {
-    pub cpu_pct:         f32,
-    pub mem_rss_kb:      u64,
-    pub uptime_secs:     u64,
+    pub cpu_pct: f32,
+    pub mem_rss_kb: u64,
+    pub uptime_secs: u64,
     pub active_sessions: u32,
     /// Recent event summaries: (age_label, kind_tag, summary)
     pub log: VecDeque<(String, &'static str, String)>,
@@ -88,11 +88,16 @@ impl TelemetryState {
                     self.push_log("SYS", summary);
                 }
                 Event::AteLane(a) => {
-                    while self.ate_ts.len() >= 3_000 { self.ate_ts.pop_front(); }
+                    while self.ate_ts.len() >= 3_000 {
+                        self.ate_ts.pop_front();
+                    }
                     self.ate_ts.push_back(a.ts);
                     let summary = format!(
                         "lane {}  gsn {}  rtt {:.1}ms  bw {:.0}Kbps",
-                        a.selected_lane, a.gsn, a.rtt_ms, a.bandwidth_bps as f64 / 1_000.0,
+                        a.selected_lane,
+                        a.gsn,
+                        a.rtt_ms,
+                        a.bandwidth_bps as f64 / 1_000.0,
                     );
                     self.push_log("ATE", summary);
                 }
@@ -102,15 +107,23 @@ impl TelemetryState {
 
     fn push_log(&mut self, tag: &'static str, summary: String) {
         use std::time::{SystemTime, UNIX_EPOCH};
-        let ts = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
-        if self.log.len() >= 200 { self.log.pop_front(); }
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        if self.log.len() >= 200 {
+            self.log.pop_front();
+        }
         self.log.push_back((format!("{ts}"), tag, summary));
     }
 
     /// Compute per-second ATE event counts for the last `secs` seconds.
     pub fn sparkline(&self, secs: usize) -> Vec<u32> {
         use std::time::{SystemTime, UNIX_EPOCH};
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
         let mut counts = vec![0u32; secs];
         for &ts in &self.ate_ts {
             let age = now.saturating_sub(ts) as usize;
@@ -148,11 +161,24 @@ pub enum ChatFocus {
 /// Active modal / popup layer.
 #[derive(Debug, Clone)]
 pub enum Modal {
-    AddContact { key_input: String, name_input: String, field: usize },
-    SendFile { path_input: String },
-    ConfirmDelete { label: String, contact_id: String },
-    ShowQr { hex: String },
-    RevealPhrase { phrase: String },
+    AddContact {
+        key_input: String,
+        name_input: String,
+        field: usize,
+    },
+    SendFile {
+        path_input: String,
+    },
+    ConfirmDelete {
+        label: String,
+        contact_id: String,
+    },
+    ShowQr {
+        hex: String,
+    },
+    RevealPhrase {
+        phrase: String,
+    },
 }
 
 /// Live call state — wraps the WebRTC session and terminal video overlay.
@@ -209,7 +235,11 @@ pub struct App {
 }
 
 impl App {
-    pub async fn new(daemon: Arc<dyn DaemonApi>, daemon_live: bool, daemon_addr: Option<String>) -> Self {
+    pub async fn new(
+        daemon: Arc<dyn DaemonApi>,
+        daemon_live: bool,
+        daemon_addr: Option<String>,
+    ) -> Self {
         let identity = daemon.get_identity().await;
         let contacts = daemon.get_contacts().await;
         let transfers = daemon.get_transfers().await;
@@ -260,11 +290,15 @@ impl App {
     // -----------------------------------------------------------------------
 
     pub fn open_contact_id(&self) -> Option<&str> {
-        self.contacts.get(self.selected_contact).map(|c| c.id.as_str())
+        self.contacts
+            .get(self.selected_contact)
+            .map(|c| c.id.as_str())
     }
 
     pub fn open_contact_name(&self) -> Option<&str> {
-        self.contacts.get(self.selected_contact).map(|c| c.name.as_str())
+        self.contacts
+            .get(self.selected_contact)
+            .map(|c| c.name.as_str())
     }
 
     pub fn open_messages(&self) -> &[Message] {
@@ -279,18 +313,27 @@ impl App {
     }
 
     pub fn clamp_contact_sel(&mut self) {
-        if self.contacts.is_empty() { self.selected_contact = 0; }
-        else { self.selected_contact = self.selected_contact.min(self.contacts.len() - 1); }
+        if self.contacts.is_empty() {
+            self.selected_contact = 0;
+        } else {
+            self.selected_contact = self.selected_contact.min(self.contacts.len() - 1);
+        }
     }
 
     pub fn clamp_contacts_tab_sel(&mut self) {
-        if self.contacts.is_empty() { self.contacts_selected = 0; }
-        else { self.contacts_selected = self.contacts_selected.min(self.contacts.len() - 1); }
+        if self.contacts.is_empty() {
+            self.contacts_selected = 0;
+        } else {
+            self.contacts_selected = self.contacts_selected.min(self.contacts.len() - 1);
+        }
     }
 
     pub fn clamp_transfers_sel(&mut self) {
-        if self.transfers.is_empty() { self.transfers_selected = 0; }
-        else { self.transfers_selected = self.transfers_selected.min(self.transfers.len() - 1); }
+        if self.transfers.is_empty() {
+            self.transfers_selected = 0;
+        } else {
+            self.transfers_selected = self.transfers_selected.min(self.transfers.len() - 1);
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -320,17 +363,17 @@ impl App {
     pub async fn start_call_to_selected(&mut self, video: bool) {
         let contact_name = match self.contacts.get(self.selected_contact) {
             Some(c) => c.name.clone(),
-            None => { self.set_status("No contact selected."); return; }
+            None => {
+                self.set_status("No contact selected.");
+                return;
+            }
         };
         let contact_id = self.contacts[self.selected_contact].id.clone();
 
         // Create the WebRTC session — real hardware when available, mock in CI.
         let media = new_default_capture(video);
-        let session = SimulatedCallSession::new_outgoing(
-            contact_id.clone(),
-            video,
-            Arc::clone(&media),
-        ).await;
+        let session =
+            SimulatedCallSession::new_outgoing(contact_id.clone(), video, Arc::clone(&media)).await;
         session.activate().await;
         let call_id = session.call_id.clone();
 
@@ -360,6 +403,8 @@ impl App {
         });
 
         let mode = if video { "video" } else { "audio" };
-        self.set_status(format!("Call started ({mode}). [M] mute  [H] hang up  [V] toggle video"));
+        self.set_status(format!(
+            "Call started ({mode}). [M] mute  [H] hang up  [V] toggle video"
+        ));
     }
 }

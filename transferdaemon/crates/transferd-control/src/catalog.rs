@@ -121,13 +121,23 @@ pub fn snake(name: &str) -> String {
 }
 
 fn is_read(rpc: &str) -> bool {
-    ["Get", "List", "Search", "Stream", "Check"].iter().any(|p| rpc.starts_with(p))
+    ["Get", "List", "Search", "Stream", "Check"]
+        .iter()
+        .any(|p| rpc.starts_with(p))
 }
 
 fn is_destructive(rpc: &str) -> bool {
-    ["Remove", "Delete", "Leave", "CreateIdentity", "RestoreIdentity", "ApplyUpdate", "Cancel"]
-        .iter()
-        .any(|p| rpc.starts_with(p))
+    [
+        "Remove",
+        "Delete",
+        "Leave",
+        "CreateIdentity",
+        "RestoreIdentity",
+        "ApplyUpdate",
+        "Cancel",
+    ]
+    .iter()
+    .any(|p| rpc.starts_with(p))
 }
 
 /// The daemon operations, built from [`RPCS`] and the proto.
@@ -164,8 +174,19 @@ pub fn grpc_ops() -> Vec<Operation> {
 }
 
 /// An operation an extension serves (see `hub::Extension`).
-pub fn extension_op(id: &str, summary: &str, mutating: bool, destructive: bool, input: Value, output: Value) -> Operation {
-    Operation { kind: "extension".into(), output, ..ctl(id, summary, mutating, destructive, input) }
+pub fn extension_op(
+    id: &str,
+    summary: &str,
+    mutating: bool,
+    destructive: bool,
+    input: Value,
+    output: Value,
+) -> Operation {
+    Operation {
+        kind: "extension".into(),
+        output,
+        ..ctl(id, summary, mutating, destructive, input)
+    }
 }
 
 fn ctl(id: &str, summary: &str, mutating: bool, destructive: bool, input: Value) -> Operation {
@@ -302,7 +323,10 @@ fn enums_by_name(message: &str, mut args: Value) -> Value {
     for (field, values) in proto().enum_fields(message) {
         if let Some(Value::String(s)) = args.get(&field) {
             let up = s.to_uppercase();
-            if let Some(i) = values.iter().position(|v| *v == up || v.ends_with(&format!("_{up}"))) {
+            if let Some(i) = values
+                .iter()
+                .position(|v| *v == up || v.ends_with(&format!("_{up}")))
+            {
                 args[&field] = json!(i);
             }
         }
@@ -310,40 +334,75 @@ fn enums_by_name(message: &str, mut args: Value) -> Value {
     args
 }
 
-async fn unary<Req, Resp>(ch: AuthChannel, service: &str, rpc: &str, args: Value) -> Result<Value, CallError>
+async fn unary<Req, Resp>(
+    ch: AuthChannel,
+    service: &str,
+    rpc: &str,
+    args: Value,
+) -> Result<Value, CallError>
 where
     Req: prost::Message + DeserializeOwned + Send + Sync + 'static,
     Resp: prost::Message + Default + Serialize + Send + Sync + 'static,
 {
-    let input = proto().rpcs.iter().find(|r| r.service == service && r.name == rpc).map(|r| r.input.clone()).unwrap_or_default();
-    let req: Req = serde_json::from_value(enums_by_name(&input, args)).map_err(|e| CallError::BadArgs(e.to_string()))?;
+    let input = proto()
+        .rpcs
+        .iter()
+        .find(|r| r.service == service && r.name == rpc)
+        .map(|r| r.input.clone())
+        .unwrap_or_default();
+    let req: Req = serde_json::from_value(enums_by_name(&input, args))
+        .map_err(|e| CallError::BadArgs(e.to_string()))?;
     let mut grpc = tonic::client::Grpc::new(ch);
-    grpc.ready().await.map_err(|e| CallError::Unreachable(e.to_string()))?;
+    grpc.ready()
+        .await
+        .map_err(|e| CallError::Unreachable(e.to_string()))?;
     let path = http::uri::PathAndQuery::try_from(format!("/transferd.{service}/{rpc}"))
         .map_err(|e| CallError::BadArgs(e.to_string()))?;
     let codec = tonic::codec::ProstCodec::<Req, Resp>::default();
-    let resp = grpc.unary(tonic::Request::new(req), path, codec).await.map_err(status_err)?;
+    let resp = grpc
+        .unary(tonic::Request::new(req), path, codec)
+        .await
+        .map_err(status_err)?;
     serde_json::to_value(resp.into_inner()).map_err(|e| CallError::Status(e.to_string()))
 }
 
-async fn streaming<Req, Resp>(ch: AuthChannel, service: &str, rpc: &str, mut args: Value) -> Result<Value, CallError>
+async fn streaming<Req, Resp>(
+    ch: AuthChannel,
+    service: &str,
+    rpc: &str,
+    mut args: Value,
+) -> Result<Value, CallError>
 where
     Req: prost::Message + DeserializeOwned + Send + Sync + 'static,
     Resp: prost::Message + Default + Serialize + Send + Sync + 'static,
 {
-    let seconds = args.get("seconds").and_then(Value::as_f64).unwrap_or(5.0).clamp(0.2, 120.0);
-    let max = args.get("max").and_then(Value::as_u64).unwrap_or(200).max(1) as usize;
+    let seconds = args
+        .get("seconds")
+        .and_then(Value::as_f64)
+        .unwrap_or(5.0)
+        .clamp(0.2, 120.0);
+    let max = args
+        .get("max")
+        .and_then(Value::as_u64)
+        .unwrap_or(200)
+        .max(1) as usize;
     if let Some(o) = args.as_object_mut() {
         o.remove("seconds");
         o.remove("max");
     }
     let req: Req = serde_json::from_value(args).map_err(|e| CallError::BadArgs(e.to_string()))?;
     let mut grpc = tonic::client::Grpc::new(ch);
-    grpc.ready().await.map_err(|e| CallError::Unreachable(e.to_string()))?;
+    grpc.ready()
+        .await
+        .map_err(|e| CallError::Unreachable(e.to_string()))?;
     let path = http::uri::PathAndQuery::try_from(format!("/transferd.{service}/{rpc}"))
         .map_err(|e| CallError::BadArgs(e.to_string()))?;
     let codec = tonic::codec::ProstCodec::<Req, Resp>::default();
-    let mut stream = grpc.server_streaming(tonic::Request::new(req), path, codec).await.map_err(status_err)?.into_inner();
+    let mut stream = grpc
+        .server_streaming(tonic::Request::new(req), path, codec)
+        .await
+        .map_err(status_err)?
+        .into_inner();
     let mut out = vec![];
     let deadline = tokio::time::Instant::now() + Duration::from_secs_f64(seconds);
     while out.len() < max {
@@ -366,7 +425,12 @@ macro_rules! dispatch {
 }
 
 /// Run one gRPC call with JSON arguments; the reply comes back as JSON.
-pub async fn call_rpc(ch: AuthChannel, service: &str, rpc: &str, args: Value) -> Result<Value, CallError> {
+pub async fn call_rpc(
+    ch: AuthChannel,
+    service: &str,
+    rpc: &str,
+    args: Value,
+) -> Result<Value, CallError> {
     let args = if args.is_null() { json!({}) } else { args };
     dispatch!(ch, service, rpc, args;
         "AccountService" "GetIdentity" => unary(pb::Empty, pb::IdentityReply),
@@ -422,7 +486,11 @@ pub async fn call_rpc(ch: AuthChannel, service: &str, rpc: &str, args: Value) ->
 
 /// `send_file` convenience: fill in the name, size and MIME type from the file itself.
 pub fn complete_send_file(mut args: Value) -> Result<Value, CallError> {
-    let path = args.get("file_path").and_then(Value::as_str).unwrap_or_default().to_string();
+    let path = args
+        .get("file_path")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
     if path.is_empty() {
         return Err(CallError::BadArgs("file_path is required".into()));
     }
@@ -431,26 +499,55 @@ pub fn complete_send_file(mut args: Value) -> Result<Value, CallError> {
         return Err(CallError::BadArgs(format!("{path} is not a file")));
     }
     let p = std::path::Path::new(&path);
-    let name = p.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-    let ext = p.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+    let name = p
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let ext = p
+        .extension()
+        .map(|e| e.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
     let mime = match ext.as_str() {
-        "png" => "image/png", "jpg" | "jpeg" => "image/jpeg", "gif" => "image/gif", "webp" => "image/webp",
-        "mp4" => "video/mp4", "webm" => "video/webm", "mkv" => "video/x-matroska", "mov" => "video/quicktime",
-        "mp3" => "audio/mpeg", "ogg" | "opus" => "audio/ogg", "wav" => "audio/wav", "m4a" => "audio/mp4",
-        "pdf" => "application/pdf", "zip" => "application/zip", "txt" | "log" | "md" => "text/plain",
-        "json" => "application/json", "html" => "text/html", "csv" => "text/csv",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "gif" => "image/gif",
+        "webp" => "image/webp",
+        "mp4" => "video/mp4",
+        "webm" => "video/webm",
+        "mkv" => "video/x-matroska",
+        "mov" => "video/quicktime",
+        "mp3" => "audio/mpeg",
+        "ogg" | "opus" => "audio/ogg",
+        "wav" => "audio/wav",
+        "m4a" => "audio/mp4",
+        "pdf" => "application/pdf",
+        "zip" => "application/zip",
+        "txt" | "log" | "md" => "text/plain",
+        "json" => "application/json",
+        "html" => "text/html",
+        "csv" => "text/csv",
         _ => "application/octet-stream",
     };
     if let Some(o) = args.as_object_mut() {
-        let absolute = std::fs::canonicalize(p).map(|c| c.to_string_lossy().trim_start_matches(r"\\?\").to_string()).unwrap_or(path);
+        let absolute = std::fs::canonicalize(p)
+            .map(|c| c.to_string_lossy().trim_start_matches(r"\\?\").to_string())
+            .unwrap_or(path);
         o.insert("file_path".into(), json!(absolute));
-        if o.get("file_name").and_then(Value::as_str).unwrap_or_default().is_empty() {
+        if o.get("file_name")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .is_empty()
+        {
             o.insert("file_name".into(), json!(name));
         }
         if o.get("file_size").and_then(Value::as_u64).unwrap_or(0) == 0 {
             o.insert("file_size".into(), json!(meta.len()));
         }
-        if o.get("mime_type").and_then(Value::as_str).unwrap_or_default().is_empty() {
+        if o.get("mime_type")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .is_empty()
+        {
             o.insert("mime_type".into(), json!(mime));
         }
     }
@@ -464,11 +561,21 @@ mod tests {
     #[test]
     fn the_table_covers_every_rpc_in_the_proto() {
         let p = proto();
-        let mut in_proto: Vec<(String, String)> = p.rpcs.iter().map(|r| (r.service.clone(), r.name.clone())).collect();
-        let mut in_table: Vec<(String, String)> = RPCS.iter().map(|(s, r, _)| (s.to_string(), r.to_string())).collect();
+        let mut in_proto: Vec<(String, String)> = p
+            .rpcs
+            .iter()
+            .map(|r| (r.service.clone(), r.name.clone()))
+            .collect();
+        let mut in_table: Vec<(String, String)> = RPCS
+            .iter()
+            .map(|(s, r, _)| (s.to_string(), r.to_string()))
+            .collect();
         in_proto.sort();
         in_table.sort();
-        assert_eq!(in_proto, in_table, "RPCS (and the dispatch table) must list exactly the proto's rpcs");
+        assert_eq!(
+            in_proto, in_table,
+            "RPCS (and the dispatch table) must list exactly the proto's rpcs"
+        );
     }
 
     #[test]
@@ -489,7 +596,10 @@ mod tests {
 
     #[test]
     fn enum_names_become_numbers() {
-        let v = enums_by_name("SetMemberRoleRequest", json!({"group_id": "g", "member_id": "m", "role": "admin"}));
+        let v = enums_by_name(
+            "SetMemberRoleRequest",
+            json!({"group_id": "g", "member_id": "m", "role": "admin"}),
+        );
         assert_eq!(v["role"], 2);
         let v = enums_by_name("SetMemberRoleRequest", json!({"role": "GROUP_ROLE_OWNER"}));
         assert_eq!(v["role"], 1);
@@ -501,11 +611,14 @@ mod tests {
         std::fs::create_dir_all(&dir).ok();
         let f = dir.join("photo.png");
         std::fs::write(&f, [0u8; 10]).ok();
-        let v = complete_send_file(json!({"contact_id": "c", "file_path": f.to_string_lossy()})).expect("completed");
+        let v = complete_send_file(json!({"contact_id": "c", "file_path": f.to_string_lossy()}))
+            .expect("completed");
         assert_eq!(v["file_name"], "photo.png");
         assert_eq!(v["file_size"], 10);
         assert_eq!(v["mime_type"], "image/png");
-        assert!(complete_send_file(json!({"file_path": dir.join("nope").to_string_lossy()})).is_err());
+        assert!(
+            complete_send_file(json!({"file_path": dir.join("nope").to_string_lossy()})).is_err()
+        );
         std::fs::remove_dir_all(&dir).ok();
     }
 }

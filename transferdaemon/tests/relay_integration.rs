@@ -25,7 +25,10 @@ fn derive_token(session_key: &[u8; 32], relay_id: &[u8]) -> [u8; 32] {
 fn test_derive_token_differs_by_key() {
     let token_a = derive_token(&[0xAAu8; 32], b"relay-1");
     let token_b = derive_token(&[0xBBu8; 32], b"relay-1");
-    assert_ne!(token_a, token_b, "different session keys must produce different tokens");
+    assert_ne!(
+        token_a, token_b,
+        "different session keys must produce different tokens"
+    );
     println!("ZK token-derivation test passed.");
 }
 
@@ -51,7 +54,9 @@ fn pow_verify(difficulty: u32, challenge: &[u8; 16], token: &[u8; 32], nonce: u6
     let full = (difficulty / 8) as usize;
     let tail = difficulty % 8;
     for b in &bytes[..full.min(bytes.len())] {
-        if *b != 0 { return false; }
+        if *b != 0 {
+            return false;
+        }
     }
     if tail > 0 && full < bytes.len() {
         bytes[full] >> (8 - tail) == 0
@@ -91,7 +96,10 @@ struct TestRelay {
 
 impl TestRelay {
     fn new(max_payload: usize) -> Self {
-        Self { table: HashMap::new(), max_payload }
+        Self {
+            table: HashMap::new(),
+            max_payload,
+        }
     }
 
     fn register(&mut self, token: [u8; 32], addr: SocketAddr) -> Result<(), &'static str> {
@@ -100,8 +108,13 @@ impl TestRelay {
     }
 
     fn forward(&self, token: [u8; 32], payload: &[u8]) -> Result<SocketAddr, &'static str> {
-        if payload.len() > self.max_payload { return Err("payload too large"); }
-        self.table.get(&token).copied().ok_or("token not registered")
+        if payload.len() > self.max_payload {
+            return Err("payload too large");
+        }
+        self.table
+            .get(&token)
+            .copied()
+            .ok_or("token not registered")
     }
 }
 
@@ -118,7 +131,10 @@ fn test_relay_register_and_forward() {
 
     relay.register(token, recipient).unwrap();
     let dst = relay.forward(token, payload).expect("forward must succeed");
-    assert_eq!(dst, recipient, "relay must route to the registered recipient");
+    assert_eq!(
+        dst, recipient,
+        "relay must route to the registered recipient"
+    );
     println!("Relay cycle test passed.");
 }
 
@@ -133,7 +149,9 @@ fn test_relay_unknown_token_rejected() {
 fn test_relay_payload_too_large_rejected() {
     let mut relay = TestRelay::new(100);
     let token = [0x01u8; 32];
-    relay.register(token, "127.0.0.1:9002".parse().unwrap()).unwrap();
+    relay
+        .register(token, "127.0.0.1:9002".parse().unwrap())
+        .unwrap();
     let err = relay.forward(token, &vec![0u8; 101]);
     assert!(err.is_err());
 }

@@ -1,8 +1,8 @@
 use crate::doorbell::Doorbell;
 use crate::grant::ReadGrant;
 use crate::mmap::MappedRegion;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 pub struct Consumer {
     region: Arc<MappedRegion>,
@@ -43,7 +43,11 @@ impl Consumer {
                         len.min(self.region.data_area_size),
                     )
                 };
-                return Ok(ReadGrant { buf, slot_idx: slot, desc });
+                return Ok(ReadGrant {
+                    buf,
+                    slot_idx: slot,
+                    desc,
+                });
             }
             self.doorbell.wait().await;
             self.doorbell.consume();

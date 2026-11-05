@@ -121,14 +121,23 @@ pub struct MaxBytes {
 }
 
 impl MaxBytes {
-    pub const UNBOUNDED: MaxBytes = MaxBytes { preset: None, custom: None };
+    pub const UNBOUNDED: MaxBytes = MaxBytes {
+        preset: None,
+        custom: None,
+    };
 
     pub fn preset(p: Preset) -> Self {
-        Self { preset: Some(p), custom: None }
+        Self {
+            preset: Some(p),
+            custom: None,
+        }
     }
 
     pub fn custom(n: u64) -> Self {
-        Self { preset: None, custom: Some(n) }
+        Self {
+            preset: None,
+            custom: Some(n),
+        }
     }
 
     /// The effective byte cap, or `None` for unbounded.
@@ -305,7 +314,12 @@ impl Default for RelayLimits {
 
 impl RelayLimits {
     pub fn unrestricted() -> Self {
-        Self { max_blob_bytes: None, daily_bytes: None, weekly_bytes: None, monthly_bytes: None }
+        Self {
+            max_blob_bytes: None,
+            daily_bytes: None,
+            weekly_bytes: None,
+            monthly_bytes: None,
+        }
     }
 
     /// Read limits from environment variables with the given prefix
@@ -367,7 +381,11 @@ impl BandwidthTracker {
     pub fn charge(&mut self, token: &[u8; 32], bytes: u64, limits: &RelayLimits) -> bool {
         let now = unix_secs();
         let buckets = [now / DAY_SECS, now / WEEK_SECS, now / MONTH_SECS];
-        let budgets = [limits.daily_bytes, limits.weekly_bytes, limits.monthly_bytes];
+        let budgets = [
+            limits.daily_bytes,
+            limits.weekly_bytes,
+            limits.monthly_bytes,
+        ];
 
         // Pre-check: would any budget be exceeded by this charge?
         let entry = self.windows.entry(*token).or_default();
@@ -400,15 +418,30 @@ impl BandwidthTracker {
             return (0, 0, 0);
         };
         (
-            if entry[0].epoch == buckets[0] { entry[0].bytes } else { 0 },
-            if entry[1].epoch == buckets[1] { entry[1].bytes } else { 0 },
-            if entry[2].epoch == buckets[2] { entry[2].bytes } else { 0 },
+            if entry[0].epoch == buckets[0] {
+                entry[0].bytes
+            } else {
+                0
+            },
+            if entry[1].epoch == buckets[1] {
+                entry[1].bytes
+            } else {
+                0
+            },
+            if entry[2].epoch == buckets[2] {
+                entry[2].bytes
+            } else {
+                0
+            },
         )
     }
 }
 
 fn unix_secs() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -432,7 +465,10 @@ mod tests {
 
     #[test]
     fn max_bytes_custom_wins_over_preset() {
-        let m = MaxBytes { preset: Some(Preset::Mb1), custom: Some(2048) };
+        let m = MaxBytes {
+            preset: Some(Preset::Mb1),
+            custom: Some(2048),
+        };
         assert_eq!(m.bytes(), Some(2048));
         assert_eq!(MaxBytes::UNBOUNDED.bytes(), None);
         assert_eq!(MaxBytes::custom(12 << 20).label(), "12.0 MB");
@@ -451,9 +487,8 @@ mod tests {
         assert_eq!(empty.cap_for(ContentType::Photo), Some(5 << 20));
 
         // Custom cap overrides.
-        let custom: TransferLimits = serde_json::from_str(
-            r#"{"file_bytes":{"custom":12345}}"#,
-        ).unwrap();
+        let custom: TransferLimits =
+            serde_json::from_str(r#"{"file_bytes":{"custom":12345}}"#).unwrap();
         assert_eq!(custom.cap_for(ContentType::File), Some(12345));
         assert_eq!(custom.cap_for(ContentType::Message), Some(1 << 20));
     }
@@ -478,7 +513,10 @@ mod tests {
         let token = [7u8; 32];
         assert!(t.charge(&token, 3 << 20, &limits));
         assert!(t.charge(&token, 2 << 20, &limits));
-        assert!(!t.charge(&token, 1 << 20, &limits), "would exceed the daily budget");
+        assert!(
+            !t.charge(&token, 1 << 20, &limits),
+            "would exceed the daily budget"
+        );
         let (day, _, _) = t.usage(&token);
         assert_eq!(day, 5 << 20, "only the successful charges count");
     }
@@ -486,7 +524,12 @@ mod tests {
     #[test]
     fn bandwidth_windows_reset_on_rollover() {
         let mut t = BandwidthTracker::new();
-        let limits = RelayLimits { max_blob_bytes: None, daily_bytes: Some(100), weekly_bytes: None, monthly_bytes: None };
+        let limits = RelayLimits {
+            max_blob_bytes: None,
+            daily_bytes: Some(100),
+            weekly_bytes: None,
+            monthly_bytes: None,
+        };
         let token = [8u8; 32];
         assert!(t.charge(&token, 60, &limits));
         // Simulate a rollover by charging against a different epoch bucket
@@ -494,7 +537,10 @@ mod tests {
         // window by rewriting the stored epoch).
         let entry = t.windows.get_mut(&token).unwrap();
         entry[0].epoch = 0; // force a different day bucket
-        assert!(t.charge(&token, 80, &limits), "a new window bucket resets the budget");
+        assert!(
+            t.charge(&token, 80, &limits),
+            "a new window bucket resets the budget"
+        );
         let (day, _, _) = t.usage(&token);
         assert_eq!(day, 80);
     }

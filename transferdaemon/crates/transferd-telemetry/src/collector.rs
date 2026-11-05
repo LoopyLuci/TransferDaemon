@@ -68,9 +68,8 @@ impl TelemetryCollector {
             let collector2 = Arc::clone(&collector);
             let mut srx = shutdown_rx;
             async move {
-                let mut interval = tokio::time::interval(
-                    std::time::Duration::from_secs(FLUSH_INTERVAL_SECS),
-                );
+                let mut interval =
+                    tokio::time::interval(std::time::Duration::from_secs(FLUSH_INTERVAL_SECS));
                 // Skip the first (immediate) tick.
                 interval.tick().await;
                 loop {

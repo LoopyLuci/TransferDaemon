@@ -99,7 +99,9 @@ impl ReassemblyWindow {
         }
     }
 
-    pub fn delivered_up_to(&self) -> Gsn { self.delivered_up_to }
+    pub fn delivered_up_to(&self) -> Gsn {
+        self.delivered_up_to
+    }
 
     pub fn should_update_window(&self) -> bool {
         self.occupied_slots < self.window_size * 3 / 4

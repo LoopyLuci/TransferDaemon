@@ -51,8 +51,7 @@ impl MappedRegion {
 
         // Allocate with VBusDmiDescriptor alignment (64 bytes) so cast is safe.
         let align = std::mem::align_of::<VBusDmiDescriptor>(); // 64
-        let layout = Layout::from_size_align(total, align)
-            .map_err(|e| e.to_string())?;
+        let layout = Layout::from_size_align(total, align).map_err(|e| e.to_string())?;
         let ptr = unsafe { alloc_zeroed(layout) };
         if ptr.is_null() {
             return Err("heap allocation failed".into());
@@ -68,7 +67,8 @@ impl MappedRegion {
     fn new_linux(ring_area: usize, data_area_size: usize, total: usize) -> Result<Self, String> {
         use libc::*;
         unsafe {
-            let name = std::ffi::CString::new("vbus_dmi_ring").expect("static name has no NUL bytes");
+            let name =
+                std::ffi::CString::new("vbus_dmi_ring").expect("static name has no NUL bytes");
             let fd = memfd_create(name.as_ptr(), MFD_ALLOW_SEALING);
             if fd < 0 {
                 return Err(format!("memfd_create: {}", std::io::Error::last_os_error()));
@@ -78,21 +78,51 @@ impl MappedRegion {
                 return Err(format!("ftruncate: {}", std::io::Error::last_os_error()));
             }
             let va = mmap(
-                std::ptr::null_mut(), total * 2,
-                PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0,
+                std::ptr::null_mut(),
+                total * 2,
+                PROT_NONE,
+                MAP_PRIVATE | MAP_ANONYMOUS,
+                -1,
+                0,
             );
-            if va == MAP_FAILED { close(fd); return Err("mmap reserve failed".into()); }
-            let m1 = mmap(va, total, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd, 0);
-            if m1 == MAP_FAILED { munmap(va, total * 2); close(fd); return Err("mmap first failed".into()); }
+            if va == MAP_FAILED {
+                close(fd);
+                return Err("mmap reserve failed".into());
+            }
+            let m1 = mmap(
+                va,
+                total,
+                PROT_READ | PROT_WRITE,
+                MAP_SHARED | MAP_FIXED,
+                fd,
+                0,
+            );
+            if m1 == MAP_FAILED {
+                munmap(va, total * 2);
+                close(fd);
+                return Err("mmap first failed".into());
+            }
             let m2 = mmap(
-                (va as usize + total) as *mut c_void, total,
-                PROT_READ | PROT_WRITE, MAP_SHARED | MAP_FIXED, fd, 0,
+                (va as usize + total) as *mut c_void,
+                total,
+                PROT_READ | PROT_WRITE,
+                MAP_SHARED | MAP_FIXED,
+                fd,
+                0,
             );
-            if m2 == MAP_FAILED { munmap(va, total * 2); close(fd); return Err("mmap mirror failed".into()); }
+            if m2 == MAP_FAILED {
+                munmap(va, total * 2);
+                close(fd);
+                return Err("mmap mirror failed".into());
+            }
             Ok(Self {
                 ring_area_size: ring_area,
                 data_area_size,
-                inner: RegionInner::Linux(LinuxRegion { addr: va as *mut u8, vsize: total * 2, fd }),
+                inner: RegionInner::Linux(LinuxRegion {
+                    addr: va as *mut u8,
+                    vsize: total * 2,
+                    fd,
+                }),
             })
         }
     }

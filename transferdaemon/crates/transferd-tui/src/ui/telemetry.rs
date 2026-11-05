@@ -7,15 +7,17 @@ use ratatui::{
     widgets::{Block, Borders, Gauge, List, ListItem, Paragraph, Sparkline},
     Frame,
 };
-use transferd_api::{Empty, TelemetryServiceClient};
 use tonic::transport::Channel;
+use transferd_api::{Empty, TelemetryServiceClient};
 
 /// Lazily start the telemetry stream when the Telemetry tab is first shown.
 pub fn ensure_stream(app: &mut App) {
     if app.telemetry.stream_rx.is_some() {
         return;
     }
-    let Some(addr) = app.daemon_addr.clone() else { return };
+    let Some(addr) = app.daemon_addr.clone() else {
+        return;
+    };
 
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
     app.telemetry.stream_rx = Some(rx);
@@ -23,21 +25,32 @@ pub fn ensure_stream(app: &mut App) {
     tokio::spawn(async move {
         let endpoint = match Channel::from_shared(addr) {
             Ok(ep) => ep,
-            Err(e) => { tracing::error!("[telemetry] invalid addr: {e}"); return; }
+            Err(e) => {
+                tracing::error!("[telemetry] invalid addr: {e}");
+                return;
+            }
         };
         let channel = match endpoint.connect().await {
             Ok(ch) => ch,
-            Err(e) => { tracing::error!("[telemetry] connect: {e}"); return; }
+            Err(e) => {
+                tracing::error!("[telemetry] connect: {e}");
+                return;
+            }
         };
         let token = transferd_api::auth::resolve_token().unwrap_or_default();
         let mut client =
             TelemetryServiceClient::new(transferd_api::auth::AuthChannel::new(channel, &token));
         let mut stream = match client.stream_telemetry(Empty {}).await {
             Ok(r) => r.into_inner(),
-            Err(e) => { tracing::error!("[telemetry] stream_telemetry: {e}"); return; }
+            Err(e) => {
+                tracing::error!("[telemetry] stream_telemetry: {e}");
+                return;
+            }
         };
         while let Ok(Some(msg)) = stream.message().await {
-            if tx.send(msg).is_err() { break; }
+            if tx.send(msg).is_err() {
+                break;
+            }
         }
     });
 }
@@ -58,9 +71,9 @@ pub fn render(f: &mut Frame, app: &mut App, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),  // metric gauges row
-            Constraint::Length(5),  // sparkline
-            Constraint::Min(0),     // event log
+            Constraint::Length(3), // metric gauges row
+            Constraint::Length(5), // sparkline
+            Constraint::Min(0),    // event log
         ])
         .split(area);
 
@@ -76,7 +89,13 @@ pub fn render(f: &mut Frame, app: &mut App, area: Rect) {
         .split(chunks[0]);
 
     let cpu = app.telemetry.cpu_pct;
-    let cpu_color = if cpu < 60.0 { Color::Green } else if cpu < 85.0 { Color::Yellow } else { Color::Red };
+    let cpu_color = if cpu < 60.0 {
+        Color::Green
+    } else if cpu < 85.0 {
+        Color::Yellow
+    } else {
+        Color::Red
+    };
     f.render_widget(
         Gauge::default()
             .block(Block::default().borders(Borders::ALL).title(" CPU "))
@@ -117,19 +136,27 @@ pub fn render(f: &mut Frame, app: &mut App, area: Rect) {
     );
 
     // ── ATE sparkline ─────────────────────────────────────────────────────────
-    let spark_data: Vec<u64> = app.telemetry.sparkline(60)
+    let spark_data: Vec<u64> = app
+        .telemetry
+        .sparkline(60)
         .into_iter()
         .map(|v| v as u64)
         .collect();
     let sparkline = Sparkline::default()
-        .block(Block::default().borders(Borders::ALL).title(" ATE Lane Activity (last 60s) "))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" ATE Lane Activity (last 60s) "),
+        )
         .data(&spark_data)
         .style(Style::default().fg(Color::Blue))
         .bar_set(symbols::bar::NINE_LEVELS);
     f.render_widget(sparkline, chunks[1]);
 
     // ── Event log ─────────────────────────────────────────────────────────────
-    let items: Vec<ListItem> = app.telemetry.log
+    let items: Vec<ListItem> = app
+        .telemetry
+        .log
         .iter()
         .rev()
         .take(chunks[2].height.saturating_sub(2) as usize)
@@ -137,16 +164,22 @@ pub fn render(f: &mut Frame, app: &mut App, area: Rect) {
             let tag_color = match *tag {
                 "SYS" => Color::Cyan,
                 "ATE" => Color::Green,
-                _     => Color::DarkGray,
+                _ => Color::DarkGray,
             };
             ListItem::new(Line::from(vec![
-                Span::styled(format!("[{tag}] "), Style::default().fg(tag_color).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    format!("[{tag}] "),
+                    Style::default().fg(tag_color).add_modifier(Modifier::BOLD),
+                ),
                 Span::styled(summary.clone(), Style::default().fg(Color::White)),
             ]))
         })
         .collect();
 
-    let log = List::new(items)
-        .block(Block::default().borders(Borders::ALL).title(" Live Event Log "));
+    let log = List::new(items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(" Live Event Log "),
+    );
     f.render_widget(log, chunks[2]);
 }

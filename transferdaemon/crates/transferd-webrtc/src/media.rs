@@ -5,10 +5,13 @@
 //! - `MockMediaCapture`: deterministic synthetic sources for tests and CI.
 //! - `SilentCapture`: stub for audio-only paths.
 
-use async_trait::async_trait;
-use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
-use tokio::sync::mpsc;
 use crate::types::{AudioSamples, VideoFrame};
+use async_trait::async_trait;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
+use tokio::sync::mpsc;
 
 #[cfg(feature = "desktop-capture")]
 mod desktop_capture;
@@ -48,8 +51,8 @@ pub struct MockMediaCapture {
 impl Default for MockMediaCapture {
     fn default() -> Self {
         Self {
-            audio_freq_hz:  440.0,
-            video_enabled:  false,
+            audio_freq_hz: 440.0,
+            video_enabled: false,
             audio_stopped: Arc::new(AtomicBool::new(false)),
             video_stopped: Arc::new(AtomicBool::new(false)),
         }
@@ -58,11 +61,17 @@ impl Default for MockMediaCapture {
 
 impl MockMediaCapture {
     pub fn new_with_video() -> Self {
-        Self { video_enabled: true, ..Default::default() }
+        Self {
+            video_enabled: true,
+            ..Default::default()
+        }
     }
 
     pub fn with_freq(hz: f32) -> Self {
-        Self { audio_freq_hz: hz, ..Default::default() }
+        Self {
+            audio_freq_hz: hz,
+            ..Default::default()
+        }
     }
 }
 
@@ -76,7 +85,9 @@ impl MediaCapture for MockMediaCapture {
         tokio::spawn(async move {
             let mut phase = 0.0f32;
             loop {
-                if stopped.load(Ordering::Relaxed) { break; }
+                if stopped.load(Ordering::Relaxed) {
+                    break;
+                }
                 let samples: AudioSamples = (0..480)
                     .map(|_| {
                         let s = (2.0 * std::f32::consts::PI * phase).sin() * 0.5;
@@ -84,7 +95,9 @@ impl MediaCapture for MockMediaCapture {
                         s
                     })
                     .collect();
-                if tx.send(samples).await.is_err() { break; }
+                if tx.send(samples).await.is_err() {
+                    break;
+                }
                 tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             }
         });
@@ -96,23 +109,37 @@ impl MediaCapture for MockMediaCapture {
     }
 
     async fn start_video(&self) -> Option<mpsc::Receiver<VideoFrame>> {
-        if !self.video_enabled { return None; }
+        if !self.video_enabled {
+            return None;
+        }
         let (tx, rx) = mpsc::channel(4);
         let stopped = self.video_stopped.clone();
         self.video_stopped.store(false, Ordering::Relaxed);
         tokio::spawn(async move {
             let mut luma: u8 = 0;
             loop {
-                if stopped.load(Ordering::Relaxed) { break; }
+                if stopped.load(Ordering::Relaxed) {
+                    break;
+                }
                 // Color-bars pattern: RGBA with cycling luma.
                 let rgba: Vec<u8> = (0..640 * 480 * 4)
                     .map(|i| match i % 4 {
-                        3 => 255,   // alpha
-                        _ => luma,  // R / G / B cycling luma
+                        3 => 255,  // alpha
+                        _ => luma, // R / G / B cycling luma
                     })
                     .collect();
                 luma = luma.wrapping_add(1);
-                if tx.send(VideoFrame { width: 640, height: 480, rgba }).await.is_err() { break; }
+                if tx
+                    .send(VideoFrame {
+                        width: 640,
+                        height: 480,
+                        rgba,
+                    })
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
                 tokio::time::sleep(std::time::Duration::from_millis(33)).await;
             }
         });
@@ -137,14 +164,18 @@ impl MediaCapture for SilentCapture {
         tokio::spawn(async move {
             loop {
                 let silence = vec![0.0f32; 480];
-                if tx.send(silence).await.is_err() { break; }
+                if tx.send(silence).await.is_err() {
+                    break;
+                }
                 tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             }
         });
         rx
     }
     async fn stop_audio(&self) {}
-    async fn start_video(&self) -> Option<mpsc::Receiver<VideoFrame>> { None }
+    async fn start_video(&self) -> Option<mpsc::Receiver<VideoFrame>> {
+        None
+    }
     async fn stop_video(&self) {}
 }
 
@@ -179,6 +210,8 @@ pub fn new_default_capture(video: bool) -> Arc<dyn MediaCapture> {
 
 pub fn try_drain<T>(rx: &mut mpsc::Receiver<T>) -> Vec<T> {
     let mut out = Vec::new();
-    while let Ok(v) = rx.try_recv() { out.push(v); }
+    while let Ok(v) = rx.try_recv() {
+        out.push(v);
+    }
     out
 }

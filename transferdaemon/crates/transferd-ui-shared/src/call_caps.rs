@@ -18,5 +18,9 @@ pub fn update_call_kbps(value: Option<String>) {
 /// The cap as an `Option<u64>` (`None` when unbounded/unknown).
 pub fn call_kbps() -> Option<u64> {
     let k = CALL_KBPS.load(Ordering::Relaxed);
-    if k == 0 { None } else { Some(k) }
+    if k == 0 {
+        None
+    } else {
+        Some(k)
+    }
 }

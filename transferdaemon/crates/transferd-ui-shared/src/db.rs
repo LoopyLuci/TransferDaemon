@@ -2,7 +2,7 @@
 
 use crate::types::{Contact, Message, MessageContent, MessageStatus};
 use egui::Color32;
-use rusqlite::{Connection, Result as SqlResult, params};
+use rusqlite::{params, Connection, Result as SqlResult};
 use serde_json;
 use std::collections::HashMap;
 use std::path::Path;
@@ -45,7 +45,8 @@ impl LocalDb {
     }
 
     fn migrate(&self) -> SqlResult<()> {
-        self.conn.execute_batch("
+        self.conn.execute_batch(
+            "
             PRAGMA journal_mode=WAL;
             CREATE TABLE IF NOT EXISTS contacts (
                 id           TEXT PRIMARY KEY,
@@ -74,7 +75,8 @@ impl LocalDb {
                 key   TEXT PRIMARY KEY,
                 value TEXT NOT NULL
             );
-        ")
+        ",
+        )
     }
 
     // ── Identity cache ───────────────────────────────────────────────────────
@@ -152,9 +154,9 @@ impl LocalDb {
     }
 
     pub fn load_all_contact_colors(&self) -> SqlResult<HashMap<String, Color32>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, color FROM contacts WHERE color IS NOT NULL"
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id, color FROM contacts WHERE color IS NOT NULL")?;
         let rows = stmt.query_map([], |row| {
             let id: String = row.get(0)?;
             let color: String = row.get(1)?;
@@ -169,7 +171,7 @@ impl LocalDb {
 
     pub fn load_contacts(&self) -> SqlResult<Vec<Contact>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, name, last_seen_ts, online, nickname, blocked FROM contacts ORDER BY name"
+            "SELECT id, name, last_seen_ts, online, nickname, blocked FROM contacts ORDER BY name",
         )?;
         let rows = stmt.query_map([], |row| {
             Ok(Contact {
@@ -213,7 +215,10 @@ impl LocalDb {
 
     pub fn update_message_status(&self, id: &str, status: MessageStatus) -> SqlResult<()> {
         let status_str = format!("{:?}", status);
-        self.conn.execute("UPDATE messages SET status=?1 WHERE id=?2", params![status_str, id])?;
+        self.conn.execute(
+            "UPDATE messages SET status=?1 WHERE id=?2",
+            params![status_str, id],
+        )?;
         Ok(())
     }
 
@@ -221,7 +226,7 @@ impl LocalDb {
         let mut stmt = self.conn.prepare(
             "SELECT id, contact_id, outbound, content_json, timestamp_ts, status,
                     group_id, sender_pk, reply_to, reactions_json
-             FROM messages WHERE contact_id=?1 ORDER BY timestamp_ts"
+             FROM messages WHERE contact_id=?1 ORDER BY timestamp_ts",
         )?;
         let rows = stmt.query_map([contact_id], |row| {
             let content_json: String = row.get(3)?;
@@ -229,15 +234,15 @@ impl LocalDb {
             let content: MessageContent = serde_json::from_str(&content_json)
                 .unwrap_or(MessageContent::Text("[unreadable]".into()));
             let status = match status_str.as_str() {
-                "Pending"   => MessageStatus::Pending,
-                "Sent"      => MessageStatus::Sent,
+                "Pending" => MessageStatus::Pending,
+                "Sent" => MessageStatus::Sent,
                 "Delivered" => MessageStatus::Delivered,
-                "Read"      => MessageStatus::Read,
-                _           => MessageStatus::Failed,
+                "Read" => MessageStatus::Read,
+                _ => MessageStatus::Failed,
             };
             let reactions_json: String = row.get(9)?;
-            let reactions: Vec<(String, String)> = serde_json::from_str(&reactions_json)
-                .unwrap_or_default();
+            let reactions: Vec<(String, String)> =
+                serde_json::from_str(&reactions_json).unwrap_or_default();
             Ok(Message {
                 id: row.get(0)?,
                 contact_id: row.get(1)?,
@@ -266,7 +271,9 @@ impl LocalDb {
     }
 
     pub fn get_setting(&self, key: &str) -> SqlResult<Option<String>> {
-        let mut stmt = self.conn.prepare("SELECT value FROM settings WHERE key=?1")?;
+        let mut stmt = self
+            .conn
+            .prepare("SELECT value FROM settings WHERE key=?1")?;
         let mut rows = stmt.query([key])?;
         rows.next()?.map(|r| r.get(0)).transpose()
     }

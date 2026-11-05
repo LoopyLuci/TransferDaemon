@@ -71,7 +71,11 @@ pub fn daemon_limits() -> TransferLimits {
     ] {
         if let Some(v) = env(key) {
             if let Ok(mb) = v.trim().parse::<u64>() {
-                *dst = if mb == 0 { MaxBytes::UNBOUNDED } else { MaxBytes::custom(mb << 20) };
+                *dst = if mb == 0 {
+                    MaxBytes::UNBOUNDED
+                } else {
+                    MaxBytes::custom(mb << 20)
+                };
             }
         }
     }
@@ -115,11 +119,18 @@ pub fn daemon_limits_with(settings: &std::collections::HashMap<String, String>) 
     ] {
         if let Some(v) = settings.get(key).filter(|v| !v.trim().is_empty()) {
             if let Ok(mb) = v.trim().parse::<u64>() {
-                *dst = if mb == 0 { MaxBytes::UNBOUNDED } else { MaxBytes::custom(mb << 20) };
+                *dst = if mb == 0 {
+                    MaxBytes::UNBOUNDED
+                } else {
+                    MaxBytes::custom(mb << 20)
+                };
             }
         }
     }
-    if let Some(v) = settings.get(SETTING_CALL_KEY).filter(|v| !v.trim().is_empty()) {
+    if let Some(v) = settings
+        .get(SETTING_CALL_KEY)
+        .filter(|v| !v.trim().is_empty())
+    {
         if let Ok(n) = v.trim().parse::<u64>() {
             l.call_kbps = n;
         }

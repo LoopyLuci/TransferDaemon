@@ -62,8 +62,10 @@ impl RelayAnnounce {
 
     pub fn is_expired(&self) -> bool {
         use std::time::{SystemTime, UNIX_EPOCH};
-        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
         self.expires_at <= now
     }
 }
-

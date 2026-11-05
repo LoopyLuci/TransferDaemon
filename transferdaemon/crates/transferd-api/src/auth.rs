@@ -25,21 +25,27 @@ impl AuthChannel {
     pub fn new(channel: Channel, token: &str) -> Self {
         let auth = HeaderValue::from_str(&format!("Bearer {token}"))
             .unwrap_or_else(|_| HeaderValue::from_static("Bearer "));
-        Self { inner: channel, auth }
+        Self {
+            inner: channel,
+            auth,
+        }
     }
 }
 
 impl Service<Request<BoxBody>> for AuthChannel {
     type Response = Response<tonic::transport::Body>;
     type Error = Error;
-    type Future = Pin<Box<dyn std::future::Future<Output = Result<Self::Response, Self::Error>> + Send>>;
+    type Future =
+        Pin<Box<dyn std::future::Future<Output = Result<Self::Response, Self::Error>> + Send>>;
 
     fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         self.inner.poll_ready(cx)
     }
 
     fn call(&mut self, mut request: Request<BoxBody>) -> Self::Future {
-        request.headers_mut().insert("authorization", self.auth.clone());
+        request
+            .headers_mut()
+            .insert("authorization", self.auth.clone());
         Box::pin(self.inner.call(request))
     }
 }
@@ -54,9 +60,7 @@ impl Service<Request<BoxBody>> for AuthChannel {
 pub fn token_file_path() -> std::path::PathBuf {
     let base = std::env::var_os("TRANSFERD_DATA_DIR")
         .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| {
-            dirs::data_local_dir().unwrap_or_else(|| std::path::PathBuf::from("."))
-        });
+        .unwrap_or_else(|| dirs::data_local_dir().unwrap_or_else(|| std::path::PathBuf::from(".")));
     base.join("transferdaemon").join("daemon_token")
 }
 
@@ -73,7 +77,11 @@ pub fn resolve_token() -> Option<String> {
 pub fn read_token_file(path: &std::path::Path) -> Option<String> {
     let token = std::fs::read_to_string(path).ok()?;
     let token = token.trim();
-    if token.is_empty() { None } else { Some(token.to_owned()) }
+    if token.is_empty() {
+        None
+    } else {
+        Some(token.to_owned())
+    }
 }
 
 /// Persist `token` to the token file, creating parent dirs. On Unix the file is

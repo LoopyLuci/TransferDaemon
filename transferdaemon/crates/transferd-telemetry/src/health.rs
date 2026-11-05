@@ -33,7 +33,10 @@ mod platform {
     impl CpuState {
         pub fn new() -> Self {
             let (u, s, i) = read_cpu_ticks().unwrap_or((0, 0, 0));
-            Self { prev_work: u + s, prev_total: u + s + i }
+            Self {
+                prev_work: u + s,
+                prev_total: u + s + i,
+            }
         }
 
         pub fn sample(&mut self) -> f32 {
@@ -44,7 +47,11 @@ mod platform {
             let dtotal = total.saturating_sub(self.prev_total) as f32;
             self.prev_work = work;
             self.prev_total = total;
-            if dtotal == 0.0 { 0.0 } else { (dwork / dtotal * 100.0).clamp(0.0, 100.0) }
+            if dtotal == 0.0 {
+                0.0
+            } else {
+                (dwork / dtotal * 100.0).clamp(0.0, 100.0)
+            }
         }
     }
 
@@ -52,7 +59,9 @@ mod platform {
         let status = std::fs::read_to_string("/proc/self/status").unwrap_or_default();
         for line in status.lines() {
             if let Some(rest) = line.strip_prefix("VmRSS:") {
-                return rest.split_whitespace().next()
+                return rest
+                    .split_whitespace()
+                    .next()
                     .and_then(|v| v.parse().ok())
                     .unwrap_or(0);
             }
@@ -65,10 +74,16 @@ mod platform {
 mod platform {
     pub struct CpuState;
     impl CpuState {
-        pub fn new() -> Self { Self }
-        pub fn sample(&mut self) -> f32 { 0.0 }
+        pub fn new() -> Self {
+            Self
+        }
+        pub fn sample(&mut self) -> f32 {
+            0.0
+        }
     }
-    pub fn mem_rss_kb() -> u64 { 0 }
+    pub fn mem_rss_kb() -> u64 {
+        0
+    }
 }
 
 pub async fn spawn_health_sampler(

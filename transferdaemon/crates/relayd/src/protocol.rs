@@ -15,12 +15,12 @@ use std::net::SocketAddr;
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Tag {
-    Register  = 0x01,
-    Forward   = 0x02,
+    Register = 0x01,
+    Forward = 0x02,
     Keepalive = 0x03,
     Challenge = 0x04,
-    Error     = 0x05,
-    Ack       = 0x06,
+    Error = 0x05,
+    Ack = 0x06,
     /// A registration carrying a ghost key certificate (see `crate::ghost`).
     RegisterGhost = 0x07,
     /// Ask the relay which addresses it sees for two tokens (STUN-style NAT traversal).
@@ -38,7 +38,7 @@ impl Tag {
             0x06 => Some(Self::Ack),
             0x07 => Some(Self::RegisterGhost),
             0x08 => Some(Self::Locate),
-            _    => None,
+            _ => None,
         }
     }
 }
@@ -159,18 +159,18 @@ pub struct LocatedMsg {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[repr(u16)]
 pub enum ErrorCode {
-    InvalidPoW        = 1,
-    TokenNotFound     = 2,
+    InvalidPoW = 1,
+    TokenNotFound = 2,
     TokenAlreadyExists = 3,
-    PayloadTooLarge   = 4,
-    RateLimited       = 5,
-    SeqReplay         = 6,
+    PayloadTooLarge = 4,
+    RateLimited = 5,
+    SeqReplay = 6,
     BandwidthExceeded = 7,
     /// This relay admits only registrations with a ghost key certificate from an issuer it trusts.
-    GhostRequired     = 8,
+    GhostRequired = 8,
     /// The ghost key certificate or its signature did not check out, or the key holds too many sessions.
-    GhostRejected     = 9,
-    InternalError     = 0xFFFF,
+    GhostRejected = 9,
+    InternalError = 0xFFFF,
 }
 
 /// Acknowledgment sent back to the sender after a successful FORWARD.
@@ -199,4 +199,3 @@ pub fn split(buf: &[u8]) -> Option<(Tag, &[u8])> {
     let (&tag_byte, rest) = buf.split_first()?;
     Some((Tag::from_byte(tag_byte)?, rest))
 }
-

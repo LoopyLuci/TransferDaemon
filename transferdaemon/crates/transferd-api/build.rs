@@ -12,11 +12,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     tonic_build::configure()
         .build_server(true)
         .build_client(true)
-        .message_attribute(".", "#[derive(serde::Serialize, serde::Deserialize)] #[serde(default)]")
+        .message_attribute(
+            ".",
+            "#[derive(serde::Serialize, serde::Deserialize)] #[serde(default)]",
+        )
         .enum_attribute(".", "#[derive(serde::Serialize, serde::Deserialize)]")
-        .compile(
-            &["proto/transferd.proto"],
-            &["proto"],
-        )?;
+        .compile(&["proto/transferd.proto"], &["proto"])?;
     Ok(())
 }

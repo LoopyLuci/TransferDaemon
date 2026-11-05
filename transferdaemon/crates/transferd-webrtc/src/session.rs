@@ -5,11 +5,11 @@
 //! replaces the actual codec/network stack with in-memory channels.  All tests
 //! use this; the real WebRTC session is introduced per-platform later.
 
+use crate::media::MediaCapture;
+use crate::types::{AudioSamples, CallState, IceCandidateInit, VideoFrame};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::{mpsc, Mutex};
-use crate::media::MediaCapture;
-use crate::types::{AudioSamples, CallState, IceCandidateInit, VideoFrame};
 
 // ---------------------------------------------------------------------------
 // SimulatedCallSession
@@ -19,7 +19,7 @@ pub struct SimulatedCallSession {
     /// Stable call identifier assigned by the daemon.
     pub call_id: String,
     pub conv_id: String,
-    pub video:   bool,
+    pub video: bool,
 
     /// Synthetic SDP offer produced by this session.
     pub local_sdp: String,
@@ -44,11 +44,7 @@ pub struct SimulatedCallSession {
 impl SimulatedCallSession {
     /// Create an outgoing call session.  SDP is generated immediately;
     /// call `activate()` once the remote answer arrives.
-    pub async fn new_outgoing(
-        conv_id: String,
-        video: bool,
-        media: Arc<dyn MediaCapture>,
-    ) -> Self {
+    pub async fn new_outgoing(conv_id: String, video: bool, media: Arc<dyn MediaCapture>) -> Self {
         let call_id = gen_id("call");
         let local_sdp = make_sdp(&call_id, "offer");
         let state = Arc::new(Mutex::new(CallState::Outgoing {
@@ -92,7 +88,9 @@ impl SimulatedCallSession {
         let mut local_audio = media.start_audio().await;
         tasks.push(tokio::spawn(async move {
             while let Some(samples) = local_audio.recv().await {
-                if audio_tx.send(samples).await.is_err() { break; }
+                if audio_tx.send(samples).await.is_err() {
+                    break;
+                }
             }
         }));
 
@@ -102,7 +100,9 @@ impl SimulatedCallSession {
                 let (vt, vr) = mpsc::channel(4);
                 tasks.push(tokio::spawn(async move {
                     while let Some(f) = src.recv().await {
-                        if vt.send(f).await.is_err() { break; }
+                        if vt.send(f).await.is_err() {
+                            break;
+                        }
                     }
                 }));
                 Some(vr)
@@ -118,8 +118,8 @@ impl SimulatedCallSession {
 
         // Synthesise a single loopback ICE candidate immediately.
         let candidate = IceCandidateInit {
-            candidate:       format!("candidate:1 1 udp 2130706431 127.0.0.1 {} typ host", 49152),
-            sdp_mid:         Some("0".into()),
+            candidate: format!("candidate:1 1 udp 2130706431 127.0.0.1 {} typ host", 49152),
+            sdp_mid: Some("0".into()),
             sdp_mline_index: Some(0),
         };
         let _ = ice_tx.try_send(candidate);

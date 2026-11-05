@@ -21,7 +21,11 @@ pub enum Mode {
 
 impl Mode {
     pub fn parse(s: &str) -> Self {
-        if s.eq_ignore_ascii_case("compact") { Self::Compact } else { Self::All }
+        if s.eq_ignore_ascii_case("compact") {
+            Self::Compact
+        } else {
+            Self::All
+        }
     }
 }
 
@@ -77,10 +81,24 @@ fn content(result: &Value) -> Value {
 
 fn search(ops: &[Value], args: &Value) -> Value {
     if let Some(id) = args.get("operation").and_then(Value::as_str) {
-        return ops.iter().find(|o| o["id"] == id).cloned().unwrap_or_else(|| json!({"error": format!("no operation {id}")}));
+        return ops
+            .iter()
+            .find(|o| o["id"] == id)
+            .cloned()
+            .unwrap_or_else(|| json!({"error": format!("no operation {id}")}));
     }
-    let q: Vec<String> = args.get("query").and_then(Value::as_str).unwrap_or_default().to_lowercase().split_whitespace().map(str::to_string).collect();
-    let group = args.get("group").and_then(Value::as_str).unwrap_or_default();
+    let q: Vec<String> = args
+        .get("query")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_lowercase()
+        .split_whitespace()
+        .map(str::to_string)
+        .collect();
+    let group = args
+        .get("group")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
     let hits: Vec<Value> = ops
         .iter()
         .filter(|o| group.is_empty() || o["group"] == group)
@@ -100,14 +118,24 @@ where
     Fut: Future<Output = Result<Value, String>>,
 {
     let id = msg.get("id").cloned();
-    let method = msg.get("method").and_then(Value::as_str).unwrap_or_default();
+    let method = msg
+        .get("method")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
     let params = msg.get("params").cloned().unwrap_or(json!({}));
     let id = id?; // notifications (no id) get no reply
     let ok = |result: Value| Some(json!({"jsonrpc": "2.0", "id": id.clone(), "result": result}));
-    let err = |code: i64, message: String| Some(json!({"jsonrpc": "2.0", "id": id.clone(), "error": {"code": code, "message": message}}));
+    let err = |code: i64, message: String| {
+        Some(
+            json!({"jsonrpc": "2.0", "id": id.clone(), "error": {"code": code, "message": message}}),
+        )
+    };
     match method {
         "initialize" => {
-            let asked = params.get("protocolVersion").and_then(Value::as_str).unwrap_or(PROTOCOL_VERSION);
+            let asked = params
+                .get("protocolVersion")
+                .and_then(Value::as_str)
+                .unwrap_or(PROTOCOL_VERSION);
             ok(json!({
                 "protocolVersion": asked,
                 "capabilities": {"tools": {"listChanged": false}},
@@ -118,23 +146,35 @@ where
         "ping" => ok(json!({})),
         "tools/list" => ok(json!({"tools": tools(ops, mode)})),
         "tools/call" => {
-            let name = params.get("name").and_then(Value::as_str).unwrap_or_default().to_string();
+            let name = params
+                .get("name")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
             let args = params.get("arguments").cloned().unwrap_or(json!({}));
             let (op, args) = match (mode, name.as_str()) {
                 (Mode::Compact, "transferd_operations") => {
                     return ok(json!({"content": content(&search(ops, &args)), "isError": false}));
                 }
                 (Mode::Compact, "transferd_call") => (
-                    args.get("operation").and_then(Value::as_str).unwrap_or_default().to_string(),
+                    args.get("operation")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string(),
                     args.get("args").cloned().unwrap_or(json!({})),
                 ),
-                _ => match ops.iter().find(|o| tool_name(o["id"].as_str().unwrap_or_default()) == name) {
+                _ => match ops
+                    .iter()
+                    .find(|o| tool_name(o["id"].as_str().unwrap_or_default()) == name)
+                {
                     Some(o) => (o["id"].as_str().unwrap_or_default().to_string(), args),
                     None => return err(-32602, format!("unknown tool {name}")),
                 },
             };
             match call(op, args).await {
-                Ok(v) => ok(json!({"content": content(&v), "structuredContent": if v.is_object() { v.clone() } else { json!({"result": v}) }, "isError": false})),
+                Ok(v) => ok(
+                    json!({"content": content(&v), "structuredContent": if v.is_object() { v.clone() } else { json!({"result": v}) }, "isError": false}),
+                ),
                 Err(e) => ok(json!({"content": [{"type": "text", "text": e}], "isError": true})),
             }
         }
@@ -149,7 +189,10 @@ mod tests {
     use super::*;
 
     fn ops() -> Vec<Value> {
-        crate::catalog::all().iter().map(|o| serde_json::to_value(o).unwrap_or_default()).collect()
+        crate::catalog::all()
+            .iter()
+            .map(|o| serde_json::to_value(o).unwrap_or_default())
+            .collect()
     }
 
     #[tokio::test]
@@ -157,17 +200,50 @@ mod tests {
         let ops = ops();
         let call = |op: String, args: Value| async move { Ok(json!({"op": op, "args": args})) };
         let init = handle(&json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-03-26"}}), &ops, Mode::All, call).await;
-        assert_eq!(init.as_ref().map(|v| v["result"]["protocolVersion"].clone()), Some(json!("2025-03-26")));
-        assert!(handle(&json!({"jsonrpc": "2.0", "method": "notifications/initialized"}), &ops, Mode::All, call).await.is_none());
-        let list = handle(&json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}), &ops, Mode::All, call).await.unwrap_or_default();
-        let tools = list["result"]["tools"].as_array().cloned().unwrap_or_default();
+        assert_eq!(
+            init.as_ref()
+                .map(|v| v["result"]["protocolVersion"].clone()),
+            Some(json!("2025-03-26"))
+        );
+        assert!(handle(
+            &json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+            &ops,
+            Mode::All,
+            call
+        )
+        .await
+        .is_none());
+        let list = handle(
+            &json!({"jsonrpc": "2.0", "id": 2, "method": "tools/list"}),
+            &ops,
+            Mode::All,
+            call,
+        )
+        .await
+        .unwrap_or_default();
+        let tools = list["result"]["tools"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
         assert_eq!(tools.len(), ops.len());
-        assert!(tools.iter().any(|t| t["name"] == "messages_send_text" && t["annotations"]["readOnlyHint"] == false));
+        assert!(tools.iter().any(
+            |t| t["name"] == "messages_send_text" && t["annotations"]["readOnlyHint"] == false
+        ));
         let r = handle(&json!({"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "gui_click", "arguments": {"target": {"text": "Send"}}}}), &ops, Mode::All, call).await.unwrap_or_default();
         assert_eq!(r["result"]["structuredContent"]["op"], "gui.click");
         let c = handle(&json!({"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {"name": "transferd_operations", "arguments": {"query": "send file"}}}), &ops, Mode::Compact, call).await.unwrap_or_default();
-        assert!(c["result"]["content"][0]["text"].as_str().unwrap_or_default().contains("transfers.send_file"));
-        let bad = handle(&json!({"jsonrpc": "2.0", "id": 5, "method": "tools/call", "params": {"name": "nope"}}), &ops, Mode::All, call).await.unwrap_or_default();
+        assert!(c["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("transfers.send_file"));
+        let bad = handle(
+            &json!({"jsonrpc": "2.0", "id": 5, "method": "tools/call", "params": {"name": "nope"}}),
+            &ops,
+            Mode::All,
+            call,
+        )
+        .await
+        .unwrap_or_default();
         assert_eq!(bad["error"]["code"], -32602);
     }
 }

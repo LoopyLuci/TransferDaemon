@@ -13,12 +13,10 @@ pub mod ios_media;
 
 #[cfg(target_os = "android")]
 pub fn android_main_impl(app: android_activity::AndroidApp) {
-    use transferd_ui_shared::{
-        app::TransferDaemonApp,
-        daemon::MockDaemon,
-        grpc_daemon::GrpcDaemon,
-    };
     use std::sync::Arc;
+    use transferd_ui_shared::{
+        app::TransferDaemonApp, daemon::MockDaemon, grpc_daemon::GrpcDaemon,
+    };
     use winit::platform::android::EventLoopBuilderExtAndroid;
 
     // ── Logging ───────────────────────────────────────────────────────────────
@@ -88,10 +86,9 @@ pub fn android_main_impl(app: android_activity::AndroidApp) {
     });
 
     // ── Media capture factory (uses real Camera2 + AudioRecord) ───────────────
-    let media_factory: Box<dyn Fn(bool) -> std::sync::Arc<dyn transferd_webrtc::media::MediaCapture> + Send + Sync> =
-        Box::new(|video| {
-            std::sync::Arc::new(android_media::AndroidMediaCapture::new(video))
-        });
+    let media_factory: Box<
+        dyn Fn(bool) -> std::sync::Arc<dyn transferd_webrtc::media::MediaCapture> + Send + Sync,
+    > = Box::new(|video| std::sync::Arc::new(android_media::AndroidMediaCapture::new(video)));
 
     // ── Display density ─────────────────────────────────────────────────────
     // Query the actual device DPI before `app` is moved into event_loop_builder.
@@ -99,8 +96,10 @@ pub fn android_main_impl(app: android_activity::AndroidApp) {
     android_logger::log(&format!("Device display density: {device_density:.2}"));
     // Publish so egui's update() loop can track runtime changes (e.g. the user
     // adjusting "Display size" in Android Settings while the app is running).
-    transferd_ui_shared::platform_hooks::DEVICE_PPP
-        .store(device_density.to_bits(), std::sync::atomic::Ordering::Relaxed);
+    transferd_ui_shared::platform_hooks::DEVICE_PPP.store(
+        device_density.to_bits(),
+        std::sync::atomic::Ordering::Relaxed,
+    );
 
     // ── eframe ────────────────────────────────────────────────────────────────
     android_logger::log("Building NativeOptions…");
@@ -137,14 +136,12 @@ pub fn android_main_impl(app: android_activity::AndroidApp) {
             td_app.chat_page_mut().on_attach = Some(on_attach);
             td_app.poll_file_pick = Some(Box::new(|| crate::file_picker::take()));
             // Wire the OS share-intent bridge (file/text from other apps).
-            td_app.poll_share = Some(Box::new(|| {
-                match crate::share_bridge::take() {
-                    Some((kind, payload)) => {
-                        eprintln!("[share] drained by UI: kind={kind} len={}", payload.len());
-                        Some((kind, payload))
-                    }
-                    None => None,
+            td_app.poll_share = Some(Box::new(|| match crate::share_bridge::take() {
+                Some((kind, payload)) => {
+                    eprintln!("[share] drained by UI: kind={kind} len={}", payload.len());
+                    Some((kind, payload))
                 }
+                None => None,
             }));
             // Wire real camera/mic capture for calls.
             td_app.chat_page_mut().media_factory = Some(media_factory);
@@ -181,12 +178,10 @@ fn query_device_density(app: &android_activity::AndroidApp) -> f32 {
 /// Called from Swift via FFI. Initializes the daemon and runs the UI.
 #[cfg(target_os = "ios")]
 pub fn ios_main() {
-    use transferd_ui_shared::{
-        app::TransferDaemonApp,
-        daemon::MockDaemon,
-        grpc_daemon::GrpcDaemon,
-    };
     use std::sync::Arc;
+    use transferd_ui_shared::{
+        app::TransferDaemonApp, daemon::MockDaemon, grpc_daemon::GrpcDaemon,
+    };
 
     // ── Start daemon ──────────────────────────────────────────────────────────
     crate::daemon_thread::spawn_with_config(String::new(), None);
@@ -224,10 +219,9 @@ pub fn ios_main() {
     }
 
     // ── Media capture factory ─────────────────────────────────────────────────
-    let media_factory: Box<dyn Fn(bool) -> std::sync::Arc<dyn transferd_webrtc::media::MediaCapture> + Send + Sync> =
-        Box::new(|video| {
-            std::sync::Arc::new(ios_media::IosMediaCapture::new(video))
-        });
+    let media_factory: Box<
+        dyn Fn(bool) -> std::sync::Arc<dyn transferd_webrtc::media::MediaCapture> + Send + Sync,
+    > = Box::new(|video| std::sync::Arc::new(ios_media::IosMediaCapture::new(video)));
 
     // ── eframe ────────────────────────────────────────────────────────────────
     let options = eframe::NativeOptions::default();

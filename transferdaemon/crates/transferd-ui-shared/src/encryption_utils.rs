@@ -13,8 +13,8 @@ pub fn encrypt_with_key(key: &[u8; 32], data: &[u8]) -> Result<Vec<u8>, String> 
     rand::thread_rng().fill_bytes(&mut nonce_bytes);
 
     // Create cipher
-    let cipher = Aes256Gcm::new_from_slice(key)
-        .map_err(|e| format!("Failed to create cipher: {e}"))?;
+    let cipher =
+        Aes256Gcm::new_from_slice(key).map_err(|e| format!("Failed to create cipher: {e}"))?;
 
     // Encrypt
     let nonce = Nonce::from_slice(&nonce_bytes);
@@ -39,8 +39,8 @@ pub fn decrypt_with_key(key: &[u8; 32], data: &[u8]) -> Result<Vec<u8>, String> 
     let ciphertext = &data[12..];
 
     // Create cipher
-    let cipher = Aes256Gcm::new_from_slice(key)
-        .map_err(|e| format!("Failed to create cipher: {e}"))?;
+    let cipher =
+        Aes256Gcm::new_from_slice(key).map_err(|e| format!("Failed to create cipher: {e}"))?;
 
     // Decrypt
     let nonce = Nonce::from_slice(nonce);

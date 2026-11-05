@@ -145,7 +145,11 @@ pub extern "system" fn Java_com_transferdaemon_app_CameraHelper_deliverFrame(
         Err(_) => return,
     };
     let rgba = yuv_i420_to_rgba(&yuv, width as u32, height as u32);
-    let frame = VideoFrame { width: width as u32, height: height as u32, rgba };
+    let frame = VideoFrame {
+        width: width as u32,
+        height: height as u32,
+        rgba,
+    };
     if let Ok(guard) = VIDEO_TX.lock() {
         if let Some(tx) = &*guard {
             let _ = tx.try_send(frame);
@@ -223,7 +227,7 @@ fn yuv_i420_to_rgba(yuv: &[u8], width: u32, height: u32) -> Vec<u8> {
             let b = (y + 1.772 * u).clamp(0.0, 255.0) as u8;
 
             let base = (row * w + col) * 4;
-            rgba[base]     = r;
+            rgba[base] = r;
             rgba[base + 1] = g;
             rgba[base + 2] = b;
             // rgba[base + 3] already 255

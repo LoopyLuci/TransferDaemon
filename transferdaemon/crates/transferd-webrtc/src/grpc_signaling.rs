@@ -4,9 +4,8 @@
 /// Requires the `grpc-signaling` feature.
 use tonic::transport::Channel;
 use transferd_api::{
-    CallServiceClient,
-    CallStartRequest, CallAcceptRequest, CallEndRequest, IceCandidateMsg,
-    CallEvent, Empty,
+    CallAcceptRequest, CallEndRequest, CallEvent, CallServiceClient, CallStartRequest, Empty,
+    IceCandidateMsg,
 };
 
 // Re-exported so callers don't need to depend on transferd-api directly.
@@ -38,7 +37,10 @@ impl GrpcSignaling {
             })
             .await?
             .into_inner();
-        Ok(Self { channel, call_id: resp.call_id })
+        Ok(Self {
+            channel,
+            call_id: resp.call_id,
+        })
     }
 
     /// Callee side: accept a pending call and get back the original offer SDP.
@@ -56,14 +58,18 @@ impl GrpcSignaling {
             .await?
             .into_inner();
         let offer_sdp = resp.remote_sdp;
-        Ok((Self { channel, call_id: call_id.to_owned() }, offer_sdp))
+        Ok((
+            Self {
+                channel,
+                call_id: call_id.to_owned(),
+            },
+            offer_sdp,
+        ))
     }
 
     /// Open the event stream.  Subscribe BEFORE sending an invite to avoid
     /// missing broadcast events (broadcast channel only delivers to live receivers).
-    pub async fn subscribe(
-        &self,
-    ) -> Result<tonic::Streaming<CallEvent>, tonic::Status> {
+    pub async fn subscribe(&self) -> Result<tonic::Streaming<CallEvent>, tonic::Status> {
         let mut c = self.client();
         Ok(c.stream_call_events(Empty {}).await?.into_inner())
     }
@@ -82,8 +88,10 @@ impl GrpcSignaling {
     /// Terminate the call.
     pub async fn end(&self) -> Result<(), tonic::Status> {
         let mut c = self.client();
-        c.end_call(CallEndRequest { call_id: self.call_id.clone() })
-            .await?;
+        c.end_call(CallEndRequest {
+            call_id: self.call_id.clone(),
+        })
+        .await?;
         Ok(())
     }
 }

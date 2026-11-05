@@ -3,8 +3,8 @@ use crate::dht::DhtAnnouncer;
 use crate::settings::RelaySettings;
 use crate::token_bucket::TokenBucket;
 use relayd::protocol::{
-    self, AckMsg, ChallengeMsg, DeliveredMsg, ErrorCode, ErrorMsg, ForwardMsg,
-    GhostRegisterMsg, KeepaliveMsg, RegisterMsg, Tag,
+    self, AckMsg, ChallengeMsg, DeliveredMsg, ErrorCode, ErrorMsg, ForwardMsg, GhostRegisterMsg,
+    KeepaliveMsg, RegisterMsg, Tag,
 };
 use relayd::relay::Relay;
 use std::net::SocketAddr;
@@ -15,7 +15,10 @@ use tokio::net::UdpSocket;
 use tokio::sync::broadcast;
 
 fn now_secs() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 /// Best-effort public IP detection — falls back to loopback for LAN-only setups.
@@ -86,7 +89,7 @@ impl RelayEngine {
 
         let relay = Arc::new(Mutex::new(Relay::new(
             settings.difficulty,
-            300,                    // 5-minute TTL
+            300, // 5-minute TTL
             protocol::MAX_PAYLOAD,
         )));
         let bucket = Arc::new(TokenBucket::new(settings.bandwidth_kbps));
@@ -96,7 +99,9 @@ impl RelayEngine {
 
         // ── DHT announcer (non-fatal if bind fails) ──────────────────────────
         let dht_bind = format!("0.0.0.0:{}", settings.dht_port);
-        let dht = DhtAnnouncer::new(&dht_bind, settings.identity_pubkey_hash).await.ok();
+        let dht = DhtAnnouncer::new(&dht_bind, settings.identity_pubkey_hash)
+            .await
+            .ok();
         if let Some(ref ann) = dht {
             ann.bootstrap(&settings.dht_bootstrap_nodes).await;
             let relay_addr = format!("{}:{port}", detect_public_addr());
@@ -107,13 +112,14 @@ impl RelayEngine {
                 difficulty: settings.difficulty,
                 bandwidth_kbps: settings.bandwidth_kbps,
                 auth_mode: match &settings.auth_policy {
-                    crate::settings::AuthPolicy::Public       => "public".into(),
+                    crate::settings::AuthPolicy::Public => "public".into(),
                     crate::settings::AuthPolicy::AllowList(_) => "allow_list".into(),
                 },
                 published_at: now,
                 expires_at: now + 900,
                 auth: [0u8; 32],
-            }.sign(&settings.identity_pubkey_hash);
+            }
+            .sign(&settings.identity_pubkey_hash);
             ann.start_republish_task(announce, shutdown_tx.subscribe());
         }
 
@@ -190,7 +196,11 @@ impl RelayEngine {
 
     /// Returns a snapshot of the current engine status.
     pub fn status(&self) -> RelayStatus {
-        let active_sessions = self.relay.lock().unwrap_or_else(|e| e.into_inner()).active_count();
+        let active_sessions = self
+            .relay
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .active_count();
         RelayStatus {
             active_sessions,
             port: self.port,
@@ -198,11 +208,15 @@ impl RelayEngine {
         }
     }
 
-    pub fn port(&self) -> u16 { self.port }
+    pub fn port(&self) -> u16 {
+        self.port
+    }
 }
 
 impl Drop for RelayEngine {
-    fn drop(&mut self) { self.stop(); }
+    fn drop(&mut self) {
+        self.stop();
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -217,11 +231,15 @@ async fn handle_datagram(
     bucket: &Arc<TokenBucket>,
     max_sessions: usize,
 ) {
-    let Some((tag, body)) = protocol::split(buf) else { return };
+    let Some((tag, body)) = protocol::split(buf) else {
+        return;
+    };
 
     match tag {
         Tag::Register => {
-            let Ok(msg) = bincode::deserialize::<RegisterMsg>(body) else { return };
+            let Ok(msg) = bincode::deserialize::<RegisterMsg>(body) else {
+                return;
+            };
 
             // All relay state mutations complete before any await.
             let outcome: Result<ChallengeMsg, (ErrorCode, u32, String)> = {
@@ -258,7 +276,9 @@ async fn handle_datagram(
         Tag::RegisterGhost => {
             // a registration with a ghost key certificate (relayd::ghost): admitted if this relay's ghost policy
             // trusts its issuer; the same session limit as plain registrations
-            let Ok(msg) = bincode::deserialize::<GhostRegisterMsg>(body) else { return };
+            let Ok(msg) = bincode::deserialize::<GhostRegisterMsg>(body) else {
+                return;
+            };
             let outcome: Result<ChallengeMsg, (ErrorCode, u32, String)> = {
                 let mut r = relay.lock().unwrap_or_else(|e| e.into_inner());
                 if r.active_count() >= max_sessions {
@@ -267,7 +287,11 @@ async fn handle_datagram(
                     match r.register_ghost(&msg, src) {
                         Ok(()) => {
                             let c = r.current_challenge();
-                            Ok(ChallengeMsg { challenge: c.bytes, expires_at: c.expires_at, difficulty: c.difficulty })
+                            Ok(ChallengeMsg {
+                                challenge: c.bytes,
+                                expires_at: c.expires_at,
+                                difficulty: c.difficulty,
+                            })
                         }
                         Err(e) => Err((e.code(), msg.register.seq, e.to_string())),
                     }
@@ -285,8 +309,13 @@ async fn handle_datagram(
 
         Tag::Locate => {
             // STUN-style address location for a hole punch: the same answer relayd gives.
-            let Ok(msg) = bincode::deserialize::<relayd::protocol::LocateMsg>(body) else { return };
-            let answer = relay.lock().unwrap_or_else(|e| e.into_inner()).locate_answer(&msg, src);
+            let Ok(msg) = bincode::deserialize::<relayd::protocol::LocateMsg>(body) else {
+                return;
+            };
+            let answer = relay
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .locate_answer(&msg, src);
             match answer {
                 Ok(located) => {
                     if let Ok(frame) = protocol::encode(Tag::Locate, &located) {
@@ -298,14 +327,20 @@ async fn handle_datagram(
         }
 
         Tag::Forward => {
-            let Ok(msg) = bincode::deserialize::<ForwardMsg>(body) else { return };
+            let Ok(msg) = bincode::deserialize::<ForwardMsg>(body) else {
+                return;
+            };
             if !bucket.try_consume(msg.ciphertext.len()) {
                 send_error(socket, src, ErrorCode::RateLimited, 0, "bandwidth exceeded").await;
                 return;
             }
             // Resolve forward destination before any await.
             let result: Result<(SocketAddr, u16, Vec<u8>), (ErrorCode, String)> = {
-                match relay.lock().unwrap_or_else(|e| e.into_inner()).forward(&msg) {
+                match relay
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .forward(&msg)
+                {
                     Ok(dst) => Ok((dst, msg.sender_seq, msg.ciphertext)),
                     Err(e) => Err((e.code(), e.to_string())),
                 }
@@ -318,7 +353,10 @@ async fn handle_datagram(
                     let jitter_ms = rand::random::<u64>() % 10; // 0-9ms random delay
                     tokio::time::sleep(Duration::from_millis(jitter_ms)).await;
 
-                    let delivered = DeliveredMsg { sender_seq, ciphertext };
+                    let delivered = DeliveredMsg {
+                        sender_seq,
+                        ciphertext,
+                    };
                     if let Ok(frame) = protocol::encode(Tag::Ack, &delivered) {
                         let _ = socket.send_to(&frame, dst).await;
                     }
@@ -334,8 +372,13 @@ async fn handle_datagram(
         }
 
         Tag::Keepalive => {
-            let Ok(msg) = bincode::deserialize::<KeepaliveMsg>(body) else { return };
-            let result = relay.lock().unwrap_or_else(|e| e.into_inner()).keepalive(&msg)
+            let Ok(msg) = bincode::deserialize::<KeepaliveMsg>(body) else {
+                return;
+            };
+            let result = relay
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .keepalive(&msg)
                 .map_err(|e| (e.code(), e.to_string())); // guard dropped here
             if let Err((code, detail)) = result {
                 send_error(socket, src, code, 0, &detail).await;
@@ -347,18 +390,13 @@ async fn handle_datagram(
     }
 }
 
-async fn send_error(
-    socket: &UdpSocket,
-    dst: SocketAddr,
-    code: ErrorCode,
-    seq: u32,
-    detail: &str,
-) {
-    let msg = ErrorMsg { code, seq, detail: detail.to_string() };
+async fn send_error(socket: &UdpSocket, dst: SocketAddr, code: ErrorCode, seq: u32, detail: &str) {
+    let msg = ErrorMsg {
+        code,
+        seq,
+        detail: detail.to_string(),
+    };
     if let Ok(frame) = protocol::encode(Tag::Error, &msg) {
         let _ = socket.send_to(&frame, dst).await;
     }
 }
-
-
-

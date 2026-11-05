@@ -88,7 +88,10 @@ pub fn transfer_bar(ui: &mut Ui, t: &TransferStatus) -> Option<TransferAction> {
                     } else {
                         TransferActionKind::Pause
                     };
-                    action = Some(TransferAction { transfer_id: t.id.clone(), action: kind });
+                    action = Some(TransferAction {
+                        transfer_id: t.id.clone(),
+                        action: kind,
+                    });
                 }
 
                 ui.add_space(4.0);
@@ -107,7 +110,10 @@ pub fn transfer_bar(ui: &mut Ui, t: &TransferStatus) -> Option<TransferAction> {
                     )
                     .clicked()
                 {
-                    action = Some(TransferAction { transfer_id: t.id.clone(), action: TransferActionKind::Cancel });
+                    action = Some(TransferAction {
+                        transfer_id: t.id.clone(),
+                        action: TransferActionKind::Cancel,
+                    });
                 }
             });
         });

@@ -6,14 +6,14 @@
 //! - Message transmission and reception
 //! - Delivery-status correlation (message id ↔ GSN)
 
+use bytes::Bytes;
 use std::collections::{HashMap, VecDeque};
 use std::time::{Duration, Instant};
-use bytes::Bytes;
 
+use transferd_core::ate::Ate;
 use transferd_core::session::Session;
 use transferd_core::transport::TransportLane;
 use transferd_core::types::{Gsn, SessionId};
-use transferd_core::ate::Ate;
 
 use crate::handshake_manager::HandshakeManager;
 use crate::wire::WireMsg;
@@ -55,7 +55,11 @@ impl PeerSession {
     /// The window is generous because control-plane Acks (which advance the
     /// sender's base GSN) are not wired yet; raising it keeps multi-chunk
     /// transfers (e.g. files) flowing.
-    pub fn with_window(session_id: SessionId, lanes: Vec<Box<dyn TransportLane>>, window: u64) -> Self {
+    pub fn with_window(
+        session_id: SessionId,
+        lanes: Vec<Box<dyn TransportLane>>,
+        window: u64,
+    ) -> Self {
         let ate = Ate::new(lanes.len(), window); // lane_count, reorder-gap limit
         let session = Session::new(session_id, ate, window);
         Self {
@@ -89,9 +93,10 @@ impl PeerSession {
             lanes,
             last_activity: Instant::now(),
             connected: true,
-            ratchet: parking_lot::Mutex::new(
-                transferd_crypto::ratchet::DoubleRatchet::new(root_key, is_initiator),
-            ),
+            ratchet: parking_lot::Mutex::new(transferd_crypto::ratchet::DoubleRatchet::new(
+                root_key,
+                is_initiator,
+            )),
             outbound_gsns: VecDeque::new(),
             last_bytes: Vec::new(),
             last_health: Instant::now(),
@@ -111,9 +116,7 @@ impl PeerSession {
     /// Wrap a WireMsg payload in the ratchet envelope (per-message key).
     fn ratchet_payload(&self, payload: Bytes) -> Bytes {
         match self.ratchet.lock().encrypt(&payload) {
-            Ok(rm) => bincode::serialize(&rm)
-                .map(Bytes::from)
-                .unwrap_or(payload),
+            Ok(rm) => bincode::serialize(&rm).map(Bytes::from).unwrap_or(payload),
             Err(e) => {
                 tracing::error!("[peer] ratchet encrypt failed: {e}");
                 payload
@@ -124,8 +127,7 @@ impl PeerSession {
     /// Return the message ids of chunks that were actually dispatched this tick,
     /// dropping their GSN↔id records.
     pub fn take_sent_ids(&mut self, sent: &[(usize, Gsn)]) -> Vec<String> {
-        let sent_gsns: std::collections::HashSet<u64> =
-            sent.iter().map(|(_, g)| g.0).collect();
+        let sent_gsns: std::collections::HashSet<u64> = sent.iter().map(|(_, g)| g.0).collect();
         let mut dispatched = Vec::new();
         self.outbound_gsns.retain(|(gsn, id)| {
             if sent_gsns.contains(gsn) {
@@ -183,7 +185,8 @@ impl PeerSession {
         let dt = now.duration_since(self.last_health).as_secs_f64().max(0.01);
         self.last_health = now;
         while self.last_bytes.len() < self.lanes.len() {
-            self.last_bytes.push(self.lanes[self.last_bytes.len()].metrics().bytes_sent());
+            self.last_bytes
+                .push(self.lanes[self.last_bytes.len()].metrics().bytes_sent());
         }
         for (i, lane) in self.lanes.iter_mut().enumerate() {
             let m = lane.metrics();
@@ -270,7 +273,8 @@ impl PeerConnectionManager {
 
     /// Remove a timed-out session.
     pub fn remove_timed_out_sessions(&mut self) {
-        self.sessions.retain(|_, session| !session.is_timed_out(self.session_timeout));
+        self.sessions
+            .retain(|_, session| !session.is_timed_out(self.session_timeout));
     }
 
     /// Process all sessions (called periodically): flush pending chunks, drain
@@ -374,7 +378,8 @@ impl PeerConnectionManager {
         address: &str,
         identity: &transferd_crypto::identity::HybridSigningKey,
     ) -> Result<(), String> {
-        let (session, _peer_identity) = establish_tcp_session(contact_id, address, identity).await?;
+        let (session, _peer_identity) =
+            establish_tcp_session(contact_id, address, identity).await?;
         self.insert_session(contact_id, session);
         Ok(())
     }
@@ -409,11 +414,13 @@ pub async fn establish_tcp_session(
     identity: &transferd_crypto::identity::HybridSigningKey,
 ) -> Result<(PeerSession, Vec<u8>), String> {
     let session_id = SessionId(hex_to_bytes(contact_id));
-    let addr: std::net::SocketAddr = address.parse()
+    let addr: std::net::SocketAddr = address
+        .parse()
         .map_err(|e| format!("Invalid address: {e}"))?;
 
     // Connect and run the authenticated hybrid handshake.
-    let mut stream = tokio::net::TcpStream::connect(addr).await
+    let mut stream = tokio::net::TcpStream::connect(addr)
+        .await
         .map_err(|e| format!("Failed to connect to {address}: {e}"))?;
     let handshake = HandshakeManager::new();
     let (session_key, peer_identity) = handshake
@@ -427,9 +434,7 @@ pub async fn establish_tcp_session(
     // Create a TCP lane to the peer (initiator: send=role0, recv=role1).
     let lane = transferd_core::lanes::tcp_lane::TcpLane::from_stream(
         0x54435020, // "TCP " lane ID
-        stream,
-        &send_key,
-        &recv_key,
+        stream, &send_key, &recv_key,
     )
     .map_err(|e| format!("Failed to create TCP lane: {e}"))?;
 
@@ -473,7 +478,9 @@ pub async fn establish_relay_session(
         .ok_or_else(|| "relay not enabled on this daemon".to_string())?;
     for addr in relay_addrs {
         if !hub.has_relay(*addr) {
-            return Err(format!("relay mismatch: daemon is not registered on {addr}"));
+            return Err(format!(
+                "relay mismatch: daemon is not registered on {addr}"
+            ));
         }
     }
 
@@ -515,30 +522,30 @@ pub async fn establish_relay_session(
         let lane: Box<dyn transferd_core::transport::TransportLane> =
             match hub.relay_kind(*relay_addr) {
                 Some(crate::relay_hub::RelayKind::Udp) => {
-                    Box::new(transferd_core::lanes::relay_lane::RelayLane::new(
-                        lane_id,
-                        *relay_addr,
-                        self_token,
-                        peer_token,
-                        &send_key,
-                        &recv_key,
-                        false, // registration is owned by the hub
+                    Box::new(
+                        transferd_core::lanes::relay_lane::RelayLane::new(
+                            lane_id,
+                            *relay_addr,
+                            self_token,
+                            peer_token,
+                            &send_key,
+                            &recv_key,
+                            false, // registration is owned by the hub
+                        )
+                        .await
+                        .map_err(|e| format!("Failed to create relay lane: {e}"))?,
                     )
-                    .await
-                    .map_err(|e| format!("Failed to create relay lane: {e}"))?)
                 }
                 Some(crate::relay_hub::RelayKind::Ws(_)) => {
                     let ws_client = hub
                         .ws_client_for(*relay_addr)
                         .ok_or_else(|| "ws client missing".to_string())?;
-                    Box::new(transferd_core::lanes::relay_ws_lane::RelayWsLane::new(
-                        lane_id,
-                        ws_client,
-                        self_token,
-                        peer_token,
-                        &send_key,
+                    Box::new(
+                        transferd_core::lanes::relay_ws_lane::RelayWsLane::new(
+                            lane_id, ws_client, self_token, peer_token, &send_key,
+                        )
+                        .await,
                     )
-                    .await)
                 }
                 None => {
                     return Err(format!("relay not registered on {relay_addr}"));
@@ -547,18 +554,16 @@ pub async fn establish_relay_session(
         lanes.push(lane);
     }
 
-    tracing::info!("[PeerManager] relay session established for {contact_id} via {} relays", relay_addrs.len());
+    tracing::info!(
+        "[PeerManager] relay session established for {contact_id} via {} relays",
+        relay_addrs.len()
+    );
     let root = hub
         .session_root(peer_token)
         .await
         .ok_or_else(|| "relay session root unavailable".to_string())?;
     Ok((
-        PeerSession::with_ratchet(
-            SessionId(hex_to_bytes(contact_id)),
-            lanes,
-            &root,
-            true,
-        ),
+        PeerSession::with_ratchet(SessionId(hex_to_bytes(contact_id)), lanes, &root, true),
         peer_hybrid_pk,
     ))
 }
@@ -654,7 +659,7 @@ mod tests {
         assert_eq!(bytes[0], 0);
     }
 
-#[test]
+    #[test]
     fn test_peer_session_creation() {
         let session_id = SessionId([1u8; 16]);
         let session = PeerSession::new(session_id, vec![]);
@@ -678,7 +683,10 @@ mod tests {
         let other_vk = other.verifying_key();
         let wrong_pk_hex = hex::encode(&other_vk.to_bytes()[..32]);
         let err = verify_peer_identity(&wrong_pk_hex, &vk).expect_err("must reject mismatch");
-        assert!(err.contains("identity mismatch"), "error explains the cause: {err}");
+        assert!(
+            err.contains("identity mismatch"),
+            "error explains the cause: {err}"
+        );
     }
 
     #[test]

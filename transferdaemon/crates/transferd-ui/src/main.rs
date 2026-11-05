@@ -8,12 +8,8 @@
 mod automation;
 mod tray;
 
-use transferd_ui_shared::{
-    app::TransferDaemonApp,
-    daemon::MockDaemon,
-    grpc_daemon::GrpcDaemon,
-};
 use std::sync::Arc;
+use transferd_ui_shared::{app::TransferDaemonApp, daemon::MockDaemon, grpc_daemon::GrpcDaemon};
 
 fn main() -> eframe::Result<()> {
     let rt = tokio::runtime::Builder::new_multi_thread()
@@ -26,8 +22,8 @@ fn main() -> eframe::Result<()> {
     let daemon_arc: Arc<dyn transferd_ui_shared::daemon::DaemonApi>;
     let daemon_is_live: bool;
     {
-        let addr = std::env::var("TRANSFERD_ADDR")
-            .unwrap_or_else(|_| "http://127.0.0.1:50051".into());
+        let addr =
+            std::env::var("TRANSFERD_ADDR").unwrap_or_else(|_| "http://127.0.0.1:50051".into());
         match rt.block_on(GrpcDaemon::try_connect(&addr)) {
             Some(g) => {
                 tracing::info!("[ui] connected to daemon at {addr}");
@@ -59,7 +55,10 @@ fn main() -> eframe::Result<()> {
             let mut app = TransferDaemonApp::with_daemon(cc, daemon_arc, daemon_is_live);
             app.set_tray_channels(tray_tx, tray_rx);
             // Answer the daemon control hub's gui.* operations (TRANSFERD_GUI_CONTROL=off to opt out).
-            if std::env::var("TRANSFERD_GUI_CONTROL").map(|v| v == "off" || v == "0").unwrap_or(false) {
+            if std::env::var("TRANSFERD_GUI_CONTROL")
+                .map(|v| v == "off" || v == "0")
+                .unwrap_or(false)
+            {
                 Ok(Box::new(app))
             } else {
                 Ok(Box::new(automation::wrap(app, &cc.egui_ctx)))

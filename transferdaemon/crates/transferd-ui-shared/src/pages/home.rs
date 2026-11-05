@@ -117,9 +117,7 @@ impl HomePage {
                     egui::ScrollArea::horizontal()
                         .id_source("home_nav_scroll")
                         .auto_shrink([false, false])
-                        .scroll_bar_visibility(
-                            egui::scroll_area::ScrollBarVisibility::AlwaysHidden,
-                        )
+                        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
                         .drag_to_scroll(true)
                         .max_height(54.0)
                         .show(ui, |ui| {
@@ -127,14 +125,14 @@ impl HomePage {
                             ui.horizontal(|ui| {
                                 for (t, icon, label) in tabs {
                                     let active = self.tab == t;
-                                    let (clicked, response) =
-                                        Self::nav_button(ui, &tokens, icon, label, active, 88.0, 46.0);
+                                    let (clicked, response) = Self::nav_button(
+                                        ui, &tokens, icon, label, active, 88.0, 46.0,
+                                    );
                                     if clicked {
                                         self.select_tab(t);
                                     }
                                     if active && self.pending_nav_scroll == Some(t) {
-                                        response
-                                            .scroll_to_me(Some(egui::Align::Center));
+                                        response.scroll_to_me(Some(egui::Align::Center));
                                     }
                                 }
                             });
@@ -156,9 +154,7 @@ impl HomePage {
                     egui::ScrollArea::vertical()
                         .id_source("nav_rail_scroll")
                         .auto_shrink([false, false])
-                        .scroll_bar_visibility(
-                            egui::scroll_area::ScrollBarVisibility::AlwaysHidden,
-                        )
+                        .scroll_bar_visibility(egui::scroll_area::ScrollBarVisibility::AlwaysHidden)
                         .show(ui, |ui| {
                             ui.set_min_height(ui.available_height());
                             for (t, icon, label) in tabs {
@@ -200,33 +196,32 @@ impl HomePage {
                                 .color(tokens.palette.text_primary),
                         );
 
-                        ui.with_layout(
-                            egui::Layout::right_to_left(egui::Align::Center),
-                            |ui| {
-                                // Add button (context-dependent)
-                                match self.tab {
-                                    Tab::Contacts => {
-                                        if ui
-                                            .add_sized(
-                                                [36.0, 36.0],
-                                                egui::Button::new(
-                                                    RichText::new("+").size(18.0).color(tokens.palette.text_primary),
-                                                )
-                                                .fill(tokens.palette.accent)
-                                                .rounding(18.0),
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            // Add button (context-dependent)
+                            match self.tab {
+                                Tab::Contacts => {
+                                    if ui
+                                        .add_sized(
+                                            [36.0, 36.0],
+                                            egui::Button::new(
+                                                RichText::new("+")
+                                                    .size(18.0)
+                                                    .color(tokens.palette.text_primary),
                                             )
-                                            .clicked()
-                                        {
-                                            self.show_add_contact_form = !self.show_add_contact_form;
-                                        }
+                                            .fill(tokens.palette.accent)
+                                            .rounding(18.0),
+                                        )
+                                        .clicked()
+                                    {
+                                        self.show_add_contact_form = !self.show_add_contact_form;
                                     }
-                                    Tab::Chats => {
-                                        // New chat button (future: contact picker)
-                                    }
-                                    _ => {}
                                 }
-                            },
-                        );
+                                Tab::Chats => {
+                                    // New chat button (future: contact picker)
+                                }
+                                _ => {}
+                            }
+                        });
                     });
                 });
         }
@@ -275,8 +270,7 @@ impl HomePage {
                 egui::CentralPanel::default()
                     .frame(egui::Frame::none().fill(tokens.palette.bg_primary))
                     .show(ctx, |ui| {
-                        self.telemetry
-                            .show(ui, state.daemon_addr.as_deref(), ctx);
+                        self.telemetry.show(ui, state.daemon_addr.as_deref(), ctx);
                     });
             }
         }
@@ -371,16 +365,13 @@ impl HomePage {
                             Color32::TRANSPARENT
                         };
 
-                        let response = ui
-                            .add_sized(
-                                [ui.available_width(), 64.0],
-                                egui::Button::new(
-                                    RichText::new("").size(1.0),
-                                )
+                        let response = ui.add_sized(
+                            [ui.available_width(), 64.0],
+                            egui::Button::new(RichText::new("").size(1.0))
                                 .fill(bg)
                                 .rounding(0.0)
                                 .frame(true),
-                            );
+                        );
 
                         // Draw chat row content over the button
                         let rect = response.rect;
@@ -483,112 +474,111 @@ impl HomePage {
                                 .size(14.0)
                                 .strong()
                                 .color(tokens.palette.text_primary),
-                    );
-                    ui.add_space(tokens.spacing.xs);
-
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            RichText::new("Public Key:")
-                                .size(12.0)
-                                .color(tokens.palette.text_secondary),
                         );
-                        let input_frame = design::input_frame(&tokens);
-                        input_frame.show(ui, |ui| {
-                            ui.add(
-                                egui::TextEdit::singleline(&mut self.add_contact_key)
-                                    .hint_text("Paste 64-char hex key…")
-                                    .font(egui::FontId::monospace(12.0))
-                                    .desired_width(ui.available_width() - 16.0)
-                                    .margin(Vec2::new(8.0, 6.0)),
+                        ui.add_space(tokens.spacing.xs);
+
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                RichText::new("Public Key:")
+                                    .size(12.0)
+                                    .color(tokens.palette.text_secondary),
                             );
+                            let input_frame = design::input_frame(&tokens);
+                            input_frame.show(ui, |ui| {
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut self.add_contact_key)
+                                        .hint_text("Paste 64-char hex key…")
+                                        .font(egui::FontId::monospace(12.0))
+                                        .desired_width(ui.available_width() - 16.0)
+                                        .margin(Vec2::new(8.0, 6.0)),
+                                );
+                            });
                         });
-                    });
 
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            RichText::new("Name:")
-                                .size(12.0)
-                                .color(tokens.palette.text_secondary),
-                        );
-                        let input_frame = design::input_frame(&tokens);
-                        input_frame.show(ui, |ui| {
-                            ui.add(
-                                egui::TextEdit::singleline(&mut self.add_contact_name)
-                                    .hint_text("Display name…")
-                                    .desired_width(ui.available_width() - 16.0)
-                                    .margin(Vec2::new(8.0, 6.0)),
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                RichText::new("Name:")
+                                    .size(12.0)
+                                    .color(tokens.palette.text_secondary),
                             );
+                            let input_frame = design::input_frame(&tokens);
+                            input_frame.show(ui, |ui| {
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut self.add_contact_name)
+                                        .hint_text("Display name…")
+                                        .desired_width(ui.available_width() - 16.0)
+                                        .margin(Vec2::new(8.0, 6.0)),
+                                );
+                            });
                         });
-                    });
 
-                    ui.horizontal(|ui| {
-                        ui.label(
-                            RichText::new("Address:")
-                                .size(12.0)
-                                .color(tokens.palette.text_secondary),
-                        );
-                        let input_frame = design::input_frame(&tokens);
-                        input_frame.show(ui, |ui| {
-                            ui.add(
-                                egui::TextEdit::singleline(&mut self.add_contact_address)
-                                    .hint_text("127.0.0.1:50051 (optional)")
-                                    .desired_width(ui.available_width() - 16.0)
-                                    .margin(Vec2::new(8.0, 6.0)),
+                        ui.horizontal(|ui| {
+                            ui.label(
+                                RichText::new("Address:")
+                                    .size(12.0)
+                                    .color(tokens.palette.text_secondary),
                             );
+                            let input_frame = design::input_frame(&tokens);
+                            input_frame.show(ui, |ui| {
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut self.add_contact_address)
+                                        .hint_text("127.0.0.1:50051 (optional)")
+                                        .desired_width(ui.available_width() - 16.0)
+                                        .margin(Vec2::new(8.0, 6.0)),
+                                );
+                            });
                         });
-                    });
 
-                    // QR Scanner
-                    ui.add_space(tokens.spacing.xs);
-                    self.qr_scanner.show(ui, ctx);
+                        // QR Scanner
+                        ui.add_space(tokens.spacing.xs);
+                        self.qr_scanner.show(ui, ctx);
 
-                    // Auto-fill from QR scan
-                    if let Some(key) = self.qr_scanner.decoded_key() {
-                        if self.add_contact_key.is_empty() {
-                            self.add_contact_key = key.to_owned();
+                        // Auto-fill from QR scan
+                        if let Some(key) = self.qr_scanner.decoded_key() {
+                            if self.add_contact_key.is_empty() {
+                                self.add_contact_key = key.to_owned();
+                            }
                         }
-                    }
 
-                    if let Some(e) = &self.add_error {
-                        ui.label(
-                            RichText::new(format!("⚠ {e}"))
-                                .color(tokens.palette.error)
-                                .size(12.0),
-                        );
-                    }
+                        if let Some(e) = &self.add_error {
+                            ui.label(
+                                RichText::new(format!("⚠ {e}"))
+                                    .color(tokens.palette.error)
+                                    .size(12.0),
+                            );
+                        }
 
-                    let can_add =
-                        self.add_contact_key.len() == 64
-                        && self.add_contact_key.chars().all(|c| c.is_ascii_hexdigit())
-                        && !self.add_contact_name.trim().is_empty();
+                        let can_add = self.add_contact_key.len() == 64
+                            && self.add_contact_key.chars().all(|c| c.is_ascii_hexdigit())
+                            && !self.add_contact_name.trim().is_empty();
 
-                    let btn_color = if can_add {
-                        tokens.palette.accent
-                    } else {
-                        tokens.palette.surface
-                    };
+                        let btn_color = if can_add {
+                            tokens.palette.accent
+                        } else {
+                            tokens.palette.surface
+                        };
 
-                    let btn_text_color = if can_add {
-                        tokens.palette.text_inverse
-                    } else {
-                        tokens.palette.text_disabled
-                    };
+                        let btn_text_color = if can_add {
+                            tokens.palette.text_inverse
+                        } else {
+                            tokens.palette.text_disabled
+                        };
 
-                    if ui
-                        .add_sized(
-                            [120.0, 36.0],
-                            egui::Button::new(
-                                RichText::new("Add Contact")
-                                    .size(13.0)
-                                    .color(btn_text_color),
+                        if ui
+                            .add_sized(
+                                [120.0, 36.0],
+                                egui::Button::new(
+                                    RichText::new("Add Contact")
+                                        .size(13.0)
+                                        .color(btn_text_color),
+                                )
+                                .fill(btn_color)
+                                .rounding(tokens.spacing.button_rounding),
                             )
-                            .fill(btn_color)
-                            .rounding(tokens.spacing.button_rounding),
-                        )
-                        .clicked()
-                        && can_add
-                    {
-                        let rt = tokio::runtime::Handle::current();
+                            .clicked()
+                            && can_add
+                        {
+                            let rt = tokio::runtime::Handle::current();
                             let address = if self.add_contact_address.trim().is_empty() {
                                 None
                             } else {
@@ -605,7 +595,11 @@ impl HomePage {
                                     self.add_contact_address.clear();
                                     self.add_error = None;
                                     // Refresh contacts and merge local nicknames
-                                    let local_nicknames: std::collections::HashMap<String, Option<String>> = state.contacts
+                                    let local_nicknames: std::collections::HashMap<
+                                        String,
+                                        Option<String>,
+                                    > = state
+                                        .contacts
                                         .iter()
                                         .map(|c| (c.id.clone(), c.nickname.clone()))
                                         .collect();
@@ -620,8 +614,8 @@ impl HomePage {
                                 }
                                 Err(e) => self.add_error = Some(e.to_string()),
                             }
-                    }
-                });
+                        }
+                    });
                 } // end if show_add_contact_form
 
                 ui.add_space(tokens.spacing.sm);
@@ -652,13 +646,12 @@ impl HomePage {
                         let display_name = contact.display_name().to_owned();
                         let contact_id = contact.id.clone();
 
-                        let response = ui
-                            .add_sized(
-                                [ui.available_width(), 56.0],
-                                egui::Button::new(RichText::new("").size(1.0))
-                                    .fill(Color32::TRANSPARENT)
-                                    .frame(false),
-                            );
+                        let response = ui.add_sized(
+                            [ui.available_width(), 56.0],
+                            egui::Button::new(RichText::new("").size(1.0))
+                                .fill(Color32::TRANSPARENT)
+                                .frame(false),
+                        );
 
                         let rect = response.rect;
                         let painter = ui.painter();
@@ -711,13 +704,11 @@ impl HomePage {
                                 rect.right_top() - Vec2::new(36.0, 0.0),
                                 Vec2::new(28.0, 28.0),
                             ),
-                            egui::Button::new(RichText::new("✏️").size(13.0))
-                                .frame(false),
+                            egui::Button::new(RichText::new("✏️").size(13.0)).frame(false),
                         );
                         if edit_btn.clicked() {
                             self.editing_nickname_for = Some(contact_id.clone());
-                            self.nickname_input =
-                                contact.nickname.clone().unwrap_or_default();
+                            self.nickname_input = contact.nickname.clone().unwrap_or_default();
                         }
 
                         if response.clicked() {
@@ -757,8 +748,7 @@ impl HomePage {
                                 rect.right_top() - Vec2::new(70.0, 0.0),
                                 Vec2::new(28.0, 28.0),
                             ),
-                            egui::Button::new(RichText::new("⋯").size(15.0))
-                                .frame(false),
+                            egui::Button::new(RichText::new("⋯").size(15.0)).frame(false),
                         );
                         if menu_btn.clicked() {
                             if self.contact_menu_for.as_deref() == Some(contact_id.as_str()) {
@@ -778,7 +768,11 @@ impl HomePage {
                                     .clicked()
                                 {
                                     action = Some((
-                                        if blocked { ContactAction::Unblock } else { ContactAction::Block },
+                                        if blocked {
+                                            ContactAction::Unblock
+                                        } else {
+                                            ContactAction::Block
+                                        },
                                         contact_id.clone(),
                                     ));
                                 }
@@ -811,7 +805,8 @@ impl HomePage {
                                     rt.block_on(state.daemon.unblock_contact(&id))
                                 };
                                 if let Ok(updated) = result {
-                                    if let Some(c) = state.contacts.iter_mut().find(|c| c.id == id) {
+                                    if let Some(c) = state.contacts.iter_mut().find(|c| c.id == id)
+                                    {
                                         c.blocked = updated.blocked;
                                     }
                                 }
@@ -887,13 +882,17 @@ impl HomePage {
                         }
                         TransferActionKind::Pause => {
                             let _ = rt.block_on(d.pause_transfer(&act.transfer_id));
-                            if let Some(t) = state.transfers.iter_mut().find(|t| t.id == act.transfer_id) {
+                            if let Some(t) =
+                                state.transfers.iter_mut().find(|t| t.id == act.transfer_id)
+                            {
                                 t.paused = true;
                             }
                         }
                         TransferActionKind::Resume => {
                             let _ = rt.block_on(d.resume_transfer(&act.transfer_id));
-                            if let Some(t) = state.transfers.iter_mut().find(|t| t.id == act.transfer_id) {
+                            if let Some(t) =
+                                state.transfers.iter_mut().find(|t| t.id == act.transfer_id)
+                            {
                                 t.paused = false;
                             }
                         }

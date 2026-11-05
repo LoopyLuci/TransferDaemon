@@ -104,12 +104,9 @@ pub fn message_bubble(
                 })
             });
 
-            let galley = ui.painter().layout(
-                text,
-                FontId::proportional(14.0),
-                text_color,
-                inner_w,
-            );
+            let galley = ui
+                .painter()
+                .layout(text, FontId::proportional(14.0), text_color, inner_w);
 
             // Reaction chips (aggregated by emoji).
             let mut reaction_chips: Vec<(String, usize)> = Vec::new();
@@ -121,11 +118,7 @@ pub fn message_bubble(
                 }
             }
 
-            let status_label = if outbound {
-                msg.status.label()
-            } else {
-                ""
-            };
+            let status_label = if outbound { msg.status.label() } else { "" };
             let ts = format_ts(msg.timestamp_ts);
             let footer = format!("{ts}  {status_label}");
             // Read receipts render in a distinct blue so Delivered vs Read is visible.
@@ -138,18 +131,15 @@ pub fn message_bubble(
             } else {
                 Color32::from_rgba_premultiplied(255, 255, 255, 100)
             };
-            let footer_galley = ui.painter().layout_no_wrap(
-                footer,
-                FontId::proportional(11.0),
-                footer_color,
-            );
+            let footer_galley =
+                ui.painter()
+                    .layout_no_wrap(footer, FontId::proportional(11.0), footer_color);
 
-            let reply_h = reply_galley.as_ref().map(|g| g.size().y + 3.0).unwrap_or(0.0);
-            let chips_h = if reaction_chips.is_empty() {
-                0.0
-            } else {
-                20.0
-            };
+            let reply_h = reply_galley
+                .as_ref()
+                .map(|g| g.size().y + 3.0)
+                .unwrap_or(0.0);
+            let chips_h = if reaction_chips.is_empty() { 0.0 } else { 20.0 };
             let bubble_w = galley
                 .size()
                 .x
@@ -163,10 +153,8 @@ pub fn message_bubble(
                 + BUBBLE_PADDING.y * 2.0
                 + 4.0;
 
-            let (rect, resp) = ui.allocate_exact_size(
-                Vec2::new(bubble_w, bubble_h),
-                egui::Sense::click(),
-            );
+            let (rect, resp) =
+                ui.allocate_exact_size(Vec2::new(bubble_w, bubble_h), egui::Sense::click());
 
             // Bubble shadow (inbound only)
             if !outbound {
@@ -179,7 +167,8 @@ pub fn message_bubble(
             }
 
             // Bubble
-            ui.painter().rect_filled(rect, Rounding::same(BUBBLE_ROUNDING), bubble_color);
+            ui.painter()
+                .rect_filled(rect, Rounding::same(BUBBLE_ROUNDING), bubble_color);
 
             // Quoted reply preview
             let mut y = rect.min.y + BUBBLE_PADDING.y;
@@ -193,12 +182,20 @@ pub fn message_bubble(
                     Rounding::same(4.0),
                     Color32::from_rgba_premultiplied(0, 0, 0, 28),
                 );
-                ui.painter().galley(quote_rect.min, g.clone(), Color32::from_rgba_premultiplied(255, 255, 255, 160));
+                ui.painter().galley(
+                    quote_rect.min,
+                    g.clone(),
+                    Color32::from_rgba_premultiplied(255, 255, 255, 160),
+                );
                 y += g.size().y + 3.0;
             }
 
             // Text
-            ui.painter().galley(Pos2::new(rect.min.x + BUBBLE_PADDING.x, y), galley, text_color);
+            ui.painter().galley(
+                Pos2::new(rect.min.x + BUBBLE_PADDING.x, y),
+                galley,
+                text_color,
+            );
 
             // Reaction chips
             if !reaction_chips.is_empty() {
@@ -260,13 +257,15 @@ pub fn message_bubble(
                         tokens.palette.surface,
                     );
                     ui.painter().galley(
-                        Pos2::new(btn_rect.center().x - btn.size().x / 2.0, btn_rect.center().y - btn.size().y / 2.0),
+                        Pos2::new(
+                            btn_rect.center().x - btn.size().x / 2.0,
+                            btn_rect.center().y - btn.size().y / 2.0,
+                        ),
                         btn,
                         tokens.palette.text_primary,
                     );
                     // Check click against the small button rect.
-                    let clicked = resp.clicked()
-                        && ui.rect_contains_pointer(btn_rect);
+                    let clicked = resp.clicked() && ui.rect_contains_pointer(btn_rect);
                     if clicked {
                         action = Some(BubbleAction::React {
                             msg_id: msg.id.clone(),
@@ -281,17 +280,15 @@ pub fn message_bubble(
                     FontId::proportional(13.0),
                     tokens.palette.text_primary,
                 );
-                let rbtn_rect = egui::Rect::from_min_size(
-                    Pos2::new(mx - 26.0, menu_y),
-                    Vec2::new(26.0, 26.0),
-                );
-                ui.painter().rect_filled(
-                    rbtn_rect,
-                    Rounding::same(13.0),
-                    tokens.palette.surface,
-                );
+                let rbtn_rect =
+                    egui::Rect::from_min_size(Pos2::new(mx - 26.0, menu_y), Vec2::new(26.0, 26.0));
+                ui.painter()
+                    .rect_filled(rbtn_rect, Rounding::same(13.0), tokens.palette.surface);
                 ui.painter().galley(
-                    Pos2::new(rbtn_rect.center().x - rbtn.size().x / 2.0, rbtn_rect.center().y - rbtn.size().y / 2.0),
+                    Pos2::new(
+                        rbtn_rect.center().x - rbtn.size().x / 2.0,
+                        rbtn_rect.center().y - rbtn.size().y / 2.0,
+                    ),
                     rbtn,
                     tokens.palette.text_primary,
                 );

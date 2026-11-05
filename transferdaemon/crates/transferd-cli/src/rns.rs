@@ -25,11 +25,17 @@ fn home() -> PathBuf {
     if let Some(d) = std::env::var_os("TRANSFERD_RNS_DIR") {
         return PathBuf::from(d);
     }
-    let base = std::env::var_os("TRANSFERD_DATA_DIR").map(PathBuf::from).unwrap_or_else(|| {
-        let local = std::env::var_os("LOCALAPPDATA").or_else(|| std::env::var_os("XDG_DATA_HOME")).map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".local/share"));
-        local.join("transferdaemon")
-    });
+    let base = std::env::var_os("TRANSFERD_DATA_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            let local = std::env::var_os("LOCALAPPDATA")
+                .or_else(|| std::env::var_os("XDG_DATA_HOME"))
+                .map(PathBuf::from)
+                .unwrap_or_else(|| {
+                    PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".local/share")
+                });
+            local.join("transferdaemon")
+        });
     base.join("rns")
 }
 
@@ -37,37 +43,55 @@ fn venv_python(h: &Path) -> PathBuf {
     if let Some(p) = std::env::var_os("TRANSFERD_RNS_PYTHON") {
         return PathBuf::from(p);
     }
-    if cfg!(windows) { h.join("venv").join("Scripts").join("python.exe") } else { h.join("venv").join("bin").join("python") }
+    if cfg!(windows) {
+        h.join("venv").join("Scripts").join("python.exe")
+    } else {
+        h.join("venv").join("bin").join("python")
+    }
 }
 
 fn flag(rest: &[String], name: &str) -> Option<String> {
-    rest.iter().position(|a| a == name).and_then(|i| rest.get(i + 1)).cloned()
+    rest.iter()
+        .position(|a| a == name)
+        .and_then(|i| rest.get(i + 1))
+        .cloned()
 }
 
 fn flags(rest: &[String], name: &str) -> Vec<String> {
-    rest.iter().enumerate().filter(|(_, a)| *a == name).filter_map(|(i, _)| rest.get(i + 1).cloned()).collect()
+    rest.iter()
+        .enumerate()
+        .filter(|(_, a)| *a == name)
+        .filter_map(|(i, _)| rest.get(i + 1).cloned())
+        .collect()
 }
 
 fn control(h: &Path) -> Result<Value, String> {
-    let text = std::fs::read_to_string(h.join("data").join("control.json"))
-        .map_err(|_| "the Reticulum bridge is not running: `transferd-cli rns start`".to_string())?;
+    let text = std::fs::read_to_string(h.join("data").join("control.json")).map_err(|_| {
+        "the Reticulum bridge is not running: `transferd-cli rns start`".to_string()
+    })?;
     serde_json::from_str(&text).map_err(|e| e.to_string())
 }
 
 fn call(h: &Path, op: &str, args: Value) -> Result<Value, String> {
     let ctl = control(h)?;
     let port = ctl["port"].as_u64().ok_or("control.json has no port")?;
-    let mut s = TcpStream::connect(("127.0.0.1", port as u16))
-        .map_err(|e| format!("the Reticulum bridge does not answer ({e}): `transferd-cli rns start`"))?;
-    s.set_read_timeout(Some(Duration::from_secs(90))).map_err(|e| e.to_string())?;
+    let mut s = TcpStream::connect(("127.0.0.1", port as u16)).map_err(|e| {
+        format!("the Reticulum bridge does not answer ({e}): `transferd-cli rns start`")
+    })?;
+    s.set_read_timeout(Some(Duration::from_secs(90)))
+        .map_err(|e| e.to_string())?;
     let mut req = json!({"token": ctl["token"], "op": op});
     if let (Some(r), Some(a)) = (req.as_object_mut(), args.as_object()) {
         r.extend(a.clone());
     }
-    s.write_all(format!("{req}\n").as_bytes()).map_err(|e| e.to_string())?;
+    s.write_all(format!("{req}\n").as_bytes())
+        .map_err(|e| e.to_string())?;
     let mut line = String::new();
-    BufReader::new(&s).read_line(&mut line).map_err(|e| e.to_string())?;
-    let v: Value = serde_json::from_str(&line).map_err(|e| format!("the bridge said {line:?}: {e}"))?;
+    BufReader::new(&s)
+        .read_line(&mut line)
+        .map_err(|e| e.to_string())?;
+    let v: Value =
+        serde_json::from_str(&line).map_err(|e| format!("the bridge said {line:?}: {e}"))?;
     match v.get("error") {
         Some(e) => Err(e.as_str().unwrap_or("error").to_string()),
         None => Ok(v["result"].clone()),
@@ -76,16 +100,34 @@ fn call(h: &Path, op: &str, args: Value) -> Result<Value, String> {
 
 fn setup(h: &Path, python: Option<String>) -> Result<Value, String> {
     std::fs::create_dir_all(h).map_err(|e| e.to_string())?;
-    let py = python.unwrap_or_else(|| if cfg!(windows) { "python".into() } else { "python3".into() });
+    let py = python.unwrap_or_else(|| {
+        if cfg!(windows) {
+            "python".into()
+        } else {
+            "python3".into()
+        }
+    });
     let venv = h.join("venv");
     let run = |cmd: &mut Command| -> Result<(), String> {
         let st = cmd.status().map_err(|e| e.to_string())?;
-        if st.success() { Ok(()) } else { Err(format!("{cmd:?} failed")) }
+        if st.success() {
+            Ok(())
+        } else {
+            Err(format!("{cmd:?} failed"))
+        }
     };
     if !venv_python(h).exists() {
         run(Command::new(&py).arg("-m").arg("venv").arg(&venv))?;
     }
-    run(Command::new(venv_python(h)).args(["-m", "pip", "install", "-q", "--upgrade", "rns>=1.3.5", "lxmf>=0.9.3"]))?;
+    run(Command::new(venv_python(h)).args([
+        "-m",
+        "pip",
+        "install",
+        "-q",
+        "--upgrade",
+        "rns>=1.3.5",
+        "lxmf>=0.9.3",
+    ]))?;
     Ok(json!({"python": venv_python(h), "installed": ["rns", "lxmf"]}))
 }
 
@@ -95,7 +137,10 @@ fn start(h: &Path, rest: &[String]) -> Result<Value, String> {
     }
     let py = venv_python(h);
     if !py.exists() {
-        return Err(format!("no Python with Reticulum at {}: `transferd-cli rns setup`", py.display()));
+        return Err(format!(
+            "no Python with Reticulum at {}: `transferd-cli rns setup`",
+            py.display()
+        ));
     }
     let script = h.join("transferd_rns_bridge.py");
     std::fs::create_dir_all(h).map_err(|e| e.to_string())?;
@@ -103,7 +148,11 @@ fn start(h: &Path, rest: &[String]) -> Result<Value, String> {
     let data = h.join("data");
     let _ = std::fs::remove_file(data.join("control.json"));
     let mut cmd = Command::new(&py);
-    cmd.arg(&script).arg("--data").arg(&data).arg("--name").arg(flag(rest, "--name").unwrap_or_else(|| "TransferD".into()));
+    cmd.arg(&script)
+        .arg("--data")
+        .arg(&data)
+        .arg("--name")
+        .arg(flag(rest, "--name").unwrap_or_else(|| "TransferD".into()));
     for l in flags(rest, "--listen") {
         cmd.arg("--listen").arg(l);
     }
@@ -139,7 +188,10 @@ fn start(h: &Path, rest: &[String]) -> Result<Value, String> {
         }
         std::thread::sleep(Duration::from_millis(200));
     }
-    Err(format!("the bridge did not start; see {}", h.join("bridge.log").display()))
+    Err(format!(
+        "the bridge did not start; see {}",
+        h.join("bridge.log").display()
+    ))
 }
 
 #[cfg(windows)]

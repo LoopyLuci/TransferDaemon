@@ -6,7 +6,11 @@ use std::fmt::Debug;
 
 /// Assert that a `Result` is `Ok` and its value matches a predicate.
 pub fn assert_result_ok<T: Debug>(result: &Result<T, impl Debug>, msg: &str) {
-    assert!(result.is_ok(), "Expected Ok({msg}), got Err({:?})", result.as_ref().err());
+    assert!(
+        result.is_ok(),
+        "Expected Ok({msg}), got Err({:?})",
+        result.as_ref().err()
+    );
 }
 
 /// Assert that a gRPC response has the expected status.
@@ -21,8 +25,14 @@ pub fn assert_grpc_success<T: std::fmt::Debug>(result: &Result<T, tonic::Status>
 /// Assert that an identity response has a public key.
 pub fn assert_has_identity(reply: &transferd_api::IdentityReply) {
     assert!(reply.has_identity, "Expected has_identity to be true");
-    assert!(!reply.public_key.is_empty(), "Expected non-empty public_key");
-    assert!(!reply.display_name.is_empty(), "Expected non-empty display_name");
+    assert!(
+        !reply.public_key.is_empty(),
+        "Expected non-empty public_key"
+    );
+    assert!(
+        !reply.display_name.is_empty(),
+        "Expected non-empty display_name"
+    );
 }
 
 /// Assert that a contact list contains a specific contact.

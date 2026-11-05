@@ -14,12 +14,16 @@ use ratatui::{buffer::Buffer, layout::Rect, style::Color};
 pub struct HalfBlockBackend;
 
 impl HalfBlockBackend {
-    pub fn kind(&self) -> TerminalGraphics { TerminalGraphics::HalfBlock }
+    pub fn kind(&self) -> TerminalGraphics {
+        TerminalGraphics::HalfBlock
+    }
 
     /// Scale `frame` to fit `area` (two pixels per row) and write colored half-block
     /// characters into the ratatui buffer.
     pub fn render_to_buffer(&self, frame: &RgbaImage, area: Rect, buf: &mut Buffer) {
-        if area.width == 0 || area.height == 0 { return; }
+        if area.width == 0 || area.height == 0 {
+            return;
+        }
 
         let target_w = area.width as u32;
         let target_h = (area.height as u32) * 2; // 2 vertical pixels per cell row
@@ -28,7 +32,7 @@ impl HalfBlockBackend {
 
         for row in 0..area.height {
             for col in 0..area.width {
-                let px  = col as u32;
+                let px = col as u32;
                 let py0 = (row as u32) * 2;
                 let py1 = py0 + 1;
 
@@ -54,17 +58,22 @@ impl HalfBlockBackend {
 
     /// Alternative: return a `String` of ANSI escape codes for direct-write callers.
     pub fn render_to_string(&self, frame: &RgbaImage, cols: u16, rows: u16) -> String {
-        if cols == 0 || rows == 0 { return String::new(); }
-        let scaled = image::imageops::resize(
-            frame, cols as u32, rows as u32 * 2, FilterType::Triangle,
-        );
+        if cols == 0 || rows == 0 {
+            return String::new();
+        }
+        let scaled =
+            image::imageops::resize(frame, cols as u32, rows as u32 * 2, FilterType::Triangle);
         let mut out = String::with_capacity((cols as usize * rows as usize) * 30);
         for row in 0..rows {
             for col in 0..cols as u32 {
                 let py0 = (row as u32) * 2;
                 let py1 = py0 + 1;
                 let top = scaled.get_pixel(col, py0);
-                let bot = if py1 < scaled.height() { *scaled.get_pixel(col, py1) } else { *top };
+                let bot = if py1 < scaled.height() {
+                    *scaled.get_pixel(col, py1)
+                } else {
+                    *top
+                };
                 out.push_str(&format!(
                     "\x1b[38;2;{};{};{}m\x1b[48;2;{};{};{}m▀",
                     top[0], top[1], top[2], bot[0], bot[1], bot[2],

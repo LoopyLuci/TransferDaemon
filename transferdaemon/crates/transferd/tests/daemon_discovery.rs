@@ -5,14 +5,16 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use parking_lot::Mutex;
-use relayd::protocol::{DeliveredMsg, ForwardMsg, RegisterMsg, Tag, encode, split};
+use relayd::protocol::{encode, split, DeliveredMsg, ForwardMsg, RegisterMsg, Tag};
 use relayd::relay::Relay;
 use tokio::net::{TcpListener, UdpSocket};
 use tokio::sync::Mutex as TokioMutex;
 use tokio_stream::wrappers::TcpListenerStream;
 use tonic::transport::Server;
 
-use transferd_api::{AccountServiceClient, CreateIdentityRequest, MessageServiceClient, SendTextRequest, Empty};
+use transferd_api::{
+    AccountServiceClient, CreateIdentityRequest, Empty, MessageServiceClient, SendTextRequest,
+};
 use transferd_lib::peer_discovery::{publish_endpoint_if_ready, resolve_peer};
 use transferd_lib::state::{Contact, DaemonState};
 use transferd_lib::{grpc::add_all_services, new_state};
@@ -21,7 +23,11 @@ async fn run_relay_server(socket: UdpSocket, relay: Arc<TokioMutex<Relay>>) {
     let socket = Arc::new(socket);
     let mut buf = vec![0u8; 65536];
 
-    async fn send_challenge(relay: &Arc<TokioMutex<Relay>>, socket: &Arc<UdpSocket>, src: std::net::SocketAddr) {
+    async fn send_challenge(
+        relay: &Arc<TokioMutex<Relay>>,
+        socket: &Arc<UdpSocket>,
+        src: std::net::SocketAddr,
+    ) {
         let (challenge, expires_at, difficulty) = {
             let mut r = relay.lock().await;
             let c = r.current_challenge();
@@ -29,16 +35,24 @@ async fn run_relay_server(socket: UdpSocket, relay: Arc<TokioMutex<Relay>>) {
         };
         let frame = encode(
             Tag::Challenge,
-            &relayd::protocol::ChallengeMsg { challenge, expires_at, difficulty },
+            &relayd::protocol::ChallengeMsg {
+                challenge,
+                expires_at,
+                difficulty,
+            },
         )
         .unwrap_or_default();
         let _ = socket.send_to(&frame, src).await;
     }
 
     loop {
-        let Ok((len, src)) = socket.recv_from(&mut buf).await else { return };
+        let Ok((len, src)) = socket.recv_from(&mut buf).await else {
+            return;
+        };
         let frame = &buf[..len];
-        let Some((tag, body)) = split(frame) else { continue };
+        let Some((tag, body)) = split(frame) else {
+            continue;
+        };
         let socket = socket.clone();
         let relay = relay.clone();
         match tag {
@@ -54,13 +68,18 @@ async fn run_relay_server(socket: UdpSocket, relay: Arc<TokioMutex<Relay>>) {
                     if let Ok(dst) = relay.lock().await.forward(&msg) {
                         let delivered = encode(
                             Tag::Ack,
-                            &DeliveredMsg { sender_seq: msg.sender_seq, ciphertext: msg.ciphertext },
+                            &DeliveredMsg {
+                                sender_seq: msg.sender_seq,
+                                ciphertext: msg.ciphertext,
+                            },
                         )
                         .unwrap_or_default();
                         let _ = socket.send_to(&delivered, dst).await;
                         let ack = encode(
                             Tag::Ack,
-                            &relayd::protocol::AckMsg { sender_seq: msg.sender_seq },
+                            &relayd::protocol::AckMsg {
+                                sender_seq: msg.sender_seq,
+                            },
                         )
                         .unwrap_or_default();
                         let _ = socket.send_to(&ack, src).await;
@@ -121,8 +140,12 @@ async fn peer_discovers_contact_via_dht_and_delivers() {
     std::env::set_var("TRANSFERD_RELAY_ADDR", relay_addr.to_string());
 
     // Two DHT nodes that know each other.
-    let dht_a = transferd_relay::DhtNode::start("127.0.0.1:0", [1u8; 32]).await.unwrap();
-    let dht_b = transferd_relay::DhtNode::start("127.0.0.1:0", [2u8; 32]).await.unwrap();
+    let dht_a = transferd_relay::DhtNode::start("127.0.0.1:0", [1u8; 32])
+        .await
+        .unwrap();
+    let dht_b = transferd_relay::DhtNode::start("127.0.0.1:0", [2u8; 32])
+        .await
+        .unwrap();
     let dht_a_addr = dht_a.addr();
     let dht_b_addr = dht_b.addr();
     let dht_a = Arc::new(dht_a);
@@ -135,15 +158,24 @@ async fn peer_discovers_contact_via_dht_and_delivers() {
     recv_state.lock().dht = Some(dht_b.clone());
     let recv_grpc = start_grpc(recv_state.clone()).await;
     let recv_url = format!("http://{recv_grpc}");
-    let mut recv_acct = AccountServiceClient::connect(recv_url.clone()).await.unwrap();
+    let mut recv_acct = AccountServiceClient::connect(recv_url.clone())
+        .await
+        .unwrap();
     recv_acct
-        .create_identity(CreateIdentityRequest { display_name: "Bob".into() })
+        .create_identity(CreateIdentityRequest {
+            display_name: "Bob".into(),
+        })
         .await
         .unwrap();
     wait_for_hub(&recv_state).await;
     // Publish Bob's endpoint so the sender can discover it.
     publish_endpoint_if_ready(&recv_state).await;
-    let recv_pk = recv_acct.get_public_key_hex(Empty {}).await.unwrap().into_inner().hex;
+    let recv_pk = recv_acct
+        .get_public_key_hex(Empty {})
+        .await
+        .unwrap()
+        .into_inner()
+        .hex;
     // Give the DHT a moment to replicate.
     tokio::time::sleep(Duration::from_millis(100)).await;
 
@@ -152,17 +184,30 @@ async fn peer_discovers_contact_via_dht_and_delivers() {
     send_state.lock().dht = Some(dht_a.clone());
     let sender_grpc = start_grpc(send_state.clone()).await;
     let sender_url = format!("http://{sender_grpc}");
-    let mut send_acct = AccountServiceClient::connect(sender_url.clone()).await.unwrap();
+    let mut send_acct = AccountServiceClient::connect(sender_url.clone())
+        .await
+        .unwrap();
     send_acct
-        .create_identity(CreateIdentityRequest { display_name: "Alice".into() })
+        .create_identity(CreateIdentityRequest {
+            display_name: "Alice".into(),
+        })
         .await
         .unwrap();
     wait_for_hub(&send_state).await;
 
     // Sanity: Alice can resolve Bob's endpoint purely from his public key.
-    let resolved = resolve_peer(&dht_a, &recv_pk).await.expect("must resolve Bob via DHT").0;
-    assert!(!resolved.is_empty(), "resolved endpoint list must be non-empty");
-    assert!(resolved.iter().any(|a| a.starts_with("relay://")), "resolved addresses must be relay URIs: {resolved:?}");
+    let resolved = resolve_peer(&dht_a, &recv_pk)
+        .await
+        .expect("must resolve Bob via DHT")
+        .0;
+    assert!(
+        !resolved.is_empty(),
+        "resolved endpoint list must be non-empty"
+    );
+    assert!(
+        resolved.iter().any(|a| a.starts_with("relay://")),
+        "resolved addresses must be relay URIs: {resolved:?}"
+    );
 
     // Alice adds Bob WITHOUT an address — discovery must fill it in.
     {
@@ -174,12 +219,14 @@ async fn peer_discovers_contact_via_dht_and_delivers() {
             online: false,
             blocked: false,
             address: None,
-			 hybrid_public_key: None,
+            hybrid_public_key: None,
             limits: None,
         });
     }
 
-    let mut send_msg = MessageServiceClient::connect(sender_url.clone()).await.unwrap();
+    let mut send_msg = MessageServiceClient::connect(sender_url.clone())
+        .await
+        .unwrap();
     send_msg
         .send_text(SendTextRequest {
             contact_id: recv_pk.clone(),
@@ -194,7 +241,10 @@ async fn peer_discovers_contact_via_dht_and_delivers() {
         pump_transport(&send_state).await;
         let delivered = {
             let s = recv_state.lock();
-            s.messages.values().flatten().any(|m| m.text == "found you via the DHT")
+            s.messages
+                .values()
+                .flatten()
+                .any(|m| m.text == "found you via the DHT")
         };
         if delivered {
             break;

@@ -18,7 +18,9 @@ impl Doorbell {
         {
             let fd = unsafe { libc::eventfd(0, libc::EFD_NONBLOCK | libc::EFD_SEMAPHORE) };
             if fd >= 0 {
-                return Ok(Self { inner: DoorbellInner::EventFd(fd) });
+                return Ok(Self {
+                    inner: DoorbellInner::EventFd(fd),
+                });
             }
         }
 
@@ -37,7 +39,9 @@ impl Doorbell {
             #[cfg(target_os = "linux")]
             DoorbellInner::EventFd(fd) => {
                 let val: u64 = 1;
-                unsafe { libc::write(*fd, &val as *const _ as *const libc::c_void, 8); }
+                unsafe {
+                    libc::write(*fd, &val as *const _ as *const libc::c_void, 8);
+                }
             }
             DoorbellInner::Channel { tx, .. } => {
                 if let Ok(guard) = tx.lock() {
@@ -53,7 +57,9 @@ impl Doorbell {
             #[cfg(target_os = "linux")]
             DoorbellInner::EventFd(fd) => {
                 let mut buf = [0u8; 8];
-                unsafe { libc::read(*fd, buf.as_mut_ptr() as *mut libc::c_void, 8); }
+                unsafe {
+                    libc::read(*fd, buf.as_mut_ptr() as *mut libc::c_void, 8);
+                }
             }
             DoorbellInner::Channel { rx, .. } => {
                 if let Ok(guard) = rx.lock() {
@@ -93,9 +99,9 @@ impl Drop for Doorbell {
     fn drop(&mut self) {
         match &self.inner {
             #[cfg(target_os = "linux")]
-            DoorbellInner::EventFd(fd) => {
-                unsafe { libc::close(*fd); }
-            }
+            DoorbellInner::EventFd(fd) => unsafe {
+                libc::close(*fd);
+            },
             _ => {}
         }
     }

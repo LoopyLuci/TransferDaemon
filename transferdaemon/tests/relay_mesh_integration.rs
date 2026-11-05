@@ -24,7 +24,10 @@ use transferd_relay::{
 };
 
 fn now_secs() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 // ---------------------------------------------------------------------------
@@ -36,11 +39,13 @@ fn now_secs() -> u64 {
 #[tokio::test]
 async fn test_dht_publish_and_lookup() {
     let hash_alice = [0xA1u8; 32];
-    let hash_bob   = [0xB1u8; 32];
+    let hash_bob = [0xB1u8; 32];
 
-    let alice = DhtAnnouncer::new("127.0.0.1:0", hash_alice).await
+    let alice = DhtAnnouncer::new("127.0.0.1:0", hash_alice)
+        .await
         .expect("Alice's DHT node failed to bind");
-    let bob = DhtAnnouncer::new("127.0.0.1:0", hash_bob).await
+    let bob = DhtAnnouncer::new("127.0.0.1:0", hash_bob)
+        .await
         .expect("Bob's DHT node failed to bind");
 
     // Bob bootstraps through Alice's DHT.
@@ -57,14 +62,16 @@ async fn test_dht_publish_and_lookup() {
         published_at: now,
         expires_at: now + 900,
         auth: [0u8; 32],
-    }.sign(&hash_alice);
+    }
+    .sign(&hash_alice);
 
     // Alice publishes her relay record.
     alice.publish(&announce).await;
 
     // Bob looks it up.
     let found = timeout(Duration::from_secs(5), bob.lookup(&hash_alice))
-        .await.expect("lookup timed out");
+        .await
+        .expect("lookup timed out");
 
     assert!(found.is_some(), "Bob must discover Alice's relay via DHT");
     let rec = found.unwrap();
@@ -78,10 +85,7 @@ async fn test_dht_publish_and_lookup() {
 // Helper: raw UDP relay client operations
 // ---------------------------------------------------------------------------
 
-use relayd::protocol::{
-    self as proto, ChallengeMsg, DeliveredMsg, ForwardMsg,
-    RegisterMsg, Tag,
-};
+use relayd::protocol::{self as proto, ChallengeMsg, DeliveredMsg, ForwardMsg, RegisterMsg, Tag};
 
 /// Send a REGISTER message and wait for a CHALLENGE response.
 /// Returns the challenge (needed for subsequent RPCs).
@@ -91,13 +95,19 @@ async fn client_register(
     token: [u8; 32],
 ) -> Option<ChallengeMsg> {
     // First request: send REGISTER with nonce=0 (difficulty=0 in tests → always passes).
-    let msg = RegisterMsg { session_token: token, pow_nonce: 0, seq: 0 };
+    let msg = RegisterMsg {
+        session_token: token,
+        pow_nonce: 0,
+        seq: 0,
+    };
     let frame = proto::encode(Tag::Register, &msg).ok()?;
     socket.send_to(&frame, relay_addr).await.ok()?;
 
     let mut buf = vec![0u8; 65_536];
     let (n, _) = timeout(Duration::from_secs(2), socket.recv_from(&mut buf))
-        .await.ok()?.ok()?;
+        .await
+        .ok()?
+        .ok()?;
 
     let (tag, body) = proto::split(&buf[..n])?;
     match tag {
@@ -113,9 +123,19 @@ async fn client_forward(
     token: [u8; 32],
     ciphertext: Vec<u8>,
 ) -> bool {
-    let msg = ForwardMsg { session_token: token, pow_nonce: 0, sender_seq: 1, ciphertext };
-    let frame = match proto::encode(Tag::Forward, &msg) { Ok(f) => f, Err(_) => return false };
-    if socket.send_to(&frame, relay_addr).await.is_err() { return false; }
+    let msg = ForwardMsg {
+        session_token: token,
+        pow_nonce: 0,
+        sender_seq: 1,
+        ciphertext,
+    };
+    let frame = match proto::encode(Tag::Forward, &msg) {
+        Ok(f) => f,
+        Err(_) => return false,
+    };
+    if socket.send_to(&frame, relay_addr).await.is_err() {
+        return false;
+    }
 
     let mut buf = vec![0u8; 65_536];
     match timeout(Duration::from_secs(2), socket.recv_from(&mut buf)).await {
@@ -135,7 +155,7 @@ async fn client_forward(
 #[tokio::test]
 async fn test_relay_friends_only_rejects_stranger() {
     let alice_token = [0xAAu8; 32];
-    let _bob_token  = [0xBBu8; 32]; // NOT on Alice's allow-list
+    let _bob_token = [0xBBu8; 32]; // NOT on Alice's allow-list
 
     let settings = RelaySettings {
         enabled: true,
@@ -149,11 +169,11 @@ async fn test_relay_friends_only_rejects_stranger() {
         identity_pubkey_hash: [0xCC; 32],
     };
 
-    let engine = RelayEngine::start(settings).await
+    let engine = RelayEngine::start(settings)
+        .await
         .expect("relay engine failed to start");
 
-    let relay_addr: SocketAddr = format!("127.0.0.1:{}", engine.port())
-        .parse().unwrap();
+    let relay_addr: SocketAddr = format!("127.0.0.1:{}", engine.port()).parse().unwrap();
 
     let bob_socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
     bob_socket.connect(relay_addr).await.unwrap();
@@ -176,7 +196,10 @@ async fn test_relay_friends_only_rejects_stranger() {
     // Alice registers successfully (difficulty=0 → PoW always passes).
     let alice_socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
     let challenge = client_register(&alice_socket, relay_addr, alice_token).await;
-    assert!(challenge.is_some(), "Alice (in allow-list) must register successfully");
+    assert!(
+        challenge.is_some(),
+        "Alice (in allow-list) must register successfully"
+    );
 
     println!("test_relay_friends_only_rejects_stranger: PASSED");
 }
@@ -193,13 +216,13 @@ async fn test_relay_friends_only_rejects_stranger() {
 #[tokio::test]
 async fn test_e2e_relay_alice_carol_bob() {
     let alice_token = [0xA2u8; 32];
-    let bob_token   = [0xB2u8; 32];
+    let bob_token = [0xB2u8; 32];
 
     // Carol's relay (engine).
     let carol_settings = RelaySettings {
         enabled: true,
         port: 0,
-        difficulty: 0, // no PoW in tests
+        difficulty: 0,           // no PoW in tests
         bandwidth_kbps: 100_000, // 100 Mbps — ample for test payloads
         max_sessions: 64,
         auth_policy: AuthPolicy::Public,
@@ -208,10 +231,10 @@ async fn test_e2e_relay_alice_carol_bob() {
         identity_pubkey_hash: [0xCC; 32],
     };
 
-    let carol = RelayEngine::start(carol_settings).await
+    let carol = RelayEngine::start(carol_settings)
+        .await
         .expect("Carol's relay failed to start");
-    let carol_addr: SocketAddr = format!("127.0.0.1:{}", carol.port())
-        .parse().unwrap();
+    let carol_addr: SocketAddr = format!("127.0.0.1:{}", carol.port()).parse().unwrap();
 
     // Bob binds a UDP socket — this is his "inbox" behind the relay.
     let bob_socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
@@ -221,20 +244,26 @@ async fn test_e2e_relay_alice_carol_bob() {
     let alice_socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
 
     // Bob registers with Carol's relay so Carol knows where to deliver messages.
-    let bob_register = RegisterMsg { session_token: bob_token, pow_nonce: 0, seq: 0 };
+    let bob_register = RegisterMsg {
+        session_token: bob_token,
+        pow_nonce: 0,
+        seq: 0,
+    };
     let frame = proto::encode(Tag::Register, &bob_register).unwrap();
     bob_socket.send_to(&frame, carol_addr).await.unwrap();
 
     // Wait for Carol to acknowledge (she sends a Challenge back).
     let mut buf = vec![0u8; 65_536];
     let (n, _) = timeout(Duration::from_secs(2), bob_socket.recv_from(&mut buf))
-        .await.expect("Bob's REGISTER ack timed out")
+        .await
+        .expect("Bob's REGISTER ack timed out")
         .expect("recv failed");
     let (tag, _) = proto::split(&buf[..n]).expect("bad frame");
     assert_eq!(tag, Tag::Challenge, "Carol must respond with Challenge");
 
     // Alice registers with Carol's relay.
-    let challenge = client_register(&alice_socket, carol_addr, alice_token).await
+    let challenge = client_register(&alice_socket, carol_addr, alice_token)
+        .await
         .expect("Alice failed to register with Carol's relay");
     assert_eq!(challenge.difficulty, 0);
 
@@ -245,7 +274,8 @@ async fn test_e2e_relay_alice_carol_bob() {
 
     // Bob receives the delivered message from Carol.
     let (n, src) = timeout(Duration::from_secs(2), bob_socket.recv_from(&mut buf))
-        .await.expect("Bob did not receive delivery")
+        .await
+        .expect("Bob did not receive delivery")
         .expect("recv failed");
     assert_eq!(src, carol_addr, "delivery must come from Carol's relay");
 
@@ -253,14 +283,20 @@ async fn test_e2e_relay_alice_carol_bob() {
     // Carol wraps delivered payloads in a Challenge frame for now (engine sends DeliveredMsg
     // tagged as Challenge — this is a known limitation, see engine.rs TODO).
     // Deserialize as DeliveredMsg regardless of tag.
-    let delivered: DeliveredMsg = bincode::deserialize(body)
-        .expect("could not deserialize DeliveredMsg");
-    assert_eq!(delivered.ciphertext, secret_payload, "payload must arrive intact");
+    let delivered: DeliveredMsg =
+        bincode::deserialize(body).expect("could not deserialize DeliveredMsg");
+    assert_eq!(
+        delivered.ciphertext, secret_payload,
+        "payload must arrive intact"
+    );
     assert_eq!(delivered.sender_seq, 1);
 
     // Verify relay session count increased.
     let status = carol.status();
-    assert!(status.active_sessions >= 1, "at least one session must be registered");
+    assert!(
+        status.active_sessions >= 1,
+        "at least one session must be registered"
+    );
 
     println!("test_e2e_relay_alice_carol_bob: PASSED");
 }
@@ -278,14 +314,23 @@ async fn test_token_bucket_throttles() {
     let bucket = TokenBucket::new(1); // 1 kbps
 
     // First consume of 100 bytes should succeed (within 1 sec capacity).
-    assert!(bucket.try_consume(100), "first consume within capacity must succeed");
+    assert!(
+        bucket.try_consume(100),
+        "first consume within capacity must succeed"
+    );
 
     // Consuming another 100 bytes immediately should fail (bucket now ~25 bytes).
-    assert!(!bucket.try_consume(100), "second immediate consume should be throttled");
+    assert!(
+        !bucket.try_consume(100),
+        "second immediate consume should be throttled"
+    );
 
     // After "refilling" by updating to unlimited...
     bucket.set_bandwidth_kbps(0); // unlimited
-    assert!(bucket.try_consume(1_000_000), "unlimited bucket must accept any size");
+    assert!(
+        bucket.try_consume(1_000_000),
+        "unlimited bucket must accept any size"
+    );
 
     println!("test_token_bucket_throttles: PASSED");
 }

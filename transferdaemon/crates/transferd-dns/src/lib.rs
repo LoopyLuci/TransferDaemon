@@ -185,7 +185,11 @@ impl Resolver {
     }
 
     /// Parse one entry of `TRANSFERD_DNS`, with the mesh forwarder's address too.
-    pub fn from_name_with(name: &str, ironroot: SocketAddr, mesh: SocketAddr) -> Result<Self, DnsError> {
+    pub fn from_name_with(
+        name: &str,
+        ironroot: SocketAddr,
+        mesh: SocketAddr,
+    ) -> Result<Self, DnsError> {
         match name.trim().to_ascii_lowercase().as_str() {
             "ironroot" => Ok(Self::ironroot(ironroot)),
             "mesh" => Ok(Self::Mesh { addr: mesh }),
@@ -232,7 +236,12 @@ impl Config {
 
     /// Point a `mesh` entry at another address (`None` or unparsable: leave the default).
     pub fn set_mesh_addr(&mut self, addr: Option<&str>) {
-        let Some(addr) = addr.map(str::trim).and_then(|s| s.parse::<SocketAddr>().ok()) else { return };
+        let Some(addr) = addr
+            .map(str::trim)
+            .and_then(|s| s.parse::<SocketAddr>().ok())
+        else {
+            return;
+        };
         for resolver in &mut self.resolvers {
             if let Resolver::Mesh { addr: at } = resolver {
                 *at = addr;
@@ -434,35 +443,21 @@ impl Client {
         };
         let sock = UdpSocket::bind(bind)
             .await
-            .map_err(|source| DnsError::Transport {
-                resolver,
-                source,
-            })?;
+            .map_err(|source| DnsError::Transport { resolver, source })?;
         sock.connect(addr)
             .await
-            .map_err(|source| DnsError::Transport {
-                resolver,
-                source,
-            })?;
+            .map_err(|source| DnsError::Transport { resolver, source })?;
         let mut out: Vec<Answer> = Vec::new();
         for qtype in [TYPE_A, TYPE_AAAA] {
             let id = next_id();
             let query = encode_query(id, name, qtype).map_err(|e| DnsError::InvalidName(e.0))?;
             sock.send(&query)
                 .await
-                .map_err(|source| DnsError::Transport {
-                    resolver,
-                    source,
-                })?;
+                .map_err(|source| DnsError::Transport { resolver, source })?;
             let mut buf = [0u8; wire::EDNS_UDP_PAYLOAD as usize];
             let n = match tokio::time::timeout(timeout, sock.recv(&mut buf)).await {
                 Ok(Ok(n)) => n,
-                Ok(Err(source)) => {
-                    return Err(DnsError::Transport {
-                        resolver,
-                        source,
-                    })
-                }
+                Ok(Err(source)) => return Err(DnsError::Transport { resolver, source }),
                 Err(_) => {
                     return Err(DnsError::Timeout {
                         resolver,
@@ -470,12 +465,10 @@ impl Client {
                     })
                 }
             };
-            out.push(decode_answer(&buf[..n], id, name, qtype).map_err(|source| {
-                DnsError::Malformed {
-                    resolver,
-                    source,
-                }
-            })?);
+            out.push(
+                decode_answer(&buf[..n], id, name, qtype)
+                    .map_err(|source| DnsError::Malformed { resolver, source })?,
+            );
         }
         Ok(merge(out))
     }
@@ -490,12 +483,7 @@ impl Client {
     ) -> Result<Answer, DnsError> {
         let mut stream = match tokio::time::timeout(timeout, TcpStream::connect(addr)).await {
             Ok(Ok(s)) => s,
-            Ok(Err(source)) => {
-                return Err(DnsError::Transport {
-                    resolver,
-                    source,
-                })
-            }
+            Ok(Err(source)) => return Err(DnsError::Transport { resolver, source }),
             Err(_) => {
                 return Err(DnsError::Timeout {
                     resolver,
@@ -513,32 +501,21 @@ impl Client {
             stream
                 .write_all(&framed)
                 .await
-                .map_err(|source| DnsError::Transport {
-                    resolver,
-                    source,
-                })?;
+                .map_err(|source| DnsError::Transport { resolver, source })?;
             let mut len = [0u8; 2];
             stream
                 .read_exact(&mut len)
                 .await
-                .map_err(|source| DnsError::Transport {
-                    resolver,
-                    source,
-                })?;
+                .map_err(|source| DnsError::Transport { resolver, source })?;
             let mut msg = vec![0u8; u16::from_be_bytes(len) as usize];
             stream
                 .read_exact(&mut msg)
                 .await
-                .map_err(|source| DnsError::Transport {
-                    resolver,
-                    source,
-                })?;
-            out.push(decode_answer(&msg, id, name, qtype).map_err(|source| {
-                DnsError::Malformed {
-                    resolver,
-                    source,
-                }
-            })?);
+                .map_err(|source| DnsError::Transport { resolver, source })?;
+            out.push(
+                decode_answer(&msg, id, name, qtype)
+                    .map_err(|source| DnsError::Malformed { resolver, source })?,
+            );
         }
         Ok(merge(out))
     }
@@ -929,11 +906,25 @@ mod tests {
             .iter()
             .any(|r| matches!(r, Resolver::Mesh { .. })));
         let mut c = Config::from_vars(Some("mesh,quad9"), None, None);
-        assert_eq!(c.resolvers[0], Resolver::Mesh { addr: MESH_DEFAULT_ADDR });
+        assert_eq!(
+            c.resolvers[0],
+            Resolver::Mesh {
+                addr: MESH_DEFAULT_ADDR
+            }
+        );
         c.set_mesh_addr(Some("127.0.0.1:15353"));
-        assert_eq!(c.resolvers[0], Resolver::Mesh { addr: "127.0.0.1:15353".parse().unwrap() });
+        assert_eq!(
+            c.resolvers[0],
+            Resolver::Mesh {
+                addr: "127.0.0.1:15353".parse().unwrap()
+            }
+        );
         c.set_mesh_addr(Some("not an address"));
-        assert_eq!(c.resolvers[0].name(), "mesh", "a bad address leaves the last good one");
+        assert_eq!(
+            c.resolvers[0].name(),
+            "mesh",
+            "a bad address leaves the last good one"
+        );
     }
 
     #[test]

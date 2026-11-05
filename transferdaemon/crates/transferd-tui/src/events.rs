@@ -17,7 +17,9 @@ pub async fn handle_key(app: &mut App, key: KeyEvent) -> bool {
     if app.call_state.is_some() {
         match key.code {
             KeyCode::Char('m') | KeyCode::Char('M') => {
-                if let Some(cs) = &mut app.call_state { cs.muted = !cs.muted; }
+                if let Some(cs) = &mut app.call_state {
+                    cs.muted = !cs.muted;
+                }
                 return false;
             }
             KeyCode::Char('h') | KeyCode::Char('H') => {
@@ -34,7 +36,9 @@ pub async fn handle_key(app: &mut App, key: KeyEvent) -> bool {
                         cs.video = None;
                         app.set_status("Video hidden. [V] show again");
                     } else if cs.video_enabled {
-                        cs.video = Some(transferd_tui_video::VideoCallOverlay::new(cs.contact_name.clone()));
+                        cs.video = Some(transferd_tui_video::VideoCallOverlay::new(
+                            cs.contact_name.clone(),
+                        ));
                         app.set_status("Video shown.");
                     }
                 }
@@ -51,20 +55,40 @@ pub async fn handle_key(app: &mut App, key: KeyEvent) -> bool {
 
     // ── Global tab switching ─────────────────────────────────────────────────
     match key.code {
-        KeyCode::F(1) => { app.tab = Tab::Chats;     app.set_status(""); return false; }
-        KeyCode::F(2) => { app.tab = Tab::Contacts;  app.set_status(""); return false; }
-        KeyCode::F(3) => { app.tab = Tab::Transfers; app.set_status(""); return false; }
-        KeyCode::F(4) => { app.tab = Tab::Settings;  app.set_status(""); return false; }
-        KeyCode::F(5) => { app.tab = Tab::Telemetry; app.set_status(""); return false; }
+        KeyCode::F(1) => {
+            app.tab = Tab::Chats;
+            app.set_status("");
+            return false;
+        }
+        KeyCode::F(2) => {
+            app.tab = Tab::Contacts;
+            app.set_status("");
+            return false;
+        }
+        KeyCode::F(3) => {
+            app.tab = Tab::Transfers;
+            app.set_status("");
+            return false;
+        }
+        KeyCode::F(4) => {
+            app.tab = Tab::Settings;
+            app.set_status("");
+            return false;
+        }
+        KeyCode::F(5) => {
+            app.tab = Tab::Telemetry;
+            app.set_status("");
+            return false;
+        }
         _ => {}
     }
 
     // ── Per-tab ──────────────────────────────────────────────────────────────
     match app.tab {
-        Tab::Chats     => handle_chats(app, key).await,
-        Tab::Contacts  => handle_contacts(app, key).await,
+        Tab::Chats => handle_chats(app, key).await,
+        Tab::Contacts => handle_contacts(app, key).await,
         Tab::Transfers => handle_transfers(app, key).await,
-        Tab::Settings  => handle_settings(app, key).await,
+        Tab::Settings => handle_settings(app, key).await,
         Tab::Telemetry => {} // telemetry is read-only; no key handling needed
     }
 
@@ -93,7 +117,11 @@ async fn handle_onboarding(app: &mut App, key: KeyEvent, step: &OnboardingStep) 
         OnboardingStep::EnterName => match key.code {
             KeyCode::Enter => {
                 let name = app.input.trim().to_owned();
-                let display_name = if name.is_empty() { "Anonymous".to_owned() } else { name };
+                let display_name = if name.is_empty() {
+                    "Anonymous".to_owned()
+                } else {
+                    name
+                };
                 match app.daemon.create_identity(display_name).await {
                     Ok(phrase) => {
                         app.identity = app.daemon.get_identity().await;
@@ -189,44 +217,53 @@ async fn handle_chats(app: &mut App, key: KeyEvent) {
     if key.code == KeyCode::Tab {
         app.chat_focus = match app.chat_focus {
             ChatFocus::ContactList => ChatFocus::Messages,
-            ChatFocus::Messages    => ChatFocus::Input,
-            ChatFocus::Input       => ChatFocus::ContactList,
+            ChatFocus::Messages => ChatFocus::Input,
+            ChatFocus::Input => ChatFocus::ContactList,
         };
         return;
     }
     if key.code == KeyCode::BackTab {
         app.chat_focus = match app.chat_focus {
             ChatFocus::ContactList => ChatFocus::Input,
-            ChatFocus::Messages    => ChatFocus::ContactList,
-            ChatFocus::Input       => ChatFocus::Messages,
+            ChatFocus::Messages => ChatFocus::ContactList,
+            ChatFocus::Input => ChatFocus::Messages,
         };
         return;
     }
 
     match app.chat_focus {
         ChatFocus::ContactList => match key.code {
-            KeyCode::Up
-                if app.selected_contact > 0 => { app.selected_contact -= 1; app.msg_scroll = 0; }
-            KeyCode::Down
-                if app.selected_contact + 1 < app.contacts.len() => {
-                    app.selected_contact += 1;
-                    app.msg_scroll = 0;
-                    // Lazy-load messages.
-                    if let Some(id) = app.open_contact_id().map(|s| s.to_owned()) {
-                        if !app.messages.contains_key(&id) {
-                            let msgs = app.daemon.get_messages(&id).await;
-                            app.messages.insert(id, msgs);
-                        }
+            KeyCode::Up if app.selected_contact > 0 => {
+                app.selected_contact -= 1;
+                app.msg_scroll = 0;
+            }
+            KeyCode::Down if app.selected_contact + 1 < app.contacts.len() => {
+                app.selected_contact += 1;
+                app.msg_scroll = 0;
+                // Lazy-load messages.
+                if let Some(id) = app.open_contact_id().map(|s| s.to_owned()) {
+                    if !app.messages.contains_key(&id) {
+                        let msgs = app.daemon.get_messages(&id).await;
+                        app.messages.insert(id, msgs);
                     }
                 }
-            KeyCode::Enter => { app.chat_focus = ChatFocus::Input; }
+            }
+            KeyCode::Enter => {
+                app.chat_focus = ChatFocus::Input;
+            }
             _ => {}
         },
 
         ChatFocus::Messages => match key.code {
-            KeyCode::Up if app.msg_scroll > 0 => { app.msg_scroll -= 1; }
-            KeyCode::Down => { app.msg_scroll += 1; }
-            KeyCode::Enter | KeyCode::Char('i') => { app.chat_focus = ChatFocus::Input; }
+            KeyCode::Up if app.msg_scroll > 0 => {
+                app.msg_scroll -= 1;
+            }
+            KeyCode::Down => {
+                app.msg_scroll += 1;
+            }
+            KeyCode::Enter | KeyCode::Char('i') => {
+                app.chat_focus = ChatFocus::Input;
+            }
             _ => {}
         },
 
@@ -237,7 +274,9 @@ async fn handle_chats(app: &mut App, key: KeyEvent) {
                         if app.contacts.is_empty() {
                             app.set_status("No contact selected.");
                         } else {
-                            app.modal = Some(Modal::SendFile { path_input: String::new() });
+                            app.modal = Some(Modal::SendFile {
+                                path_input: String::new(),
+                            });
                         }
                     }
                     KeyCode::Char('c') => {
@@ -264,7 +303,9 @@ async fn handle_chats(app: &mut App, key: KeyEvent) {
             match key.code {
                 KeyCode::Enter => {
                     let text = app.input.trim().to_owned();
-                    if text.is_empty() { return; }
+                    if text.is_empty() {
+                        return;
+                    }
                     if let Some(id) = app.open_contact_id().map(|s| s.to_owned()) {
                         match app.daemon.send_text(&id, text).await {
                             Ok(msg) => {
@@ -279,7 +320,9 @@ async fn handle_chats(app: &mut App, key: KeyEvent) {
                         app.set_status("No contact selected.");
                     }
                 }
-                KeyCode::Esc => { app.chat_focus = ChatFocus::ContactList; }
+                KeyCode::Esc => {
+                    app.chat_focus = ChatFocus::ContactList;
+                }
                 _ => edit_input(&mut app.input, key),
             }
         }
@@ -292,10 +335,12 @@ async fn handle_chats(app: &mut App, key: KeyEvent) {
 
 async fn handle_contacts(app: &mut App, key: KeyEvent) {
     match key.code {
-        KeyCode::Up
-            if app.contacts_selected > 0 => { app.contacts_selected -= 1; }
-        KeyCode::Down
-            if app.contacts_selected + 1 < app.contacts.len() => { app.contacts_selected += 1; }
+        KeyCode::Up if app.contacts_selected > 0 => {
+            app.contacts_selected -= 1;
+        }
+        KeyCode::Down if app.contacts_selected + 1 < app.contacts.len() => {
+            app.contacts_selected += 1;
+        }
         KeyCode::Char('a') | KeyCode::Char('A') => {
             app.modal = Some(Modal::AddContact {
                 key_input: String::new(),
@@ -349,8 +394,12 @@ async fn handle_contacts(app: &mut App, key: KeyEvent) {
 
 async fn handle_transfers(app: &mut App, key: KeyEvent) {
     match key.code {
-        KeyCode::Up if app.transfers_selected > 0 => { app.transfers_selected -= 1; }
-        KeyCode::Down if app.transfers_selected + 1 < app.transfers.len() => { app.transfers_selected += 1; }
+        KeyCode::Up if app.transfers_selected > 0 => {
+            app.transfers_selected -= 1;
+        }
+        KeyCode::Down if app.transfers_selected + 1 < app.transfers.len() => {
+            app.transfers_selected += 1;
+        }
         KeyCode::Char('c') | KeyCode::Char('C') => {
             if let Some(t) = app.transfers.get(app.transfers_selected) {
                 let id = t.id.clone();
@@ -371,14 +420,18 @@ async fn handle_settings(app: &mut App, key: KeyEvent) {
     match key.code {
         KeyCode::Char('r') | KeyCode::Char('R') => {
             if let Some(phrase) = &app.recovery_phrase {
-                app.modal = Some(Modal::RevealPhrase { phrase: phrase.clone() });
+                app.modal = Some(Modal::RevealPhrase {
+                    phrase: phrase.clone(),
+                });
             } else {
                 app.set_status("Recovery phrase not available in this session.");
             }
         }
         KeyCode::Char('q') | KeyCode::Char('Q') => {
             if let Some(id) = &app.identity {
-                app.modal = Some(Modal::ShowQr { hex: id.public_key.clone() });
+                app.modal = Some(Modal::ShowQr {
+                    hex: id.public_key.clone(),
+                });
             } else {
                 app.set_status("No identity — cannot show QR.");
             }
@@ -386,7 +439,8 @@ async fn handle_settings(app: &mut App, key: KeyEvent) {
         KeyCode::Char('c') | KeyCode::Char('C') => {
             if let Some(id) = &app.identity {
                 use base64::Engine;
-                let encoded = base64::engine::general_purpose::STANDARD.encode(id.public_key.as_bytes());
+                let encoded =
+                    base64::engine::general_purpose::STANDARD.encode(id.public_key.as_bytes());
                 // OSC 52: terminal clipboard paste — works in Windows Terminal, kitty, iTerm2, xterm.
                 print!("\x1b]52;c;{encoded}\x07");
                 let _ = std::io::Write::flush(&mut std::io::stdout());
@@ -410,21 +464,41 @@ async fn handle_modal(app: &mut App, key: KeyEvent) -> bool {
     };
 
     match modal {
-        Modal::AddContact { mut key_input, mut name_input, mut field } => {
+        Modal::AddContact {
+            mut key_input,
+            mut name_input,
+            mut field,
+        } => {
             match key.code {
                 KeyCode::Esc => { /* modal closed, already taken */ }
                 KeyCode::Tab => {
                     field = 1 - field;
-                    app.modal = Some(Modal::AddContact { key_input, name_input, field });
+                    app.modal = Some(Modal::AddContact {
+                        key_input,
+                        name_input,
+                        field,
+                    });
                 }
                 KeyCode::Enter => {
                     if field == 0 {
                         field = 1;
-                        app.modal = Some(Modal::AddContact { key_input, name_input, field });
+                        app.modal = Some(Modal::AddContact {
+                            key_input,
+                            name_input,
+                            field,
+                        });
                     } else {
                         // Submit.
-                        let name = if name_input.trim().is_empty() { "Unknown".to_owned() } else { name_input.trim().to_owned() };
-                        match app.daemon.add_contact(key_input.trim().to_owned(), name).await {
+                        let name = if name_input.trim().is_empty() {
+                            "Unknown".to_owned()
+                        } else {
+                            name_input.trim().to_owned()
+                        };
+                        match app
+                            .daemon
+                            .add_contact(key_input.trim().to_owned(), name)
+                            .await
+                        {
                             Ok(c) => {
                                 app.contacts.push(c);
                                 app.set_status("Contact added.");
@@ -441,38 +515,43 @@ async fn handle_modal(app: &mut App, key: KeyEvent) -> bool {
                     }
                 }
                 _ => {
-                    if field == 0 { edit_input(&mut key_input, key); }
-                    else          { edit_input(&mut name_input, key); }
-                    app.modal = Some(Modal::AddContact { key_input, name_input, field });
+                    if field == 0 {
+                        edit_input(&mut key_input, key);
+                    } else {
+                        edit_input(&mut name_input, key);
+                    }
+                    app.modal = Some(Modal::AddContact {
+                        key_input,
+                        name_input,
+                        field,
+                    });
                 }
             }
         }
 
-        Modal::SendFile { mut path_input } => {
-            match key.code {
-                KeyCode::Esc => {}
-                KeyCode::Enter => {
-                    let path = path_input.trim().to_owned();
-                    if let Some(id) = app.open_contact_id().map(|s| s.to_owned()) {
-                        match app.daemon.send_file(&id, path).await {
-                            Ok(msg) => {
-                                app.messages.entry(id.clone()).or_default().push(msg);
-                                app.transfers = app.daemon.get_transfers().await;
-                                app.set_status("File transfer started.");
-                            }
-                            Err(e) => {
-                                app.set_status(format!("Error: {}", e));
-                                app.modal = Some(Modal::SendFile { path_input });
-                            }
+        Modal::SendFile { mut path_input } => match key.code {
+            KeyCode::Esc => {}
+            KeyCode::Enter => {
+                let path = path_input.trim().to_owned();
+                if let Some(id) = app.open_contact_id().map(|s| s.to_owned()) {
+                    match app.daemon.send_file(&id, path).await {
+                        Ok(msg) => {
+                            app.messages.entry(id.clone()).or_default().push(msg);
+                            app.transfers = app.daemon.get_transfers().await;
+                            app.set_status("File transfer started.");
+                        }
+                        Err(e) => {
+                            app.set_status(format!("Error: {}", e));
+                            app.modal = Some(Modal::SendFile { path_input });
                         }
                     }
                 }
-                _ => {
-                    edit_input(&mut path_input, key);
-                    app.modal = Some(Modal::SendFile { path_input });
-                }
             }
-        }
+            _ => {
+                edit_input(&mut path_input, key);
+                app.modal = Some(Modal::SendFile { path_input });
+            }
+        },
 
         Modal::ConfirmDelete { label, contact_id } => {
             match key.code {
@@ -508,7 +587,9 @@ async fn handle_modal(app: &mut App, key: KeyEvent) -> bool {
 pub fn edit_input(input: &mut String, key: KeyEvent) {
     match key.code {
         KeyCode::Char(c) => input.push(c),
-        KeyCode::Backspace => { input.pop(); }
+        KeyCode::Backspace => {
+            input.pop();
+        }
         KeyCode::Delete => {} // no cursor tracking needed for simple TUI
         _ => {}
     }

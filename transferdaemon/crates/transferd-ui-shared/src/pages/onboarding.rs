@@ -2,8 +2,8 @@
 //!
 //! Redesigned with the new design system for a modern, accessible experience.
 
-use crate::app::{AppState, Page};
 use crate::animations::Fade;
+use crate::app::{AppState, Page};
 use crate::design::{self, DesignTokens};
 use crate::platform_hooks;
 use egui::{Context, RichText, Ui, Vec2};
@@ -44,18 +44,14 @@ impl OnboardingPage {
             ui.add_space(tokens.spacing.xl);
 
             // Logo / brand area
-            ui.label(
-                RichText::new("🔒")
-                    .size(48.0)
-                    .color(tokens.palette.accent),
-            );
+            ui.label(RichText::new("🔒").size(48.0).color(tokens.palette.accent));
             ui.add_space(tokens.spacing.sm);
 
             match self.step {
-                Step::Welcome    => self.show_welcome(ui, &tokens),
+                Step::Welcome => self.show_welcome(ui, &tokens),
                 Step::CreateName => self.show_create_name(ui, state, &tokens),
                 Step::ShowPhrase => self.show_phrase(ui, state, &tokens),
-                Step::Restore    => self.show_restore(ui, state, &tokens),
+                Step::Restore => self.show_restore(ui, state, &tokens),
             }
         });
     }
@@ -315,9 +311,13 @@ impl OnboardingPage {
         if ui
             .add_sized(
                 [BTN[0], 44.0],
-                egui::Button::new(RichText::new(copy_label).size(15.0).color(tokens.palette.text_primary))
-                    .fill(copy_color)
-                    .rounding(tokens.spacing.button_rounding),
+                egui::Button::new(
+                    RichText::new(copy_label)
+                        .size(15.0)
+                        .color(tokens.palette.text_primary),
+                )
+                .fill(copy_color)
+                .rounding(tokens.spacing.button_rounding),
             )
             .clicked()
         {

@@ -1,8 +1,8 @@
+use bytes::Bytes;
+use std::collections::HashMap;
 use transferd_core::receiver::{InsertResult, ReassemblyWindow};
 use transferd_core::transport::Chunk;
 use transferd_core::types::{Gsn, SessionId};
-use bytes::Bytes;
-use std::collections::HashMap;
 
 fn make_chunk(gsn: u64, session_id: SessionId) -> Chunk {
     Chunk {
@@ -24,7 +24,9 @@ fn test_critical_gap_nack_and_recovery() {
     for i in 0..50u64 {
         let chunk = make_chunk(i, session_id);
         retransmit.insert(i, chunk.clone());
-        if i == 10 { continue; }
+        if i == 10 {
+            continue;
+        }
         let result = window.insert(chunk);
         if i < 10 {
             assert!(matches!(result, InsertResult::Delivered(_)), "chunk {i}");

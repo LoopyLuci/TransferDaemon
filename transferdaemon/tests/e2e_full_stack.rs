@@ -8,27 +8,27 @@
 use transferd_tests::TestDaemon;
 
 /// Helper to create an AccountServiceClient.
-async fn account_client(addr: &str) -> transferd_api::AccountServiceClient<
-    tonic::transport::Channel,
-> {
+async fn account_client(
+    addr: &str,
+) -> transferd_api::AccountServiceClient<tonic::transport::Channel> {
     transferd_api::AccountServiceClient::connect(addr.to_owned())
         .await
         .unwrap()
 }
 
 /// Helper to create a FriendServiceClient.
-async fn friend_client(addr: &str) -> transferd_api::FriendServiceClient<
-    tonic::transport::Channel,
-> {
+async fn friend_client(
+    addr: &str,
+) -> transferd_api::FriendServiceClient<tonic::transport::Channel> {
     transferd_api::FriendServiceClient::connect(addr.to_owned())
         .await
         .unwrap()
 }
 
 /// Helper to create a MessageServiceClient.
-async fn message_client(addr: &str) -> transferd_api::MessageServiceClient<
-    tonic::transport::Channel,
-> {
+async fn message_client(
+    addr: &str,
+) -> transferd_api::MessageServiceClient<tonic::transport::Channel> {
     transferd_api::MessageServiceClient::connect(addr.to_owned())
         .await
         .unwrap()

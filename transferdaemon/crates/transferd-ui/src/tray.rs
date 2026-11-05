@@ -65,8 +65,12 @@ pub fn start_tray() -> (mpsc::Sender<TrayUpdate>, mpsc::Receiver<TrayCommand>) {
             while let Ok(me) = menu_rx.try_recv() {
                 let id: &str = me.id().as_ref();
                 match id {
-                    "quit" => { let _ = tx_cmd.send(TrayCommand::Quit); }
-                    "show" => { let _ = tx_cmd.send(TrayCommand::ShowWindow); }
+                    "quit" => {
+                        let _ = tx_cmd.send(TrayCommand::Quit);
+                    }
+                    "show" => {
+                        let _ = tx_cmd.send(TrayCommand::ShowWindow);
+                    }
                     _ => {}
                 }
             }

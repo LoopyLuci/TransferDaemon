@@ -2,8 +2,8 @@ use crate::types::{Gsn, SessionId};
 use async_trait::async_trait;
 use bytes::Bytes;
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 pub struct Chunk {
@@ -53,16 +53,23 @@ impl Default for LaneMetrics {
 }
 
 impl LaneMetrics {
-    pub fn new_alive() -> Self { Self::default() }
+    pub fn new_alive() -> Self {
+        Self::default()
+    }
 
     pub fn update_rtt(&self, rtt_ms: f64) {
-        self.rtt_ms.store((rtt_ms * 1000.0) as u64, Ordering::Relaxed);
+        self.rtt_ms
+            .store((rtt_ms * 1000.0) as u64, Ordering::Relaxed);
     }
     pub fn update_bandwidth(&self, bps: f64) {
         self.bandwidth_bps.store(bps as u64, Ordering::Relaxed);
     }
-    pub fn inc_active(&self) { self.active_chunks.fetch_add(1, Ordering::Relaxed); }
-    pub fn dec_active(&self) { self.active_chunks.fetch_sub(1, Ordering::Relaxed); }
+    pub fn inc_active(&self) {
+        self.active_chunks.fetch_add(1, Ordering::Relaxed);
+    }
+    pub fn dec_active(&self) {
+        self.active_chunks.fetch_sub(1, Ordering::Relaxed);
+    }
 
     /// Reconcile the in-flight counter down to a bounded value (e.g. the
     /// session's outstanding, unacked chunk count) once acks have been applied.
@@ -89,13 +96,17 @@ impl LaneMetrics {
         }
     }
 
-    pub fn mark_dead(&self) { self.alive.store(false, Ordering::Relaxed); }
+    pub fn mark_dead(&self) {
+        self.alive.store(false, Ordering::Relaxed);
+    }
     /// Mark the lane alive again (after a successful probe or healthy send).
     pub fn mark_alive(&self) {
         self.alive.store(true, Ordering::Relaxed);
         self.errors_total.store(0, Ordering::Relaxed);
     }
-    pub fn is_healthy(&self) -> bool { self.alive.load(Ordering::Relaxed) }
+    pub fn is_healthy(&self) -> bool {
+        self.alive.load(Ordering::Relaxed)
+    }
 }
 
 #[async_trait]
@@ -107,11 +118,17 @@ pub trait TransportLane: Send + Sync {
     /// Non-blocking receive: returns a buffered chunk immediately, or `None`
     /// when nothing is pending. Lanes that cannot drain non-blockingly may
     /// leave this as the default (returns `None`).
-    async fn try_recv(&mut self) -> Option<Result<Chunk, TransportError>> { None }
+    async fn try_recv(&mut self) -> Option<Result<Chunk, TransportError>> {
+        None
+    }
     /// Drain buffered control-plane messages (acks, pongs). Default: none.
-    async fn try_recv_control(&mut self) -> Option<ControlMsg> { None }
+    async fn try_recv_control(&mut self) -> Option<ControlMsg> {
+        None
+    }
     /// Whether this lane supports RTT pings (and their interval).
-    fn ping_interval(&self) -> Option<std::time::Duration> { None }
+    fn ping_interval(&self) -> Option<std::time::Duration> {
+        None
+    }
     /// Send an RTT probe. Default: no-op.
     async fn ping(&self) {}
     fn capacity(&self) -> usize;

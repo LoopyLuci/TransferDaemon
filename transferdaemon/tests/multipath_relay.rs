@@ -10,15 +10,13 @@
 //! The relay server uses difficulty=0 so all PoW nonces are trivially valid.
 
 use bytes::Bytes;
-use relayd::protocol::{
-    DeliveredMsg, ForwardMsg, RegisterMsg, Tag, encode, split,
-};
+use relayd::protocol::{encode, split, DeliveredMsg, ForwardMsg, RegisterMsg, Tag};
 use relayd::relay::Relay;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tokio::sync::Mutex;
-use tokio::time::{Duration, timeout};
+use tokio::time::{timeout, Duration};
 use transferd_core::ate::Ate;
 use transferd_core::lanes::relay_lane::RelayLane;
 use transferd_core::receiver::ReassemblyWindow;
@@ -42,16 +40,24 @@ async fn run_relay_server(socket: UdpSocket, relay: Arc<Mutex<Relay>>) {
         };
         let frame = encode(
             Tag::Challenge,
-            &relayd::protocol::ChallengeMsg { challenge, expires_at, difficulty },
+            &relayd::protocol::ChallengeMsg {
+                challenge,
+                expires_at,
+                difficulty,
+            },
         )
         .unwrap_or_default();
         let _ = socket.send_to(&frame, src).await;
     }
 
     loop {
-        let Ok((len, src)) = socket.recv_from(&mut buf).await else { return };
+        let Ok((len, src)) = socket.recv_from(&mut buf).await else {
+            return;
+        };
         let frame = &buf[..len];
-        let Some((tag, body)) = split(frame) else { continue };
+        let Some((tag, body)) = split(frame) else {
+            continue;
+        };
 
         let socket = socket.clone();
         let relay = relay.clone();
@@ -82,7 +88,9 @@ async fn run_relay_server(socket: UdpSocket, relay: Arc<Mutex<Relay>>) {
                         let _ = socket.send_to(&delivered, dst).await;
                         let ack = encode(
                             Tag::Ack,
-                            &relayd::protocol::AckMsg { sender_seq: msg.sender_seq },
+                            &relayd::protocol::AckMsg {
+                                sender_seq: msg.sender_seq,
+                            },
                         )
                         .unwrap_or_default();
                         let _ = socket.send_to(&ack, src).await;
@@ -139,8 +147,8 @@ async fn test_relay_lane_single_chunk() {
     let sender = RelayLane::new(
         0,
         relay_addr,
-        sender_token,    // our marker token (not registered)
-        receiver_token,  // forward to receiver
+        sender_token,   // our marker token (not registered)
+        receiver_token, // forward to receiver
         &session_key,
         &session_key,
         false, // don't register
@@ -165,7 +173,10 @@ async fn test_relay_lane_single_chunk() {
 
     assert_eq!(chunk.payload.as_ref(), b"hello relay");
     assert_eq!(chunk.gsn, Gsn(0));
-    println!("test_relay_lane_single_chunk: PASSED — payload={:?}", chunk.payload);
+    println!(
+        "test_relay_lane_single_chunk: PASSED — payload={:?}",
+        chunk.payload
+    );
 }
 
 /// Multi-chunk transfer through the relay with ReassemblyWindow.
@@ -180,13 +191,29 @@ async fn test_relay_lane_multi_chunk_reassembly() {
     let receiver_token = derive_token(&session_key, b"rx-multi");
     let sender_token = derive_token(&session_key, b"sender-multi");
 
-    let mut receiver = RelayLane::new(1, relay_addr, receiver_token, [0u8; 32], &session_key, &session_key, true)
-        .await
-        .unwrap();
+    let mut receiver = RelayLane::new(
+        1,
+        relay_addr,
+        receiver_token,
+        [0u8; 32],
+        &session_key,
+        &session_key,
+        true,
+    )
+    .await
+    .unwrap();
 
-    let sender = RelayLane::new(0, relay_addr, sender_token, receiver_token, &session_key, &session_key, false)
-        .await
-        .unwrap();
+    let sender = RelayLane::new(
+        0,
+        relay_addr,
+        sender_token,
+        receiver_token,
+        &session_key,
+        &session_key,
+        false,
+    )
+    .await
+    .unwrap();
 
     let ate = Ate::new(1, 100);
     let mut session = Session::new(SessionId([2u8; 16]), ate, 64);
@@ -209,8 +236,11 @@ async fn test_relay_lane_multi_chunk_reassembly() {
         window.insert(chunk);
     }
 
-    assert_eq!(window.delivered_up_to(), Gsn(4),
-        "all 4 chunks should be contiguously delivered");
+    assert_eq!(
+        window.delivered_up_to(),
+        Gsn(4),
+        "all 4 chunks should be contiguously delivered"
+    );
     println!("test_relay_lane_multi_chunk_reassembly: PASSED");
 }
 
@@ -229,13 +259,29 @@ async fn test_multipath_qos_critical_redundancy() {
     let receiver_token = derive_token(&session_key, b"rx-qos");
     let sender_token = derive_token(&session_key, b"sender-qos");
 
-    let mut receiver = RelayLane::new(1, relay_addr, receiver_token, [0u8; 32], &session_key, &session_key, true)
-        .await
-        .unwrap();
+    let mut receiver = RelayLane::new(
+        1,
+        relay_addr,
+        receiver_token,
+        [0u8; 32],
+        &session_key,
+        &session_key,
+        true,
+    )
+    .await
+    .unwrap();
 
-    let relay_sender = RelayLane::new(0, relay_addr, sender_token, receiver_token, &session_key, &session_key, false)
-        .await
-        .unwrap();
+    let relay_sender = RelayLane::new(
+        0,
+        relay_addr,
+        sender_token,
+        receiver_token,
+        &session_key,
+        &session_key,
+        false,
+    )
+    .await
+    .unwrap();
 
     // Second lane: SimulatedWiFiLane (mirror — its send() is fire-and-forget, no receiver).
     let wifi = SimulatedWiFiLane::new(1, Duration::from_millis(5), 100_000_000.0);
@@ -245,10 +291,7 @@ async fn test_multipath_qos_critical_redundancy() {
     // Enqueue one QoS-critical chunk — will be sent on both lanes.
     session.enqueue_qos(Bytes::from_static(b"critical payload"), 0, true);
 
-    let mut lanes: Vec<Box<dyn TransportLane>> = vec![
-        Box::new(relay_sender),
-        Box::new(wifi),
-    ];
+    let mut lanes: Vec<Box<dyn TransportLane>> = vec![Box::new(relay_sender), Box::new(wifi)];
     session.process_tick(&mut lanes).await;
 
     // Relay lane delivers the chunk; the WiFi mirror delivers to nowhere (no receiver).
@@ -306,7 +349,10 @@ fn test_ate_select_two_lanes() {
     let caps = [16usize, 16usize];
     let result = ate.select_two_lanes(Gsn(0), Gsn(0), &metrics, &caps);
     let (primary, mirror) = result.expect("two lanes should be available");
-    assert_ne!(primary, mirror, "primary and mirror must be different lanes");
+    assert_ne!(
+        primary, mirror,
+        "primary and mirror must be different lanes"
+    );
     // Lower RTT lane (0) should be preferred as primary.
     assert_eq!(primary, 0);
     assert_eq!(mirror, 1);

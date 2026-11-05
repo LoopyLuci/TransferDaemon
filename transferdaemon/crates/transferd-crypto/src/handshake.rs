@@ -29,8 +29,8 @@
 //! then call the deterministic seed-based / `encapsulate_deterministic` APIs.
 
 use ml_kem::{
-    B32, Decapsulate, Seed,
     ml_kem_768::{Ciphertext as MlCt768, DecapsulationKey as MlDk768, EncapsulationKey as MlEk768},
+    Decapsulate, Seed, B32,
 };
 use rand::RngCore;
 use x25519_dalek::{EphemeralSecret, PublicKey as X25519PublicKey};
@@ -147,7 +147,11 @@ impl Initiator {
         let dk = MlDk768::from_seed(seed);
         let ek = dk.encapsulation_key().clone();
 
-        Self { x25519_sk, kem_dk: dk, kem_ek: ek }
+        Self {
+            x25519_sk,
+            kem_dk: dk,
+            kem_ek: ek,
+        }
     }
 
     /// Borrows the initiator to produce the first flight.
@@ -167,7 +171,9 @@ impl Initiator {
 }
 
 impl Default for Initiator {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -180,7 +186,9 @@ pub struct Responder {
 
 impl Responder {
     pub fn new() -> Self {
-        Self { x25519_sk: EphemeralSecret::random_from_rng(rand::rngs::OsRng) }
+        Self {
+            x25519_sk: EphemeralSecret::random_from_rng(rand::rngs::OsRng),
+        }
     }
 
     /// Processes the initiator's hello. Returns the responder's hello and the session key.
@@ -198,13 +206,18 @@ impl Responder {
         let (kem_ct, kem_ss) = hello.kem_ek.encapsulate_deterministic(&m);
 
         let key = hybrid_kdf(x_ss.as_bytes(), kem_ss.as_ref());
-        let resp = ResponderHello { x25519_pk: rpk, kem_ct };
+        let resp = ResponderHello {
+            x25519_pk: rpk,
+            kem_ct,
+        };
         (resp, key)
     }
 }
 
 impl Default for Responder {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -281,7 +294,7 @@ mod test {
         let mut bytes = resp.to_wire();
         let idx = bytes.len() - 5;
         bytes[idx] ^= 0xff;
-let tampered = ResponderHello::from_wire(&bytes).expect("parses");
+        let tampered = ResponderHello::from_wire(&bytes).expect("parses");
         let tampered_key = init.finalize(tampered);
         assert_ne!(tampered_key.as_bytes(), key.as_bytes());
     }

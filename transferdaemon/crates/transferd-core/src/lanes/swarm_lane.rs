@@ -42,7 +42,10 @@ use crate::types::{Gsn, SessionId};
 use async_trait::async_trait;
 use bytes::Bytes;
 use std::collections::BTreeMap;
-use std::sync::{Arc, atomic::{AtomicU64, Ordering}};
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc,
+};
 use tokio::sync::Notify;
 
 // ---------------------------------------------------------------------------
@@ -152,7 +155,8 @@ impl TransportLane for SwarmSeeder {
     }
 
     async fn send(&self, chunk: Chunk) -> Result<(), TransportError> {
-        self.total_bytes.fetch_add(chunk.payload.len() as u64, Ordering::Relaxed);
+        self.total_bytes
+            .fetch_add(chunk.payload.len() as u64, Ordering::Relaxed);
         self.store.insert(chunk.gsn.0, chunk.payload).await;
         Ok(())
     }
@@ -217,7 +221,10 @@ impl TransportLane for SwarmLeecher {
 
     fn capacity(&self) -> usize {
         // Capacity is the number of available pieces ahead of next_gsn
-        let available = self.store.cached_piece_count().saturating_sub(self.next_gsn);
+        let available = self
+            .store
+            .cached_piece_count()
+            .saturating_sub(self.next_gsn);
         available as usize
     }
 
@@ -233,12 +240,10 @@ impl TransportLane for SwarmLeecher {
         self.store.wait_for_piece(gsn).await;
 
         // Get the piece
-        let payload = self
-            .store
-            .get(gsn)
-            .await?;
+        let payload = self.store.get(gsn).await?;
 
-        self.total_bytes.fetch_add(payload.len() as u64, Ordering::Relaxed);
+        self.total_bytes
+            .fetch_add(payload.len() as u64, Ordering::Relaxed);
 
         Some(Ok(Chunk {
             gsn: Gsn(gsn),
@@ -341,7 +346,9 @@ mod tests {
         let store_clone = store.clone();
         tokio::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-            store_clone.insert(0, Bytes::from_static(b"delayed piece")).await;
+            store_clone
+                .insert(0, Bytes::from_static(b"delayed piece"))
+                .await;
         });
 
         // This should wait for the piece

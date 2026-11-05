@@ -9,7 +9,10 @@ pub struct RetransmitBuffer {
 
 impl RetransmitBuffer {
     pub fn new() -> Self {
-        Self { map: HashMap::new(), cumulative_gsn: Gsn::ZERO }
+        Self {
+            map: HashMap::new(),
+            cumulative_gsn: Gsn::ZERO,
+        }
     }
 
     pub fn insert(&mut self, chunk: Chunk) {
@@ -44,5 +47,7 @@ impl RetransmitBuffer {
 }
 
 impl Default for RetransmitBuffer {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }

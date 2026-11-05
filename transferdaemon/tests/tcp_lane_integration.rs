@@ -6,10 +6,10 @@
 use bytes::Bytes;
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
-use tokio::time::{Duration, timeout};
+use tokio::time::{timeout, Duration};
 use transferd_core::ate::Ate;
 use transferd_core::lanes::tcp_lane::TcpLane;
-use transferd_core::plugin::{PluginRegistry, TcpPlugin, default_registry};
+use transferd_core::plugin::{default_registry, PluginRegistry, TcpPlugin};
 use transferd_core::receiver::ReassemblyWindow;
 use transferd_core::session::Session;
 use transferd_core::transport::{Chunk, TransportLane};
@@ -37,7 +37,9 @@ async fn make_lane_pair(session_key: &'static [u8; 32]) -> (TcpLane, TcpLane) {
     });
 
     let server_addr = addr_rx.await.unwrap();
-    let client = TcpLane::connect(0, server_addr, session_key, session_key).await.unwrap();
+    let client = TcpLane::connect(0, server_addr, session_key, session_key)
+        .await
+        .unwrap();
     let server = server_handle.await.unwrap();
     (client, server)
 }
@@ -94,8 +96,11 @@ async fn test_tcp_lane_multi_chunk_reassembly() {
         window.insert(chunk);
     }
 
-    assert_eq!(window.delivered_up_to(), Gsn(5),
-        "all 5 chunks must be contiguously delivered");
+    assert_eq!(
+        window.delivered_up_to(),
+        Gsn(5),
+        "all 5 chunks must be contiguously delivered"
+    );
     println!("test_tcp_lane_multi_chunk_reassembly: PASSED");
 }
 
@@ -113,20 +118,28 @@ async fn test_tcp_lane_wrong_key_rejected() {
     });
 
     let addr = addr_rx.await.unwrap();
-    let client = TcpLane::connect(0, addr, SESSION_KEY, SESSION_KEY).await.unwrap();
+    let client = TcpLane::connect(0, addr, SESSION_KEY, SESSION_KEY)
+        .await
+        .unwrap();
     let mut server = server_handle.await.unwrap();
 
-    client.send(Chunk {
-        gsn: Gsn(0),
-        session_id: SessionId([0u8; 16]),
-        payload: Bytes::from_static(b"secret"),
-        key_epoch: 0,
-        qos_critical: false,
-    }).await.unwrap();
+    client
+        .send(Chunk {
+            gsn: Gsn(0),
+            session_id: SessionId([0u8; 16]),
+            payload: Bytes::from_static(b"secret"),
+            key_epoch: 0,
+            qos_critical: false,
+        })
+        .await
+        .unwrap();
 
     // Bad frame is silently discarded; recv should time out.
     let result = timeout(Duration::from_millis(300), server.recv()).await;
-    assert!(result.is_err(), "wrong-key frame must be silently dropped — recv must time out");
+    assert!(
+        result.is_err(),
+        "wrong-key frame must be silently dropped — recv must time out"
+    );
     println!("test_tcp_lane_wrong_key_rejected: PASSED");
 }
 
@@ -136,13 +149,16 @@ async fn test_tcp_lane_large_payload() {
     let (client, mut server) = make_lane_pair(SESSION_KEY).await;
 
     let big = Bytes::from(vec![0xABu8; 48 * 1024]);
-    client.send(Chunk {
-        gsn: Gsn(42),
-        session_id: SessionId([1u8; 16]),
-        payload: big.clone(),
-        key_epoch: 0,
-        qos_critical: false,
-    }).await.unwrap();
+    client
+        .send(Chunk {
+            gsn: Gsn(42),
+            session_id: SessionId([1u8; 16]),
+            payload: big.clone(),
+            key_epoch: 0,
+            qos_critical: false,
+        })
+        .await
+        .unwrap();
 
     let received = timeout(Duration::from_secs(3), server.recv())
         .await
@@ -161,18 +177,27 @@ async fn test_tcp_lane_large_payload() {
 async fn test_tcp_lane_qos_flag_survives_roundtrip() {
     let (client, mut server) = make_lane_pair(SESSION_KEY).await;
 
-    client.send(Chunk {
-        gsn: Gsn(7),
-        session_id: SessionId([2u8; 16]),
-        payload: Bytes::from_static(b"critical"),
-        key_epoch: 0,
-        qos_critical: true,
-    }).await.unwrap();
+    client
+        .send(Chunk {
+            gsn: Gsn(7),
+            session_id: SessionId([2u8; 16]),
+            payload: Bytes::from_static(b"critical"),
+            key_epoch: 0,
+            qos_critical: true,
+        })
+        .await
+        .unwrap();
 
     let received = timeout(Duration::from_secs(2), server.recv())
-        .await.unwrap().unwrap().unwrap();
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
 
-    assert!(received.qos_critical, "qos_critical must survive the TCP frame round-trip");
+    assert!(
+        received.qos_critical,
+        "qos_critical must survive the TCP frame round-trip"
+    );
     println!("test_tcp_lane_qos_flag_survives_roundtrip: PASSED");
 }
 
@@ -182,23 +207,32 @@ async fn test_tcp_lane_qos_flag_survives_roundtrip() {
 async fn test_tcp_lane_auto_ack_flows_back() {
     let (client, mut server) = make_lane_pair(SESSION_KEY).await;
 
-    client.send(Chunk {
-        gsn: Gsn(0),
-        session_id: SessionId([3u8; 16]),
-        payload: Bytes::from_static(b"ack me"),
-        key_epoch: 0,
-        qos_critical: false,
-    }).await.unwrap();
+    client
+        .send(Chunk {
+            gsn: Gsn(0),
+            session_id: SessionId([3u8; 16]),
+            payload: Bytes::from_static(b"ack me"),
+            key_epoch: 0,
+            qos_critical: false,
+        })
+        .await
+        .unwrap();
 
     // Server receives the chunk (this triggers the auto-ack).
     let received = timeout(Duration::from_secs(2), server.recv())
-        .await.expect("recv timed out").expect("channel closed").expect("transport error");
+        .await
+        .expect("recv timed out")
+        .expect("channel closed")
+        .expect("transport error");
     assert_eq!(received.payload.as_ref(), b"ack me");
 
     // Client must observe the Ack for gsn 0.
     let mut client = client;
     for _ in 0..100 {
-        if let Some(ctrl) = timeout(Duration::from_millis(100), client.try_recv_control()).await.unwrap_or(None) {
+        if let Some(ctrl) = timeout(Duration::from_millis(100), client.try_recv_control())
+            .await
+            .unwrap_or(None)
+        {
             if let transferd_core::transport::ControlMsg::Ack { gsn, .. } = ctrl {
                 assert_eq!(gsn, 0);
                 return;
@@ -221,7 +255,10 @@ async fn test_tcp_lane_ping_pong_rtt() {
     // PONG goes to the client's control channel. Verify the client gets a Pong.
     let mut client = client;
     for _ in 0..100 {
-        if let Some(ctrl) = timeout(Duration::from_millis(100), client.try_recv_control()).await.unwrap_or(None) {
+        if let Some(ctrl) = timeout(Duration::from_millis(100), client.try_recv_control())
+            .await
+            .unwrap_or(None)
+        {
             if let transferd_core::transport::ControlMsg::Pong { sent_ts, .. } = ctrl {
                 // sent_ts must be a plausible microsecond timestamp.
                 assert!(sent_ts > 0);
@@ -249,17 +286,28 @@ async fn test_session_ack_accounting_and_retransmit() {
 
     let mut lanes: Vec<Box<dyn transferd_core::transport::TransportLane>> = vec![Box::new(client)];
     session.process_tick(&mut lanes).await;
-    assert_eq!(session.outstanding(), 2, "both chunks are in flight after dispatch");
+    assert_eq!(
+        session.outstanding(),
+        2,
+        "both chunks are in flight after dispatch"
+    );
 
     // Server receives both (auto-acking each).
     for _ in 0..2 {
-        timeout(Duration::from_secs(2), server.recv()).await.expect("recv").unwrap().unwrap();
+        timeout(Duration::from_secs(2), server.recv())
+            .await
+            .expect("recv")
+            .unwrap()
+            .unwrap();
     }
 
     // Feed acks back into the session until outstanding drains.
     let mut client = lanes.remove(0);
     for _ in 0..100 {
-        if let Some(ctrl) = timeout(Duration::from_millis(100), client.try_recv_control()).await.unwrap_or(None) {
+        if let Some(ctrl) = timeout(Duration::from_millis(100), client.try_recv_control())
+            .await
+            .unwrap_or(None)
+        {
             if let transferd_core::transport::ControlMsg::Ack { gsn, .. } = ctrl {
                 let msg = transferd_core::control_channel::ControlMessage::Ack {
                     session_id: SessionId([4u8; 16]),
@@ -273,7 +321,11 @@ async fn test_session_ack_accounting_and_retransmit() {
         }
         tokio::time::sleep(Duration::from_millis(5)).await;
     }
-    assert_eq!(session.outstanding(), 0, "acks must drain the in-flight budget");
+    assert_eq!(
+        session.outstanding(),
+        0,
+        "acks must drain the in-flight budget"
+    );
 }
 
 /// PluginRegistry resolves "tcp" scheme → creates a connected TcpLane.
@@ -307,12 +359,15 @@ async fn test_plugin_registry_creates_tcp_lane() {
 async fn test_default_registry_scheme_coverage() {
     let registry = default_registry();
     let schemes = registry.registered_schemes();
-    assert!(schemes.contains(&"tcp"),   "tcp must be registered");
+    assert!(schemes.contains(&"tcp"), "tcp must be registered");
     assert!(schemes.contains(&"relay"), "relay must be registered");
     assert!(schemes.contains(&"swarm"), "swarm must be registered");
 
     // Unknown scheme → ProtocolViolation.
-    assert!(registry.create_lane(0, "ftp", "127.0.0.1:21", SESSION_KEY).await.is_err());
+    assert!(registry
+        .create_lane(0, "ftp", "127.0.0.1:21", SESSION_KEY)
+        .await
+        .is_err());
 
     // SwarmPlugin now creates a live seeder lane.
     let swarm_lane = registry
@@ -320,10 +375,16 @@ async fn test_default_registry_scheme_coverage() {
         .await
         .expect("swarm plugin must create a seeder lane");
     assert!(swarm_lane.is_alive(), "swarm lane must be alive");
-    assert!(swarm_lane.capacity() > 0, "swarm seeder must report capacity");
+    assert!(
+        swarm_lane.capacity() > 0,
+        "swarm seeder must report capacity"
+    );
 
     // RelayPlugin is a documented stub → ProtocolViolation.
-    assert!(registry.create_lane(0, "relay", "127.0.0.1:7777", SESSION_KEY).await.is_err());
+    assert!(registry
+        .create_lane(0, "relay", "127.0.0.1:7777", SESSION_KEY)
+        .await
+        .is_err());
 
     println!("test_default_registry_scheme_coverage: PASSED");
 }

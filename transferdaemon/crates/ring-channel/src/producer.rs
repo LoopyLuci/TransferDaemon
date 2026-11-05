@@ -1,8 +1,8 @@
 use crate::doorbell::Doorbell;
 use crate::grant::WriteGrant;
 use crate::mmap::MappedRegion;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 
 pub struct Producer {
     region: Arc<MappedRegion>,
@@ -38,11 +38,14 @@ impl Producer {
             if p - c < self.descriptor_count {
                 let slot = (p & self.ring_mask) as usize;
                 let max_chunk = self.region.data_area_size / self.descriptor_count as usize;
-                let data_offset = (slot * max_chunk).min(
-                    self.region.data_area_size.saturating_sub(len),
-                );
+                let data_offset =
+                    (slot * max_chunk).min(self.region.data_area_size.saturating_sub(len));
                 let ptr = unsafe { self.region.data_ptr().add(data_offset) };
-                return Ok(WriteGrant { ptr, len, slot_idx: slot });
+                return Ok(WriteGrant {
+                    ptr,
+                    len,
+                    slot_idx: slot,
+                });
             }
             self.doorbell.wait().await;
         }
@@ -92,7 +95,9 @@ impl Producer {
             n[8] = key_epoch;
             n
         };
-        self.commit_grant(grant, gsn_start, gsn_end, &nonce, &[0u8; 16], &full_hash, key_epoch);
+        self.commit_grant(
+            grant, gsn_start, gsn_end, &nonce, &[0u8; 16], &full_hash, key_epoch,
+        );
     }
 
     pub fn available_slots(&self) -> usize {

@@ -38,7 +38,9 @@ pub trait ProtocolPlugin: Send + Sync {
     fn scheme(&self) -> &'static str;
 
     /// Returns a hint about lane capabilities for ATE scheduling.
-    fn capabilities(&self) -> LaneCapabilities { LaneCapabilities::default() }
+    fn capabilities(&self) -> LaneCapabilities {
+        LaneCapabilities::default()
+    }
 
     /// Creates a lane connected to `endpoint` using `session_key` for encryption.
     ///
@@ -91,7 +93,9 @@ pub struct PluginRegistry {
 }
 
 impl PluginRegistry {
-    pub fn new() -> Self { Self::default() }
+    pub fn new() -> Self {
+        Self::default()
+    }
 
     /// Registers a plugin. Last-registered plugin wins for duplicate schemes.
     pub fn register(&mut self, plugin: Box<dyn ProtocolPlugin>) {
@@ -100,7 +104,11 @@ impl PluginRegistry {
 
     /// Returns the plugin for `scheme`, or `None` if none is registered.
     pub fn find(&self, scheme: &str) -> Option<&dyn ProtocolPlugin> {
-        self.plugins.iter().rev().find(|p| p.scheme() == scheme).map(|p| p.as_ref())
+        self.plugins
+            .iter()
+            .rev()
+            .find(|p| p.scheme() == scheme)
+            .map(|p| p.as_ref())
     }
 
     /// Creates a lane by scheme. Returns `TransportError::ProtocolViolation` for unknown schemes.
@@ -135,8 +143,12 @@ impl PluginRegistry {
 pub struct TcpPlugin;
 
 impl ProtocolPlugin for TcpPlugin {
-    fn name(&self) -> &'static str { "TCP transport" }
-    fn scheme(&self) -> &'static str { "tcp" }
+    fn name(&self) -> &'static str {
+        "TCP transport"
+    }
+    fn scheme(&self) -> &'static str {
+        "tcp"
+    }
 
     fn capabilities(&self) -> LaneCapabilities {
         LaneCapabilities {
@@ -152,7 +164,8 @@ impl ProtocolPlugin for TcpPlugin {
         id: u32,
         endpoint: &'a str,
         session_key: &'a [u8; 32],
-    ) -> Pin<Box<dyn Future<Output = Result<Box<dyn TransportLane>, TransportError>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<Box<dyn TransportLane>, TransportError>> + Send + 'a>>
+    {
         Box::pin(async move {
             let addr: std::net::SocketAddr = endpoint
                 .parse()
@@ -177,8 +190,12 @@ impl ProtocolPlugin for TcpPlugin {
 pub struct RelayPlugin;
 
 impl ProtocolPlugin for RelayPlugin {
-    fn name(&self) -> &'static str { "Blind relay (relayd)" }
-    fn scheme(&self) -> &'static str { "relay" }
+    fn name(&self) -> &'static str {
+        "Blind relay (relayd)"
+    }
+    fn scheme(&self) -> &'static str {
+        "relay"
+    }
 
     fn capabilities(&self) -> LaneCapabilities {
         LaneCapabilities {
@@ -194,7 +211,8 @@ impl ProtocolPlugin for RelayPlugin {
         _id: u32,
         _endpoint: &'a str,
         _session_key: &'a [u8; 32],
-    ) -> Pin<Box<dyn Future<Output = Result<Box<dyn TransportLane>, TransportError>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<Box<dyn TransportLane>, TransportError>> + Send + 'a>>
+    {
         Box::pin(async move {
             // Full wiring is done by the daemon using RelayLane::new() directly.
             // This stub allows the registry to advertise "relay" capability.
@@ -221,13 +239,17 @@ impl ProtocolPlugin for RelayPlugin {
 pub struct SwarmPlugin;
 
 impl ProtocolPlugin for SwarmPlugin {
-    fn name(&self) -> &'static str { "Swarm (piece-store / BitTorrent)" }
-    fn scheme(&self) -> &'static str { "swarm" }
+    fn name(&self) -> &'static str {
+        "Swarm (piece-store / BitTorrent)"
+    }
+    fn scheme(&self) -> &'static str {
+        "swarm"
+    }
 
     fn capabilities(&self) -> LaneCapabilities {
         LaneCapabilities {
-            max_bps: 500_000_000,  // 500 Mbps — realistic for a well-seeded swarm
-            typical_rtt_ms: 200,   // higher latency than TCP/relay
+            max_bps: 500_000_000, // 500 Mbps — realistic for a well-seeded swarm
+            typical_rtt_ms: 200,  // higher latency than TCP/relay
             local_only: false,
             transport_encrypted: false, // payload encryption handled by transferd-crypto
         }
@@ -238,7 +260,8 @@ impl ProtocolPlugin for SwarmPlugin {
         id: u32,
         _endpoint: &'a str,
         _session_key: &'a [u8; 32],
-    ) -> Pin<Box<dyn Future<Output = Result<Box<dyn TransportLane>, TransportError>> + Send + 'a>> {
+    ) -> Pin<Box<dyn Future<Output = Result<Box<dyn TransportLane>, TransportError>> + Send + 'a>>
+    {
         Box::pin(async move {
             // LIBRQBIT: when wiring the real BitTorrent backend, parse `_endpoint`
             // as a magnet URI here and create either a seeder (if we own the data)

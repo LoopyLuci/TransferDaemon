@@ -1,6 +1,6 @@
 //! Animation utilities — transitions, transitions, and visual effects.
 
-use egui::{Color32, Rect, Vec2, pos2};
+use egui::{pos2, Color32, Rect, Vec2};
 use std::time::{Duration, Instant};
 
 /// A smooth transition between two values.
@@ -411,7 +411,8 @@ impl ToastManager {
         let toast_height = 48.0;
         let spacing = 8.0;
 
-        let visible: Vec<usize> = self.toasts
+        let visible: Vec<usize> = self
+            .toasts
             .iter()
             .enumerate()
             .rev()
@@ -421,7 +422,8 @@ impl ToastManager {
 
         for (stack_pos, &idx) in visible.iter().enumerate() {
             let toast = &mut self.toasts[idx];
-            let base_y = screen.max.y - margin - (toast_height + spacing) * (stack_pos as f32 + 1.0);
+            let base_y =
+                screen.max.y - margin - (toast_height + spacing) * (stack_pos as f32 + 1.0);
             let offset = toast.offset(50.0);
             let opacity = toast.opacity();
 
@@ -454,7 +456,8 @@ impl ToastManager {
 
             let alpha = (opacity * 255.0) as u8;
             let bg = Color32::from_rgba_premultiplied(bg.r(), bg.g(), bg.b(), alpha);
-            let border = Color32::from_rgba_premultiplied(border.r(), border.g(), border.b(), alpha);
+            let border =
+                Color32::from_rgba_premultiplied(border.r(), border.g(), border.b(), alpha);
             let text = Color32::from_rgba_premultiplied(240, 240, 245, alpha);
 
             let painter = ctx.layer_painter(egui::LayerId::new(

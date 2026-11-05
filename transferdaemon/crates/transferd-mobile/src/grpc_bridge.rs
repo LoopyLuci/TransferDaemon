@@ -19,7 +19,8 @@ where
     T: Send + 'static,
 {
     let (tx, rx) = std::sync::mpsc::channel();
-    let handle = crate::daemon_thread::RUNTIME_HANDLE.get()
+    let handle = crate::daemon_thread::RUNTIME_HANDLE
+        .get()
         .expect("Daemon runtime not initialized — call daemon_thread::spawn first");
     handle.spawn(async move {
         let result = f.await;

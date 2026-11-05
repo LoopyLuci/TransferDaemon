@@ -26,18 +26,31 @@ fn render_contact_list(f: &mut Frame, app: &App, area: Rect) {
         Style::default().fg(Color::DarkGray)
     };
 
-    let items: Vec<ListItem> = app.contacts.iter().map(|c| {
-        let dot = if c.online { Span::styled("● ", Style::default().fg(Color::Green)) }
-                  else       { Span::styled("○ ", Style::default().fg(Color::DarkGray)) };
-        ListItem::new(Line::from(vec![dot, Span::raw(&c.name)]))
-    }).collect();
+    let items: Vec<ListItem> = app
+        .contacts
+        .iter()
+        .map(|c| {
+            let dot = if c.online {
+                Span::styled("● ", Style::default().fg(Color::Green))
+            } else {
+                Span::styled("○ ", Style::default().fg(Color::DarkGray))
+            };
+            ListItem::new(Line::from(vec![dot, Span::raw(&c.name)]))
+        })
+        .collect();
 
     let list = List::new(items)
-        .block(Block::default()
-            .borders(Borders::ALL)
-            .title(" Chats ")
-            .border_style(border_style))
-        .highlight_style(Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD))
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Chats ")
+                .border_style(border_style),
+        )
+        .highlight_style(
+            Style::default()
+                .bg(Color::DarkGray)
+                .add_modifier(Modifier::BOLD),
+        )
         .highlight_symbol("▶ ");
 
     let mut state = ListState::default();
@@ -67,24 +80,32 @@ fn render_chat_panel(f: &mut Frame, app: &App, area: Rect) {
         0
     };
 
-    let items: Vec<ListItem> = msgs.iter().skip(scroll_offset).map(|m| {
-        let (prefix, color) = if m.outbound {
-            ("You: ", Color::Cyan)
-        } else {
-            ("    ", Color::White)
-        };
-        let text = match &m.content {
-            MessageContent::Text(t) => t.clone(),
-            MessageContent::File { name, size_bytes, .. } =>
-                format!("📎 {} ({})", name, crate::types::fmt_bytes(*size_bytes)),
-        };
-        let status = m.status.label();
-        ListItem::new(Line::from(vec![
-            Span::styled(prefix, Style::default().fg(color).add_modifier(Modifier::BOLD)),
-            Span::styled(text, Style::default().fg(color)),
-            Span::styled(format!(" {}", status), Style::default().fg(Color::DarkGray)),
-        ]))
-    }).collect();
+    let items: Vec<ListItem> = msgs
+        .iter()
+        .skip(scroll_offset)
+        .map(|m| {
+            let (prefix, color) = if m.outbound {
+                ("You: ", Color::Cyan)
+            } else {
+                ("    ", Color::White)
+            };
+            let text = match &m.content {
+                MessageContent::Text(t) => t.clone(),
+                MessageContent::File {
+                    name, size_bytes, ..
+                } => format!("📎 {} ({})", name, crate::types::fmt_bytes(*size_bytes)),
+            };
+            let status = m.status.label();
+            ListItem::new(Line::from(vec![
+                Span::styled(
+                    prefix,
+                    Style::default().fg(color).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(text, Style::default().fg(color)),
+                Span::styled(format!(" {}", status), Style::default().fg(Color::DarkGray)),
+            ]))
+        })
+        .collect();
 
     let msg_block = Block::default()
         .borders(Borders::ALL)
@@ -97,13 +118,18 @@ fn render_chat_panel(f: &mut Frame, app: &App, area: Rect) {
 
     // scroll hint
     let scroll_hint = if total > visible_height {
-        format!(" ↑↓ ({}/{})", scroll_offset + visible_height.min(total), total)
+        format!(
+            " ↑↓ ({}/{})",
+            scroll_offset + visible_height.min(total),
+            total
+        )
     } else {
         String::new()
     };
-    let msg_block = msg_block.title_bottom(
-        Line::from(Span::styled(scroll_hint, Style::default().fg(Color::DarkGray)))
-    );
+    let msg_block = msg_block.title_bottom(Line::from(Span::styled(
+        scroll_hint,
+        Style::default().fg(Color::DarkGray),
+    )));
 
     let list = List::new(items).block(msg_block);
     f.render_widget(list, chunks[0]);
@@ -125,8 +151,8 @@ fn render_chat_panel(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(input_para, chunks[1]);
 
     if input_focused {
-        let cursor_x = (chunks[1].x + 1 + app.input.len() as u16)
-            .min(chunks[1].x + chunks[1].width - 2);
+        let cursor_x =
+            (chunks[1].x + 1 + app.input.len() as u16).min(chunks[1].x + chunks[1].width - 2);
         f.set_cursor(cursor_x, chunks[1].y + 1);
     }
 }

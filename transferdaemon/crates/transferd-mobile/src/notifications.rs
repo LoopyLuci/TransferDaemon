@@ -18,10 +18,10 @@ pub fn notify_incoming(sender: &str, text: &str, contact_id: &str) {
 
 #[cfg(target_os = "android")]
 pub mod android {
-    use jni::JavaVM;
     use jni::objects::{GlobalRef, JValue};
     use jni::sys::jobject;
     use jni::JNIEnv;
+    use jni::JavaVM;
     use std::sync::{Mutex, OnceLock};
 
     /// The app's JavaVM, captured in `JNI_OnLoad`. Used to attach the daemon
@@ -70,13 +70,26 @@ pub mod android {
             Some(e) => e,
             None => return,
         };
-        let class = match HELPER_CLASS.lock().unwrap_or_else(|e| e.into_inner()).clone() {
+        let class = match HELPER_CLASS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+        {
             Some(c) => c,
             None => return, // not cached (JNI_OnLoad didn't find the app class)
         };
-        let j_sender = match env.new_string(sender) { Ok(s) => s, Err(_) => return };
-        let j_text = match env.new_string(text) { Ok(s) => s, Err(_) => return };
-        let j_cid = match env.new_string(contact_id) { Ok(s) => s, Err(_) => return };
+        let j_sender = match env.new_string(sender) {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        let j_text = match env.new_string(text) {
+            Ok(s) => s,
+            Err(_) => return,
+        };
+        let j_cid = match env.new_string(contact_id) {
+            Ok(s) => s,
+            Err(_) => return,
+        };
         let _ = env.call_static_method(
             &class,
             "postIncoming",

@@ -54,10 +54,10 @@ impl Contact {
 /// A group thread.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct Group {
-    pub id:         String,
-    pub name:       String,
-    pub owner:      String,
-    pub members:    Vec<GroupMember>,
+    pub id: String,
+    pub name: String,
+    pub owner: String,
+    pub members: Vec<GroupMember>,
     pub created_at: u64,
 }
 
@@ -65,7 +65,7 @@ pub struct Group {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct GroupMember {
     pub public_key: String,
-    pub role:       u8,
+    pub role: u8,
 }
 
 impl GroupMember {
@@ -178,11 +178,11 @@ pub enum MessageStatus {
 impl MessageStatus {
     pub fn label(self) -> &'static str {
         match self {
-            Self::Pending   => "…",
-            Self::Sent      => "✓",
+            Self::Pending => "…",
+            Self::Sent => "✓",
             Self::Delivered => "✓✓",
-            Self::Read      => "✓✓",
-            Self::Failed    => "✗",
+            Self::Read => "✓✓",
+            Self::Failed => "✗",
         }
     }
 }
@@ -224,12 +224,16 @@ pub struct TransferStatus {
 
 impl TransferStatus {
     pub fn progress(&self) -> f32 {
-        if self.size_bytes == 0 { return 0.0; }
+        if self.size_bytes == 0 {
+            return 0.0;
+        }
         (self.transferred_bytes as f32 / self.size_bytes as f32).clamp(0.0, 1.0)
     }
 
     pub fn eta_secs(&self) -> Option<u64> {
-        if self.bps == 0 { return None; }
+        if self.bps == 0 {
+            return None;
+        }
         let remaining = self.size_bytes.saturating_sub(self.transferred_bytes);
         Some(remaining / self.bps)
     }

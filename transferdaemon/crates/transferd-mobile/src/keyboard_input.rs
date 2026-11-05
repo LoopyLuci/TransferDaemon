@@ -7,8 +7,11 @@
 use jni::objects::{JClass, JString};
 use jni::sys::{jboolean, jint, jstring};
 use jni::JNIEnv;
-use transferd_ui_shared::platform_hooks::{CLIPBOARD_TEXT, INJECTED_EVENTS, SHOW_KEYBOARD, HIDE_KEYBOARD, SYSTEM_INSET_TOP, SYSTEM_INSET_BOTTOM};
 use std::sync::atomic::Ordering;
+use transferd_ui_shared::platform_hooks::{
+    CLIPBOARD_TEXT, HIDE_KEYBOARD, INJECTED_EVENTS, SHOW_KEYBOARD, SYSTEM_INSET_BOTTOM,
+    SYSTEM_INSET_TOP,
+};
 
 /// Polled by KeyboardHelper's Java thread every 32 ms.
 /// Returns true and clears the flag if Rust wants the soft keyboard shown.
@@ -20,7 +23,10 @@ pub fn register_native_methods(env: &mut jni::JNIEnv) {
     eprintln!("[TDJni] register_native_methods: calling find_class KeyboardHelper");
     match env.find_class("com/transferdaemon/app/KeyboardHelper") {
         Err(e) => {
-            eprintln!("[TDJni] register_native_methods: find_class FAILED: {:?}", e);
+            eprintln!(
+                "[TDJni] register_native_methods: find_class FAILED: {:?}",
+                e
+            );
             let _ = env.exception_clear();
             return;
         }
@@ -54,8 +60,7 @@ fn register_methods_for_class(env: &mut jni::JNIEnv, class: jni::objects::JClass
         jni::NativeMethod {
             name: "deliverText".into(),
             sig: "(Ljava/lang/String;)V".into(),
-            fn_ptr: Java_com_transferdaemon_app_KeyboardHelper_deliverText
-                as *mut std::ffi::c_void,
+            fn_ptr: Java_com_transferdaemon_app_KeyboardHelper_deliverText as *mut std::ffi::c_void,
         },
         jni::NativeMethod {
             name: "deliverBackspace".into(),
@@ -84,7 +89,10 @@ fn register_methods_for_class(env: &mut jni::JNIEnv, class: jni::objects::JClass
     ];
     match env.register_native_methods(&class, &methods) {
         Ok(_) => eprintln!("[TDJni] register_native_methods: registration OK"),
-        Err(e) => eprintln!("[TDJni] register_native_methods: registration FAILED: {:?}", e),
+        Err(e) => eprintln!(
+            "[TDJni] register_native_methods: registration FAILED: {:?}",
+            e
+        ),
     }
 }
 
@@ -195,7 +203,8 @@ pub extern "system" fn Java_com_transferdaemon_app_KeyboardHelper_getClipboardTe
 ) -> jstring {
     if let Ok(mut g) = CLIPBOARD_TEXT.lock() {
         if let Some(text) = g.take() {
-            return env.new_string(&text)
+            return env
+                .new_string(&text)
                 .map(|s| s.into_raw())
                 .unwrap_or(std::ptr::null_mut());
         }

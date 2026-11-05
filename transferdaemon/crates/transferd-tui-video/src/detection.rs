@@ -21,10 +21,10 @@ pub enum TerminalGraphics {
 impl TerminalGraphics {
     pub fn name(self) -> &'static str {
         match self {
-            Self::Kitty     => "kitty",
-            Self::Sixel     => "sixel",
+            Self::Kitty => "kitty",
+            Self::Sixel => "sixel",
             Self::HalfBlock => "halfblock",
-            Self::Ascii     => "ascii",
+            Self::Ascii => "ascii",
         }
     }
 }
@@ -38,18 +38,18 @@ pub fn detect() -> TerminalGraphics {
     // Manual override.
     if let Ok(v) = env::var("TRANSFERD_VIDEO_BACKEND") {
         match v.to_lowercase().as_str() {
-            "kitty"     => return TerminalGraphics::Kitty,
-            "sixel"     => return TerminalGraphics::Sixel,
+            "kitty" => return TerminalGraphics::Kitty,
+            "sixel" => return TerminalGraphics::Sixel,
             "halfblock" => return TerminalGraphics::HalfBlock,
-            "ascii"     => return TerminalGraphics::Ascii,
+            "ascii" => return TerminalGraphics::Ascii,
             _ => {}
         }
     }
 
     let term_program = env::var("TERM_PROGRAM").unwrap_or_default();
-    let term         = env::var("TERM").unwrap_or_default();
-    let colorterm    = env::var("COLORTERM").unwrap_or_default();
-    let vte_ver      = env::var("VTE_VERSION").unwrap_or_default();
+    let term = env::var("TERM").unwrap_or_default();
+    let colorterm = env::var("COLORTERM").unwrap_or_default();
+    let vte_ver = env::var("VTE_VERSION").unwrap_or_default();
 
     // Kitty-native or WezTerm (supports Kitty protocol).
     if term == "xterm-kitty" || term_program.to_lowercase().contains("wezterm") {
@@ -57,7 +57,8 @@ pub fn detect() -> TerminalGraphics {
     }
 
     // Sixel support: xterm (when compiled with --enable-sixel), mlterm, foot, WezTerm.
-    if term.contains("sixel") || term_program == "mlterm"
+    if term.contains("sixel")
+        || term_program == "mlterm"
         || env::var("TERM_PROGRAM_VERSION").is_ok() && term_program == "WezTerm"
         || env::var("XTERM_LOCALE").is_ok()
     {

@@ -49,12 +49,7 @@ impl VBusDmiDescriptor {
         self.nonce[9..].fill(0);
     }
 
-    pub fn write_crypto_result(
-        &mut self,
-        nonce: &[u8; 12],
-        tag: &[u8; 16],
-        blake3: &[u8; 32],
-    ) {
+    pub fn write_crypto_result(&mut self, nonce: &[u8; 12], tag: &[u8; 16], blake3: &[u8; 32]) {
         self.nonce = *nonce;
         self.gcm_tag = *tag;
         self.blake3_hash = *blake3;

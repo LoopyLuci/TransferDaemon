@@ -24,7 +24,11 @@ impl DmiEncryptor {
         let aes_key = Key::<Aes256Gcm>::from_slice(key);
         let mut key_bytes = Zeroizing::new([0u8; 32]);
         key_bytes.copy_from_slice(key);
-        Self { cipher: Aes256Gcm::new(aes_key), key_bytes, hasher: Hasher::new() }
+        Self {
+            cipher: Aes256Gcm::new(aes_key),
+            key_bytes,
+            hasher: Hasher::new(),
+        }
     }
 
     pub fn nonce_for(gsn: u64, epoch: u8) -> [u8; 12] {
@@ -43,7 +47,9 @@ impl DmiEncryptor {
     ) -> Result<[u8; 16], DecryptError> {
         use aes_gcm::aead::AeadInPlace;
         let nonce = Nonce::from_slice(nonce);
-        let tag = self.cipher.encrypt_in_place_detached(nonce, aad, buf)
+        let tag = self
+            .cipher
+            .encrypt_in_place_detached(nonce, aad, buf)
             .map_err(|_| DecryptError::AuthFailed)?;
         Ok(tag.into())
     }
@@ -63,9 +69,15 @@ impl DmiEncryptor {
         dst.copy_from_slice(plaintext);
         self.hasher.update(plaintext);
         let blake3_hash = *self.hasher.finalize().as_bytes();
-        let tag = self.cipher.encrypt_in_place_detached(nonce, aad, dst)
+        let tag = self
+            .cipher
+            .encrypt_in_place_detached(nonce, aad, dst)
             .expect("AES-GCM encrypt");
-        EncryptResult { blake3_hash, gcm_tag: tag.into(), nonce: nonce_bytes }
+        EncryptResult {
+            blake3_hash,
+            gcm_tag: tag.into(),
+            nonce: nonce_bytes,
+        }
     }
 }
 
@@ -76,7 +88,9 @@ pub struct DmiDecryptor {
 impl DmiDecryptor {
     pub fn new(key: &[u8; 32]) -> Self {
         let aes_key = Key::<Aes256Gcm>::from_slice(key);
-        Self { cipher: Aes256Gcm::new(aes_key) }
+        Self {
+            cipher: Aes256Gcm::new(aes_key),
+        }
     }
 
     pub fn decrypt_verify(
@@ -88,7 +102,8 @@ impl DmiDecryptor {
     ) -> Result<[u8; 32], DecryptError> {
         let nonce = Nonce::from_slice(nonce);
         let tag = Tag::from_slice(tag);
-        self.cipher.decrypt_in_place_detached(nonce, aad, buf, tag)
+        self.cipher
+            .decrypt_in_place_detached(nonce, aad, buf, tag)
             .map_err(|_| DecryptError::AuthFailed)?;
         Ok(*blake3::hash(buf).as_bytes())
     }

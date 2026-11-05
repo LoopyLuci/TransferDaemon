@@ -27,16 +27,16 @@ use ml_dsa::{
 
 // ── Byte sizes ────────────────────────────────────────────────────────────────
 
-pub const ED25519_PK_LEN: usize   = 32;
+pub const ED25519_PK_LEN: usize = 32;
 pub const ML_DSA_87_PK_LEN: usize = 2592;
-pub const HYBRID_PK_LEN: usize    = ED25519_PK_LEN + ML_DSA_87_PK_LEN; // 2624
+pub const HYBRID_PK_LEN: usize = ED25519_PK_LEN + ML_DSA_87_PK_LEN; // 2624
 
-pub const ED25519_SIG_LEN: usize   = 64;
+pub const ED25519_SIG_LEN: usize = 64;
 pub const ML_DSA_87_SIG_LEN: usize = 4627;
-pub const HYBRID_SIG_LEN: usize    = ED25519_SIG_LEN + ML_DSA_87_SIG_LEN; // 4691
+pub const HYBRID_SIG_LEN: usize = ED25519_SIG_LEN + ML_DSA_87_SIG_LEN; // 4691
 
 const MLDSA_SEED_CONTEXT: &str = "TransferDaemon-v1-mldsa87-seed";
-const ML_SIGN_CTX: &[u8]       = b"TransferDaemon-v1-hybrid-sign";
+const ML_SIGN_CTX: &[u8] = b"TransferDaemon-v1-hybrid-sign";
 
 // ── HybridVerifyingKey ────────────────────────────────────────────────────────
 
@@ -138,7 +138,9 @@ impl HybridSigningKey {
     pub fn from_bip39_seed(seed: &[u8; 64]) -> Self {
         // Ed25519: first 32 bytes of the BIP-39 seed (existing classical key derivation).
         let ed = Ed25519SigningKey::from_bytes(
-            seed[..32].try_into().expect("seed is exactly 64 bytes, first 32 always valid"),
+            seed[..32]
+                .try_into()
+                .expect("seed is exactly 64 bytes, first 32 always valid"),
         );
 
         // ML-DSA-87: BLAKE3-derived 32-byte ξ seed with domain separation.
@@ -226,7 +228,7 @@ mod tests {
 
     fn random_seed() -> [u8; 64] {
         let mut seed = [0u8; 64];
-use rand::RngCore;
+        use rand::RngCore;
         rand::rngs::OsRng.fill_bytes(&mut seed);
         seed
     }
@@ -288,7 +290,10 @@ use rand::RngCore;
     fn deterministic_derivation() {
         let sk1 = HybridSigningKey::from_bip39_seed(&seed_a());
         let sk2 = HybridSigningKey::from_bip39_seed(&seed_a());
-        assert_eq!(sk1.verifying_key().to_bytes(), sk2.verifying_key().to_bytes());
+        assert_eq!(
+            sk1.verifying_key().to_bytes(),
+            sk2.verifying_key().to_bytes()
+        );
     }
 
     #[test]

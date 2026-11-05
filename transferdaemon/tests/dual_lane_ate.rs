@@ -1,15 +1,23 @@
+use bytes::Bytes;
+use std::time::Duration;
 use transferd_core::ate::Ate;
 use transferd_core::lanes::simulated_wifi::SimulatedWiFiLane;
 use transferd_core::session::Session;
 use transferd_core::transport::TransportLane;
 use transferd_core::types::{Gsn, SessionId};
-use bytes::Bytes;
-use std::time::Duration;
 
 #[tokio::test]
 async fn test_ate_prefers_fast_lane() {
-    let fast = Box::new(SimulatedWiFiLane::new(0, Duration::from_millis(1), 1_000_000_000.0));
-    let slow = Box::new(SimulatedWiFiLane::new(1, Duration::from_millis(50), 10_000_000.0));
+    let fast = Box::new(SimulatedWiFiLane::new(
+        0,
+        Duration::from_millis(1),
+        1_000_000_000.0,
+    ));
+    let slow = Box::new(SimulatedWiFiLane::new(
+        1,
+        Duration::from_millis(50),
+        10_000_000.0,
+    ));
 
     let fast_metrics = fast.metrics();
     let slow_metrics = slow.metrics();
@@ -29,9 +37,11 @@ async fn test_ate_prefers_fast_lane() {
 
 #[tokio::test]
 async fn test_session_enqueue_and_send() {
-    let mut lanes: Vec<Box<dyn TransportLane>> = vec![Box::new(
-        SimulatedWiFiLane::new(0, Duration::from_millis(5), 100_000_000.0),
-    )];
+    let mut lanes: Vec<Box<dyn TransportLane>> = vec![Box::new(SimulatedWiFiLane::new(
+        0,
+        Duration::from_millis(5),
+        100_000_000.0,
+    ))];
 
     let ate = Ate::new(1, 64);
     let session_id = SessionId([1; 16]);

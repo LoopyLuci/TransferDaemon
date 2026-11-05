@@ -9,19 +9,23 @@
 //!   6. Launch `transferd-ui`, forwarding the daemon address.
 //!   7. When the UI exits, exit the launcher with the same status code.
 
+use launcher_lib::{daemon_addr, probe_daemon, spawn_daemon, wait_for_daemon};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
-use launcher_lib::{daemon_addr, probe_daemon, spawn_daemon, wait_for_daemon};
 
-const LOG_DIR:  &str = "logs";
+const LOG_DIR: &str = "logs";
 const LOG_BASE: &str = "launcher_log";
-const MAX_LOGS: u32  = 10;
+const MAX_LOGS: u32 = 10;
 
 /// Append `.exe` on Windows.
 fn exe(name: &str) -> String {
-    if cfg!(windows) { format!("{name}.exe") } else { name.to_owned() }
+    if cfg!(windows) {
+        format!("{name}.exe")
+    } else {
+        name.to_owned()
+    }
 }
 
 /// Shift existing log files and return the path for the new index-0 file.
@@ -45,14 +49,11 @@ fn rotate_logs(base: &Path) -> PathBuf {
 /// Initialise env_logger writing to a rotated file in `base/logs/`.
 fn init_logging(base: &Path) {
     let log_path = rotate_logs(base);
-    let file = fs::File::create(&log_path)
-        .expect("failed to create launcher log file");
-    env_logger::Builder::from_env(
-        env_logger::Env::default().default_filter_or("info"),
-    )
-    .format_timestamp_millis()
-    .target(env_logger::Target::Pipe(Box::new(file)))
-    .init();
+    let file = fs::File::create(&log_path).expect("failed to create launcher log file");
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
+        .format_timestamp_millis()
+        .target(env_logger::Target::Pipe(Box::new(file)))
+        .init();
     log::info!("launcher started — log: {}", log_path.display());
 }
 
@@ -68,11 +69,15 @@ fn sibling_binary(name: &str) -> PathBuf {
         .and_then(|p| p.parent().map(PathBuf::from))
         .unwrap_or_else(|| PathBuf::from("."));
 
-    let in_bin  = exe_dir.join("bin").join(exe(name));
+    let in_bin = exe_dir.join("bin").join(exe(name));
     let in_root = exe_dir.join(exe(name));
 
-    if in_bin.exists()  { return in_bin; }
-    if in_root.exists() { return in_root; }
+    if in_bin.exists() {
+        return in_bin;
+    }
+    if in_root.exists() {
+        return in_root;
+    }
 
     launcher_lib::find_binary(name).unwrap_or_else(|| {
         log::error!("'{name}' not found in bin/, next to launcher, or on PATH");
@@ -94,7 +99,7 @@ async fn main() {
     log::info!("daemon address: {addr}");
 
     let daemon_bin = sibling_binary("transferd");
-    let ui_bin     = sibling_binary("transferd-ui");
+    let ui_bin = sibling_binary("transferd-ui");
 
     // ── Step 1: ensure daemon is running ─────────────────────────────────────
     if !probe_daemon(&addr).await {
@@ -123,13 +128,10 @@ async fn main() {
     if let Some(token) = transferd_api::auth::resolve_token() {
         cmd.env("TRANSFERD_TOKEN", token);
     }
-    let status = cmd
-        .stdin(Stdio::null())
-        .status()
-        .unwrap_or_else(|e| {
-            log::error!("could not launch UI: {e}");
-            std::process::exit(1);
-        });
+    let status = cmd.stdin(Stdio::null()).status().unwrap_or_else(|e| {
+        log::error!("could not launch UI: {e}");
+        std::process::exit(1);
+    });
 
     log::info!("UI exited with status: {status}");
     std::process::exit(status.code().unwrap_or(0));

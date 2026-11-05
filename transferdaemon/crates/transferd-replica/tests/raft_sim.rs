@@ -26,11 +26,26 @@ struct Sim {
 impl Sim {
     fn new(n: u64, seed: u64, loss: f64) -> Self {
         let ids: Vec<NodeId> = (1..=n).collect();
-        let mut s = Sim { nodes: BTreeMap::new(), disks: BTreeMap::new(), applied: BTreeMap::new(), net: Vec::new(), now: 0,
-                          rng: rand::rngs::StdRng::seed_from_u64(seed), cut: BTreeSet::new(), leaders_by_term: BTreeMap::new(),
-                          loss, seed };
+        let mut s = Sim {
+            nodes: BTreeMap::new(),
+            disks: BTreeMap::new(),
+            applied: BTreeMap::new(),
+            net: Vec::new(),
+            now: 0,
+            rng: rand::rngs::StdRng::seed_from_u64(seed),
+            cut: BTreeSet::new(),
+            leaders_by_term: BTreeMap::new(),
+            loss,
+            seed,
+        };
         for id in &ids {
-            s.disks.insert(*id, Disk { hard: HardState::default(), log: Vec::new() });
+            s.disks.insert(
+                *id,
+                Disk {
+                    hard: HardState::default(),
+                    log: Vec::new(),
+                },
+            );
             s.applied.insert(*id, Vec::new());
             let mut r = Raft::new(*id, ids.clone(), HardState::default(), Vec::new(), seed);
             r.max_batch = 2; // catch-up in small pieces: followers often hold only part of what the leader has
@@ -45,7 +60,9 @@ impl Sim {
 
     /// Persist, then send: what a real node does after every step.
     fn flush(&mut self, id: NodeId) {
-        let Some(Some(r)) = self.nodes.get_mut(&id) else { return };
+        let Some(Some(r)) = self.nodes.get_mut(&id) else {
+            return;
+        };
         if let Some(h) = r.hard_state_changed() {
             self.disks.get_mut(&id).expect("disk").hard = h;
         }
@@ -61,7 +78,11 @@ impl Sim {
         }
         if r.role == Role::Leader {
             if let Some(prev) = self.leaders_by_term.insert(r.hard.term, id) {
-                assert_eq!(prev, id, "two leaders in term {} (seed {})", r.hard.term, self.seed);
+                assert_eq!(
+                    prev, id,
+                    "two leaders in term {} (seed {})",
+                    r.hard.term, self.seed
+                );
             }
         }
         let out = r.take_outbox();
@@ -77,7 +98,11 @@ impl Sim {
     fn run(&mut self, ticks: u64) {
         for _ in 0..ticks {
             self.now += 1;
-            let due: Vec<_> = { let (d, rest): (Vec<_>, Vec<_>) = self.net.drain(..).partition(|m| m.0 <= self.now); self.net = rest; d };
+            let due: Vec<_> = {
+                let (d, rest): (Vec<_>, Vec<_>) = self.net.drain(..).partition(|m| m.0 <= self.now);
+                self.net = rest;
+                d
+            };
             for (_, from, to, m) in due {
                 if let Some(Some(r)) = self.nodes.get_mut(&to) {
                     r.step(from, m);
@@ -94,8 +119,15 @@ impl Sim {
     }
 
     fn leader(&self) -> Option<NodeId> {
-        self.nodes.iter().filter_map(|(id, r)| r.as_ref().filter(|r| r.role == Role::Leader).map(|r| (r.hard.term, *id)))
-            .max().map(|(_, id)| id)
+        self.nodes
+            .iter()
+            .filter_map(|(id, r)| {
+                r.as_ref()
+                    .filter(|r| r.role == Role::Leader)
+                    .map(|r| (r.hard.term, *id))
+            })
+            .max()
+            .map(|(_, id)| id)
     }
 
     fn crash(&mut self, id: NodeId) {
@@ -114,9 +146,19 @@ impl Sim {
 
     /// Every node's applied sequence is a prefix of the longest one (state machine safety).
     fn check_prefixes(&self) {
-        let longest = self.applied.values().max_by_key(|v| v.len()).cloned().unwrap_or_default();
+        let longest = self
+            .applied
+            .values()
+            .max_by_key(|v| v.len())
+            .cloned()
+            .unwrap_or_default();
         for (id, a) in &self.applied {
-            assert_eq!(&longest[..a.len()], &a[..], "node {id} applied a different sequence (seed {})", self.seed);
+            assert_eq!(
+                &longest[..a.len()],
+                &a[..],
+                "node {id} applied a different sequence (seed {})",
+                self.seed
+            );
         }
     }
 }
@@ -139,8 +181,16 @@ fn safety_and_liveness_under_loss_partitions_and_crashes() {
                         s.flush(l);
                         for _ in 0..40 {
                             s.run(1);
-                            let committed = s.nodes.get(&target.0).and_then(|r| r.as_ref()).is_some_and(|r| r.commit >= target.1
-                                && r.entries_from(target.1).first().is_some_and(|e| e.data == target.2));
+                            let committed = s
+                                .nodes
+                                .get(&target.0)
+                                .and_then(|r| r.as_ref())
+                                .is_some_and(|r| {
+                                    r.commit >= target.1
+                                        && r.entries_from(target.1)
+                                            .first()
+                                            .is_some_and(|e| e.data == target.2)
+                                });
                             if committed {
                                 acked.push(target.2.clone());
                                 break;
@@ -166,7 +216,11 @@ fn safety_and_liveness_under_loss_partitions_and_crashes() {
                 }
             }
             if r == 4 || r == 5 {
-                let down: Vec<NodeId> = s.ids().into_iter().filter(|id| s.nodes[id].is_none()).collect();
+                let down: Vec<NodeId> = s
+                    .ids()
+                    .into_iter()
+                    .filter(|id| s.nodes[id].is_none())
+                    .collect();
                 if let Some(v) = down.first() {
                     s.restart(*v);
                 }
@@ -180,7 +234,11 @@ fn safety_and_liveness_under_loss_partitions_and_crashes() {
                 s.cut.clear();
             }
             // never more than two down at once, so a majority can still make progress
-            let down: Vec<NodeId> = s.ids().into_iter().filter(|id| s.nodes[id].is_none()).collect();
+            let down: Vec<NodeId> = s
+                .ids()
+                .into_iter()
+                .filter(|id| s.nodes[id].is_none())
+                .collect();
             if down.len() > 2 {
                 s.restart(down[0]);
             }
@@ -198,7 +256,11 @@ fn safety_and_liveness_under_loss_partitions_and_crashes() {
         s.check_prefixes();
         for (id, a) in &s.applied {
             for w in &acked {
-                assert!(a.contains(w), "node {id} lost acknowledged write {:?} (seed {seed})", String::from_utf8_lossy(w));
+                assert!(
+                    a.contains(w),
+                    "node {id} lost acknowledged write {:?} (seed {seed})",
+                    String::from_utf8_lossy(w)
+                );
             }
         }
         assert!(!acked.is_empty(), "made no progress at all (seed {seed})");
@@ -210,9 +272,19 @@ fn reads_see_every_acknowledged_write() {
     let mut s = Sim::new(3, 7, 0.0);
     s.run(60);
     let l = s.leader().expect("a leader");
-    let i = s.nodes.get_mut(&l).and_then(|r| r.as_mut()).expect("leader").propose(b"x=1".to_vec()).expect("propose");
+    let i = s
+        .nodes
+        .get_mut(&l)
+        .and_then(|r| r.as_mut())
+        .expect("leader")
+        .propose(b"x=1".to_vec())
+        .expect("propose");
     s.run(30);
-    let r = s.nodes.get_mut(&l).and_then(|r| r.as_mut()).expect("leader");
+    let r = s
+        .nodes
+        .get_mut(&l)
+        .and_then(|r| r.as_mut())
+        .expect("leader");
     r.read_index(42).expect("read");
     s.flush(l);
     let mut got = None;
@@ -225,10 +297,17 @@ fn reads_see_every_acknowledged_write() {
             }
         }
     }
-    assert!(got.is_some_and(|at| at >= i), "a read after an acknowledged write must not be served from before it");
+    assert!(
+        got.is_some_and(|at| at >= i),
+        "a read after an acknowledged write must not be served from before it"
+    );
     // a follower refuses reads and proposals, naming the leader
     let f = s.ids().into_iter().find(|id| *id != l).expect("a follower");
-    let fr = s.nodes.get_mut(&f).and_then(|r| r.as_mut()).expect("follower");
+    let fr = s
+        .nodes
+        .get_mut(&f)
+        .and_then(|r| r.as_mut())
+        .expect("follower");
     assert!(fr.read_index(1).is_err() && fr.propose(b"y".to_vec()).is_err());
 }
 

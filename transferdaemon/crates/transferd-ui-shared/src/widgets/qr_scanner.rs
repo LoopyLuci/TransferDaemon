@@ -183,10 +183,7 @@ impl QrScanner {
                 if width >= 21 && height >= 21 {
                     // Image is large enough to contain a QR code
                     // For production, integrate a QR decoding library here
-                    self.error = Some(
-                        "Image scanned. Use manual input to enter the key."
-                            .into(),
-                    );
+                    self.error = Some("Image scanned. Use manual input to enter the key.".into());
                 } else {
                     self.error = Some("Image too small to contain a QR code".into());
                 }

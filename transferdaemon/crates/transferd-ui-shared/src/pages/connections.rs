@@ -40,7 +40,9 @@ impl ConnectionsPage {
         if self.stream_started {
             return;
         }
-        let Some(addr) = state.daemon_addr.clone() else { return };
+        let Some(addr) = state.daemon_addr.clone() else {
+            return;
+        };
         self.stream_started = true;
 
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
@@ -57,7 +59,10 @@ impl ConnectionsPage {
             let mut client = transferd_api::ConnectionServiceClient::new(
                 transferd_api::auth::AuthChannel::new(channel, &token),
             );
-            let mut stream = match client.stream_connection_status(transferd_api::Empty {}).await {
+            let mut stream = match client
+                .stream_connection_status(transferd_api::Empty {})
+                .await
+            {
                 Ok(r) => r.into_inner(),
                 Err(_) => return,
             };
@@ -77,7 +82,10 @@ impl ConnectionsPage {
         // Drain live status.
         if let Some(rx) = &mut self.stream_rx {
             while let Ok(msg) = rx.try_recv() {
-                self.live.insert(msg.connection_id, (msg.rtt_ms, msg.bandwidth_bps, msg.active_chunks, msg.online));
+                self.live.insert(
+                    msg.connection_id,
+                    (msg.rtt_ms, msg.bandwidth_bps, msg.active_chunks, msg.online),
+                );
             }
         }
 
@@ -139,7 +147,11 @@ impl ConnectionsPage {
         if self.connections.is_empty() {
             ui.vertical_centered(|ui| {
                 ui.add_space(ui.available_height() / 4.0);
-                ui.label(RichText::new("🌐").size(48.0).color(tokens.palette.text_disabled));
+                ui.label(
+                    RichText::new("🌐")
+                        .size(48.0)
+                        .color(tokens.palette.text_disabled),
+                );
                 ui.add_space(tokens.spacing.sm);
                 ui.label(
                     RichText::new("No connections reported")
@@ -162,30 +174,55 @@ impl ConnectionsPage {
     fn connection_row(&self, ui: &mut egui::Ui, c: &Connection, tokens: &DesignTokens) {
         let live = self.live.get(&c.id);
         let online = c.online || live.map(|l| l.3).unwrap_or(false);
-        let dot = if online { tokens.palette.success } else { tokens.palette.text_disabled };
+        let dot = if online {
+            tokens.palette.success
+        } else {
+            tokens.palette.text_disabled
+        };
 
         design::card_frame(tokens).show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.label(RichText::new(kind_icon(&c.kind)).size(20.0));
                 ui.vertical(|ui| {
                     ui.horizontal(|ui| {
-                        ui.label(RichText::new(&c.name).size(14.0).color(tokens.palette.text_primary));
+                        ui.label(
+                            RichText::new(&c.name)
+                                .size(14.0)
+                                .color(tokens.palette.text_primary),
+                        );
                         ui.label(
                             RichText::new(c.kind_label())
                                 .size(11.0)
                                 .color(tokens.palette.text_secondary),
                         );
-                        ui.label(RichText::new(if online { "● online" } else { "○ offline" }).size(11.0).color(dot));
+                        ui.label(
+                            RichText::new(if online { "● online" } else { "○ offline" })
+                                .size(11.0)
+                                .color(dot),
+                        );
                     });
                     // Stats line.
                     let speed = format_speed(c.link_speed_bps);
                     let mut stats = format!("link {speed}");
                     if let Some((rtt, bw, active, _)) = live {
-                        stats.push_str(&format!("   ·   {:.1} ms   ·   {}   ·   {} in flight", rtt, format_speed(*bw), active));
+                        stats.push_str(&format!(
+                            "   ·   {:.1} ms   ·   {}   ·   {} in flight",
+                            rtt,
+                            format_speed(*bw),
+                            active
+                        ));
                     } else if c.rtt_ms > 0.0 {
-                        stats.push_str(&format!("   ·   {:.1} ms   ·   {}", c.rtt_ms, format_speed(c.bandwidth_bps)));
+                        stats.push_str(&format!(
+                            "   ·   {:.1} ms   ·   {}",
+                            c.rtt_ms,
+                            format_speed(c.bandwidth_bps)
+                        ));
                     }
-                    ui.label(RichText::new(stats).size(11.0).color(tokens.palette.text_disabled));
+                    ui.label(
+                        RichText::new(stats)
+                            .size(11.0)
+                            .color(tokens.palette.text_disabled),
+                    );
                 });
             });
         });

@@ -3,8 +3,8 @@
 //! `TestDaemon` starts a full gRPC daemon on a random port, providing
 //! a real backend for integration tests.
 
-use std::sync::Arc;
 use parking_lot::Mutex;
+use std::sync::Arc;
 use tokio_stream::wrappers::TcpListenerStream;
 
 /// A test daemon instance running on a random port.
@@ -21,7 +21,8 @@ impl TestDaemon {
         let state = transferd_lib::new_state();
 
         // Bind to a random port
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
             .expect("Failed to bind test daemon port");
         let addr = listener.local_addr().expect("Failed to get local addr");
         let addr_str = format!("127.0.0.1:{}", addr.port());
@@ -56,7 +57,9 @@ impl TestDaemon {
 
     /// Get the daemon's port number.
     pub fn port(&self) -> u16 {
-        self.addr.rsplit(':').next()
+        self.addr
+            .rsplit(':')
+            .next()
             .and_then(|p| p.trim_end_matches('"').parse().ok())
             .unwrap_or(50051)
     }

@@ -92,7 +92,9 @@ pub fn flush(dir: &Path, key: &[u8; KEY_LEN], events: &[TelemetryEvent]) -> Resu
     let nonce = Nonce::from_slice(&nonce_bytes);
 
     let plaintext: Vec<u8> = bincode::serialize(events)?;
-    let ciphertext = cipher.encrypt(nonce, plaintext.as_ref()).map_err(|_| StoreError::Encrypt)?;
+    let ciphertext = cipher
+        .encrypt(nonce, plaintext.as_ref())
+        .map_err(|_| StoreError::Encrypt)?;
 
     // Layout: MAGIC (4) | nonce (12) | ciphertext
     let mut buf = Vec::with_capacity(MAGIC.len() + NONCE_LEN + ciphertext.len());
@@ -120,7 +122,9 @@ pub fn load_latest(dir: &Path, key: &[u8; KEY_LEN]) -> Result<Vec<TelemetryEvent
 
     let cipher = Aes256Gcm::new_from_slice(key).map_err(|_| StoreError::Decrypt)?;
     let nonce = Nonce::from_slice(nonce_bytes);
-    let plaintext = cipher.decrypt(nonce, ciphertext).map_err(|_| StoreError::Decrypt)?;
+    let plaintext = cipher
+        .decrypt(nonce, ciphertext)
+        .map_err(|_| StoreError::Decrypt)?;
 
     let events: Vec<TelemetryEvent> = bincode::deserialize(&plaintext)?;
     Ok(events)

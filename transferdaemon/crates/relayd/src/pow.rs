@@ -25,7 +25,11 @@ impl PowChallenge {
     pub fn new(difficulty: u32, expires_at: u64) -> Self {
         let mut bytes = [0u8; 16];
         rand::thread_rng().fill_bytes(&mut bytes);
-        Self { bytes, expires_at, difficulty }
+        Self {
+            bytes,
+            expires_at,
+            difficulty,
+        }
     }
 
     /// Returns `true` if the nonce satisfies this challenge for the given token.
@@ -48,13 +52,15 @@ pub fn leading_zeros(difficulty: u32, challenge: &[u8; 16], token: &[u8; 32], no
     let bytes = hash.as_bytes();
 
     let full = (difficulty / 8) as usize;
-    let tail  = difficulty % 8;
+    let tail = difficulty % 8;
 
     if full >= bytes.len() {
         return false; // pathological difficulty
     }
     for b in &bytes[..full] {
-        if *b != 0 { return false; }
+        if *b != 0 {
+            return false;
+        }
     }
     if tail > 0 {
         bytes[full] >> (8 - tail) == 0
@@ -107,7 +113,10 @@ mod tests {
     fn test_pow_difficulty_zero_always_passes() {
         let challenge = PowChallenge::new(0, u64::MAX);
         let token = [0u8; 32];
-        assert!(challenge.verify(&token, 42), "difficulty=0 must always pass");
+        assert!(
+            challenge.verify(&token, 42),
+            "difficulty=0 must always pass"
+        );
     }
 
     #[test]

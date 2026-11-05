@@ -17,7 +17,9 @@ pub struct DmiSenderLane {
 impl DmiSenderLane {
     pub fn new(id: u32, producer: Producer, descriptor_count: usize, key: &[u8; 32]) -> Self {
         let metrics = Arc::new(LaneMetrics::default());
-        metrics.bandwidth_bps.store(100_000_000_000, Ordering::SeqCst);
+        metrics
+            .bandwidth_bps
+            .store(100_000_000_000, Ordering::SeqCst);
         metrics.rtt_ms.store(1_000, Ordering::SeqCst);
         Self {
             id,
@@ -31,16 +33,27 @@ impl DmiSenderLane {
 
 #[async_trait]
 impl TransportLane for DmiSenderLane {
-    fn id(&self) -> u32 { self.id }
-    fn metrics(&self) -> Arc<LaneMetrics> { self.metrics.clone() }
-    fn capacity(&self) -> usize { self.descriptor_count }
+    fn id(&self) -> u32 {
+        self.id
+    }
+    fn metrics(&self) -> Arc<LaneMetrics> {
+        self.metrics.clone()
+    }
+    fn capacity(&self) -> usize {
+        self.descriptor_count
+    }
 
     async fn send(&self, chunk: Chunk) -> Result<(), TransportError> {
         let len = chunk.payload.len();
-        if len == 0 { return Ok(()); }
+        if len == 0 {
+            return Ok(());
+        }
 
         let mut producer = self.producer.lock().await;
-        let grant = producer.reserve_grant(len).await.map_err(|_| TransportError::Saturated)?;
+        let grant = producer
+            .reserve_grant(len)
+            .await
+            .map_err(|_| TransportError::Saturated)?;
 
         // Encrypt plaintext directly into the DMI grant buffer.
         let result: EncryptResult = {
@@ -52,13 +65,7 @@ impl TransportLane for DmiSenderLane {
 
             let dst = unsafe { std::slice::from_raw_parts_mut(grant.ptr, len) };
             unsafe {
-                encryptor.encrypt_fused(
-                    &chunk.payload,
-                    dst,
-                    chunk.gsn.0,
-                    chunk.key_epoch,
-                    &aad,
-                )
+                encryptor.encrypt_fused(&chunk.payload, dst, chunk.gsn.0, chunk.key_epoch, &aad)
             }
         };
 
@@ -74,6 +81,10 @@ impl TransportLane for DmiSenderLane {
         Ok(())
     }
 
-    async fn recv(&mut self) -> Option<Result<Chunk, TransportError>> { None }
-    fn is_alive(&self) -> bool { true }
+    async fn recv(&mut self) -> Option<Result<Chunk, TransportError>> {
+        None
+    }
+    fn is_alive(&self) -> bool {
+        true
+    }
 }

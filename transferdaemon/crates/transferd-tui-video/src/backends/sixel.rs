@@ -14,10 +14,14 @@ use image::{imageops::FilterType, RgbaImage};
 pub struct SixelBackend;
 
 impl SixelBackend {
-    pub fn kind(&self) -> TerminalGraphics { TerminalGraphics::Sixel }
+    pub fn kind(&self) -> TerminalGraphics {
+        TerminalGraphics::Sixel
+    }
 
     pub fn render_to_string(&self, frame: &RgbaImage, cols: u16, rows: u16) -> String {
-        if cols == 0 || rows == 0 { return String::new(); }
+        if cols == 0 || rows == 0 {
+            return String::new();
+        }
 
         // Target pixel size: cols × rows*2 (sixel uses 6 pixel rows per band,
         // so round up to multiple of 6).
@@ -40,9 +44,9 @@ fn encode_sixel(img: &RgbaImage, w: u32, h: u32) -> String {
 
     // Emit palette definitions.  Colors are R,G,B in 0-100 scale.
     for idx in 0u16..216 {
-        let r100 = (idx / 36)       * 20;
-        let g100 = ((idx / 6) % 6)  * 20;
-        let b100 = (idx % 6)        * 20;
+        let r100 = (idx / 36) * 20;
+        let g100 = ((idx / 6) % 6) * 20;
+        let b100 = (idx % 6) * 20;
         out.push_str(&format!("#{idx};2;{r100};{g100};{b100}"));
     }
 
@@ -58,7 +62,9 @@ fn encode_sixel(img: &RgbaImage, w: u32, h: u32) -> String {
 
         for row_in_band in 0..6u32 {
             let y = band_y0 + row_in_band;
-            if y >= h { break; }
+            if y >= h {
+                break;
+            }
             let bit = 1u8 << row_in_band;
             for x in 0..w {
                 let p = img.get_pixel(x, y);
@@ -70,7 +76,9 @@ fn encode_sixel(img: &RgbaImage, w: u32, h: u32) -> String {
 
         // Emit the sixel data for each used color.
         for ci in 0..216usize {
-            if !used[ci] { continue; }
+            if !used[ci] {
+                continue;
+            }
 
             // Select color.
             out.push_str(&format!("#{ci}"));
@@ -81,16 +89,20 @@ fn encode_sixel(img: &RgbaImage, w: u32, h: u32) -> String {
             let row = &palette_rows[ci];
             let mut i = 0;
             while i < w as usize {
-                let ch  = row[i];
+                let ch = row[i];
                 let mut run = 1;
-                while i + run < w as usize && row[i + run] == ch { run += 1; }
+                while i + run < w as usize && row[i + run] == ch {
+                    run += 1;
+                }
                 let sixel = (ch + 0x3F) as char;
                 if run >= 3 {
                     out.push('!');
                     out.push_str(&run.to_string());
                     out.push(sixel);
                 } else {
-                    for _ in 0..run { out.push(sixel); }
+                    for _ in 0..run {
+                        out.push(sixel);
+                    }
                 }
                 i += run;
             }
@@ -123,10 +135,10 @@ mod tests {
 
     #[test]
     fn quantize_corners() {
-        assert_eq!(quantize_to_216(0,   0,   0),   0);   // black
-        assert_eq!(quantize_to_216(255, 0,   0),   180); // red
-        assert_eq!(quantize_to_216(0,   255, 0),   30);  // green
-        assert_eq!(quantize_to_216(0,   0,   255), 5);   // blue
+        assert_eq!(quantize_to_216(0, 0, 0), 0); // black
+        assert_eq!(quantize_to_216(255, 0, 0), 180); // red
+        assert_eq!(quantize_to_216(0, 255, 0), 30); // green
+        assert_eq!(quantize_to_216(0, 0, 255), 5); // blue
         assert_eq!(quantize_to_216(255, 255, 255), 215); // white
     }
 

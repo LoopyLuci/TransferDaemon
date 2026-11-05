@@ -3,11 +3,11 @@
 //! Tests that require a live daemon start an in-process tonic server on a
 //! random port — no filesystem or process spawning needed.
 
+use launcher_lib::{daemon_addr, find_binary, probe_daemon, wait_for_daemon, DEFAULT_DAEMON_ADDR};
 use std::net::SocketAddr;
 use std::time::Duration;
 use tokio::net::TcpListener;
 use tonic::transport::Server;
-use launcher_lib::{probe_daemon, wait_for_daemon, find_binary, daemon_addr, DEFAULT_DAEMON_ADDR};
 use transferd_lib::{grpc::add_all_services, new_state};
 
 // ---------------------------------------------------------------------------
@@ -38,7 +38,10 @@ async fn test_probe_daemon_not_running_returns_false() {
     // Nothing is listening on a random ephemeral port.
     let nothing = "http://127.0.0.1:19999";
     let result = probe_daemon(nothing).await;
-    assert!(!result, "probe should return false when daemon is not running");
+    assert!(
+        !result,
+        "probe should return false when daemon is not running"
+    );
 }
 
 #[tokio::test]
@@ -81,7 +84,7 @@ async fn test_wait_for_daemon_retries_until_ready() {
     // We start the server with a small intentional delay.
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    let url  = format!("http://{addr}");
+    let url = format!("http://{addr}");
     let state = new_state();
 
     tokio::spawn(async move {
@@ -144,7 +147,10 @@ fn test_find_binary_sibling_takes_priority() {
     std::env::set_var("PATH", &old_path);
     fs::remove_file(&fake).ok();
 
-    assert!(found.is_some(), "should find fake transferd-ui on injected PATH");
+    assert!(
+        found.is_some(),
+        "should find fake transferd-ui on injected PATH"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -155,12 +161,19 @@ fn test_find_binary_sibling_takes_priority() {
 fn test_daemon_addr_default_and_override() {
     // Run both sub-cases in the same test to avoid parallel env-var races.
     std::env::remove_var("TRANSFERD_ADDR");
-    assert_eq!(daemon_addr(), DEFAULT_DAEMON_ADDR, "should return default when env var absent");
+    assert_eq!(
+        daemon_addr(),
+        DEFAULT_DAEMON_ADDR,
+        "should return default when env var absent"
+    );
 
     std::env::set_var("TRANSFERD_ADDR", "http://10.0.0.1:9090");
     let addr = daemon_addr();
     std::env::remove_var("TRANSFERD_ADDR");
-    assert_eq!(addr, "http://10.0.0.1:9090", "should reflect env var when set");
+    assert_eq!(
+        addr, "http://10.0.0.1:9090",
+        "should reflect env var when set"
+    );
 }
 
 // ---------------------------------------------------------------------------

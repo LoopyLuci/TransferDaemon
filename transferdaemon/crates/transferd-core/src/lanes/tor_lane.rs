@@ -9,7 +9,10 @@
 use crate::transport::{Chunk, LaneMetrics, TransportError, TransportLane};
 use crate::types::SessionId;
 use async_trait::async_trait;
-use std::sync::{Arc, atomic::{AtomicU64, Ordering}};
+use std::sync::{
+    atomic::{AtomicU64, Ordering},
+    Arc,
+};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
@@ -40,11 +43,7 @@ impl TorLane {
     /// * `session_id` - The session identifier
     /// * `socks_proxy` - SOCKS5 proxy address (e.g., "127.0.0.1:9050")
     /// * `target_addr` - Target address (.onion or IP:port)
-    pub fn new(
-        session_id: SessionId,
-        socks_proxy: String,
-        target_addr: String,
-    ) -> Arc<Self> {
+    pub fn new(session_id: SessionId, socks_proxy: String, target_addr: String) -> Arc<Self> {
         Arc::new(Self {
             session_id,
             metrics: Arc::new(LaneMetrics::new_alive()),
@@ -57,22 +56,28 @@ impl TorLane {
     /// Connect to the target through the SOCKS5 proxy.
     async fn connect_via_socks5(&self) -> Result<TcpStream, TorError> {
         // Connect to the SOCKS5 proxy
-        let mut stream = TcpStream::connect(&self.socks_proxy)
-            .await
-            .map_err(|e| TorError::ConnectionFailed(format!("Failed to connect to SOCKS5 proxy: {e}")))?;
+        let mut stream = TcpStream::connect(&self.socks_proxy).await.map_err(|e| {
+            TorError::ConnectionFailed(format!("Failed to connect to SOCKS5 proxy: {e}"))
+        })?;
 
         // SOCKS5 handshake
         // Version 5, 1 auth method (no auth)
-        stream.write_all(&[0x05, 0x01, 0x00]).await
+        stream
+            .write_all(&[0x05, 0x01, 0x00])
+            .await
             .map_err(|e| TorError::ConnectionFailed(format!("SOCKS5 handshake failed: {e}")))?;
 
         // Read server response
         let mut response = [0u8; 2];
-        stream.read_exact(&mut response).await
+        stream
+            .read_exact(&mut response)
+            .await
             .map_err(|e| TorError::ConnectionFailed(format!("SOCKS5 read failed: {e}")))?;
 
         if response[0] != 0x05 || response[1] != 0x00 {
-            return Err(TorError::ConnectionFailed("SOCKS5 handshake rejected".into()));
+            return Err(TorError::ConnectionFailed(
+                "SOCKS5 handshake rejected".into(),
+            ));
         }
 
         // SOCKS5 connect request
@@ -83,13 +88,18 @@ impl TorLane {
         // Port 0 (let Tor decide)
         request.extend_from_slice(&[0x00, 0x00]);
 
-        stream.write_all(&request).await
-            .map_err(|e| TorError::ConnectionFailed(format!("SOCKS5 connect request failed: {e}")))?;
+        stream.write_all(&request).await.map_err(|e| {
+            TorError::ConnectionFailed(format!("SOCKS5 connect request failed: {e}"))
+        })?;
 
         // Read connect response
         let mut connect_response = [0u8; 10];
-        stream.read_exact(&mut connect_response).await
-            .map_err(|e| TorError::ConnectionFailed(format!("SOCKS5 connect response failed: {e}")))?;
+        stream
+            .read_exact(&mut connect_response)
+            .await
+            .map_err(|e| {
+                TorError::ConnectionFailed(format!("SOCKS5 connect response failed: {e}"))
+            })?;
 
         if connect_response[1] != 0x00 {
             return Err(TorError::ConnectionFailed(format!(
@@ -113,22 +123,31 @@ impl TransportLane for TorLane {
     }
 
     async fn send(&self, chunk: Chunk) -> Result<(), TransportError> {
-        self.total_bytes.fetch_add(chunk.payload.len() as u64, Ordering::Relaxed);
+        self.total_bytes
+            .fetch_add(chunk.payload.len() as u64, Ordering::Relaxed);
 
         // Connect to target through Tor
-        let mut stream = self.connect_via_socks5().await
+        let mut stream = self
+            .connect_via_socks5()
+            .await
             .map_err(|e| TransportError::LinkDown(e.to_string()))?;
 
         // Send the chunk with a simple length-prefix protocol
         let len = chunk.payload.len() as u32;
-        stream.write_all(&len.to_le_bytes()).await
+        stream
+            .write_all(&len.to_le_bytes())
+            .await
             .map_err(|e| TransportError::LinkDown(format!("Failed to send length: {e}")))?;
-        stream.write_all(&chunk.payload).await
+        stream
+            .write_all(&chunk.payload)
+            .await
             .map_err(|e| TransportError::LinkDown(format!("Failed to send data: {e}")))?;
 
         // Wait for acknowledgment
         let mut ack = [0u8; 1];
-        stream.read_exact(&mut ack).await
+        stream
+            .read_exact(&mut ack)
+            .await
             .map_err(|e| TransportError::LinkDown(format!("Failed to read ack: {e}")))?;
 
         if ack[0] != 0x01 {

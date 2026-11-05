@@ -34,7 +34,9 @@ impl Ate {
         let mut min_ct = f64::MAX;
 
         for (idx, (metrics, &cap)) in lane_metrics.iter().zip(lane_capacities.iter()).enumerate() {
-            if cap == 0 { continue; }
+            if cap == 0 {
+                continue;
+            }
             let rtt = metrics.rtt_ms.load(Ordering::Relaxed) as f64 / 1_000_000.0; // ms→s
             let bw = metrics.bandwidth_bps.load(Ordering::Relaxed) as f64;
             let in_flight = metrics.active_chunks.load(Ordering::Relaxed) as f64;
@@ -67,7 +69,7 @@ impl Ate {
             .filter(|(_, (_, &cap))| cap > 0)
             .map(|(idx, (metrics, _))| {
                 let rtt = metrics.rtt_ms.load(Ordering::Relaxed) as f64 / 1_000_000.0;
-                let bw  = metrics.bandwidth_bps.load(Ordering::Relaxed) as f64;
+                let bw = metrics.bandwidth_bps.load(Ordering::Relaxed) as f64;
                 let inf = metrics.active_chunks.load(Ordering::Relaxed) as f64;
                 (idx, rtt + inf / bw.max(1.0))
             })

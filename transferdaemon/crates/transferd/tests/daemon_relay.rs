@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use parking_lot::Mutex;
-use relayd::protocol::{DeliveredMsg, ForwardMsg, RegisterMsg, Tag, encode, split};
+use relayd::protocol::{encode, split, DeliveredMsg, ForwardMsg, RegisterMsg, Tag};
 use relayd::relay::Relay;
 use tokio::net::{TcpListener, UdpSocket};
 use tokio::sync::Mutex as TokioMutex;
@@ -18,8 +18,7 @@ use tokio_stream::wrappers::TcpListenerStream;
 use tonic::transport::Server;
 
 use transferd_api::{
-    AccountServiceClient, CreateIdentityRequest, MessageServiceClient,
-    SendTextRequest, Empty,
+    AccountServiceClient, CreateIdentityRequest, Empty, MessageServiceClient, SendTextRequest,
 };
 use transferd_lib::peer_discovery::{publish_endpoint_if_ready, resolve_peer};
 use transferd_lib::relay_hub::relay_token_for;
@@ -32,7 +31,10 @@ use transferd_lib::{grpc::add_all_services, new_state};
 static RELAY_TEST_LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
 
 async fn relay_test_lock() -> tokio::sync::MutexGuard<'static, ()> {
-    RELAY_TEST_LOCK.get_or_init(|| tokio::sync::Mutex::new(())).lock().await
+    RELAY_TEST_LOCK
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await
 }
 
 // ---------------------------------------------------------------------------
@@ -46,7 +48,11 @@ async fn run_relay_server(
 ) {
     let mut buf = vec![0u8; 65536];
 
-    async fn send_challenge(relay: &Arc<TokioMutex<Relay>>, socket: &Arc<UdpSocket>, src: std::net::SocketAddr) {
+    async fn send_challenge(
+        relay: &Arc<TokioMutex<Relay>>,
+        socket: &Arc<UdpSocket>,
+        src: std::net::SocketAddr,
+    ) {
         let (challenge, expires_at, difficulty) = {
             let mut r = relay.lock().await;
             let c = r.current_challenge();
@@ -54,7 +60,11 @@ async fn run_relay_server(
         };
         let frame = encode(
             Tag::Challenge,
-            &relayd::protocol::ChallengeMsg { challenge, expires_at, difficulty },
+            &relayd::protocol::ChallengeMsg {
+                challenge,
+                expires_at,
+                difficulty,
+            },
         )
         .unwrap_or_default();
         let _ = socket.send_to(&frame, src).await;
@@ -161,9 +171,13 @@ async fn text_delivers_between_two_daemons_over_relay() {
     let recv_state = new_state();
     let recv_grpc = start_grpc(recv_state.clone()).await;
     let recv_url = format!("http://{recv_grpc}");
-    let mut recv_acct = AccountServiceClient::connect(recv_url.clone()).await.unwrap();
+    let mut recv_acct = AccountServiceClient::connect(recv_url.clone())
+        .await
+        .unwrap();
     recv_acct
-        .create_identity(CreateIdentityRequest { display_name: "Bob".into() })
+        .create_identity(CreateIdentityRequest {
+            display_name: "Bob".into(),
+        })
         .await
         .unwrap();
     // Wait for the relay hub to register Bob's token.
@@ -173,7 +187,10 @@ async fn text_delivers_between_two_daemons_over_relay() {
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    assert!(recv_state.lock().relay_hub.is_some(), "receiver relay hub must start");
+    assert!(
+        recv_state.lock().relay_hub.is_some(),
+        "receiver relay hub must start"
+    );
     let recv_pk = recv_acct
         .get_public_key_hex(Empty {})
         .await
@@ -186,9 +203,13 @@ async fn text_delivers_between_two_daemons_over_relay() {
     let send_state = new_state();
     let sender_grpc = start_grpc(send_state.clone()).await;
     let sender_url = format!("http://{sender_grpc}");
-    let mut send_acct = AccountServiceClient::connect(sender_url.clone()).await.unwrap();
+    let mut send_acct = AccountServiceClient::connect(sender_url.clone())
+        .await
+        .unwrap();
     send_acct
-        .create_identity(CreateIdentityRequest { display_name: "Alice".into() })
+        .create_identity(CreateIdentityRequest {
+            display_name: "Alice".into(),
+        })
         .await
         .unwrap();
     for _ in 0..100 {
@@ -197,7 +218,10 @@ async fn text_delivers_between_two_daemons_over_relay() {
         }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    assert!(send_state.lock().relay_hub.is_some(), "sender relay hub must start");
+    assert!(
+        send_state.lock().relay_hub.is_some(),
+        "sender relay hub must start"
+    );
 
     // Sender adds Bob via his relay address (token derived from Bob's public key).
     let peer_pk = recv_pk.clone();
@@ -218,7 +242,9 @@ async fn text_delivers_between_two_daemons_over_relay() {
     //  add_contact RPC does not carry an address.)
 
     // Send a text message over the relay.
-    let mut send_msg = MessageServiceClient::connect(sender_url.clone()).await.unwrap();
+    let mut send_msg = MessageServiceClient::connect(sender_url.clone())
+        .await
+        .unwrap();
     send_msg
         .send_text(SendTextRequest {
             contact_id: peer_pk.clone(),
@@ -234,7 +260,10 @@ async fn text_delivers_between_two_daemons_over_relay() {
         pump_transport(&send_state).await;
         let delivered = {
             let s = recv_state.lock();
-            s.messages.values().flatten().any(|m| m.text == "hello over the relay")
+            s.messages
+                .values()
+                .flatten()
+                .any(|m| m.text == "hello over the relay")
         };
         if delivered {
             break;
@@ -263,7 +292,9 @@ async fn text_delivers_between_two_daemons_over_relay() {
 async fn text_round_trips_between_two_daemons_over_relay() {
     let _guard = relay_test_lock().await;
     let _ = tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::new("transferd_lib=debug,relayd=debug"))
+        .with_env_filter(tracing_subscriber::EnvFilter::new(
+            "transferd_lib=debug,relayd=debug",
+        ))
         .with_test_writer()
         .try_init();
     let relay_socket = UdpSocket::bind("127.0.0.1:0").await.unwrap();
@@ -280,7 +311,9 @@ async fn text_round_trips_between_two_daemons_over_relay() {
     let a_url = format!("http://{a_grpc}");
     let mut a_acct = AccountServiceClient::connect(a_url.clone()).await.unwrap();
     a_acct
-        .create_identity(CreateIdentityRequest { display_name: "Alice".into() })
+        .create_identity(CreateIdentityRequest {
+            display_name: "Alice".into(),
+        })
         .await
         .unwrap();
     for _ in 0..100 {
@@ -290,7 +323,12 @@ async fn text_round_trips_between_two_daemons_over_relay() {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     assert!(a_state.lock().relay_hub.is_some(), "A relay hub must start");
-    let a_pk = a_acct.get_public_key_hex(Empty {}).await.unwrap().into_inner().hex;
+    let a_pk = a_acct
+        .get_public_key_hex(Empty {})
+        .await
+        .unwrap()
+        .into_inner()
+        .hex;
     let a_token = relay_token_for(&a_pk);
 
     // Daemon B.
@@ -299,7 +337,9 @@ async fn text_round_trips_between_two_daemons_over_relay() {
     let b_url = format!("http://{b_grpc}");
     let mut b_acct = AccountServiceClient::connect(b_url.clone()).await.unwrap();
     b_acct
-        .create_identity(CreateIdentityRequest { display_name: "Bob".into() })
+        .create_identity(CreateIdentityRequest {
+            display_name: "Bob".into(),
+        })
         .await
         .unwrap();
     for _ in 0..100 {
@@ -309,7 +349,12 @@ async fn text_round_trips_between_two_daemons_over_relay() {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     assert!(b_state.lock().relay_hub.is_some(), "B relay hub must start");
-    let b_pk = b_acct.get_public_key_hex(Empty {}).await.unwrap().into_inner().hex;
+    let b_pk = b_acct
+        .get_public_key_hex(Empty {})
+        .await
+        .unwrap()
+        .into_inner()
+        .hex;
     let b_token = relay_token_for(&b_pk);
 
     // Each daemon adds the other with the explicit relay address.
@@ -333,20 +378,43 @@ async fn text_round_trips_between_two_daemons_over_relay() {
     eprintln!("[probe] A→B send");
     let mut a_msg = MessageServiceClient::connect(a_url.clone()).await.unwrap();
     a_msg
-        .send_text(SendTextRequest { contact_id: b_pk.clone(), text: "from A".into(), reply_to: String::new() })
+        .send_text(SendTextRequest {
+            contact_id: b_pk.clone(),
+            text: "from A".into(),
+            reply_to: String::new(),
+        })
         .await
         .unwrap();
     eprintln!("[probe] A→B sent, pumping");
     for _ in 0..500 {
         pump_transport(&a_state).await;
-        if b_state.lock().messages.values().flatten().any(|m| m.text == "from A") {
+        if b_state
+            .lock()
+            .messages
+            .values()
+            .flatten()
+            .any(|m| m.text == "from A")
+        {
             break;
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    eprintln!("[probe] A→B done: {}", b_state.lock().messages.values().flatten().any(|m| m.text == "from A"));
+    eprintln!(
+        "[probe] A→B done: {}",
+        b_state
+            .lock()
+            .messages
+            .values()
+            .flatten()
+            .any(|m| m.text == "from A")
+    );
     assert!(
-        b_state.lock().messages.values().flatten().any(|m| m.text == "from A"),
+        b_state
+            .lock()
+            .messages
+            .values()
+            .flatten()
+            .any(|m| m.text == "from A"),
         "B must receive A's message"
     );
 
@@ -354,27 +422,60 @@ async fn text_round_trips_between_two_daemons_over_relay() {
     eprintln!("[probe] B→A send");
     let mut b_msg = MessageServiceClient::connect(b_url.clone()).await.unwrap();
     b_msg
-        .send_text(SendTextRequest { contact_id: a_pk.clone(), text: "from B".into(), reply_to: String::new() })
+        .send_text(SendTextRequest {
+            contact_id: a_pk.clone(),
+            text: "from B".into(),
+            reply_to: String::new(),
+        })
         .await
         .unwrap();
     eprintln!("[probe] B→A sent, pumping");
     for _ in 0..500 {
         pump_transport(&b_state).await;
-        if a_state.lock().messages.values().flatten().any(|m| m.text == "from B") {
+        if a_state
+            .lock()
+            .messages
+            .values()
+            .flatten()
+            .any(|m| m.text == "from B")
+        {
             break;
         }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    eprintln!("[probe] B→A done: {}", a_state.lock().messages.values().flatten().any(|m| m.text == "from B"));
+    eprintln!(
+        "[probe] B→A done: {}",
+        a_state
+            .lock()
+            .messages
+            .values()
+            .flatten()
+            .any(|m| m.text == "from B")
+    );
     {
         let s = a_state.lock();
-        eprintln!("[probe] A pk starts={} b_pk starts={}", &a_pk[..8], &b_pk[..8]);
+        eprintln!(
+            "[probe] A pk starts={} b_pk starts={}",
+            &a_pk[..8],
+            &b_pk[..8]
+        );
         for (k, v) in &s.messages {
-            eprintln!("[probe] A key={} msgs={:?}", &k[..8], v.iter().map(|m| (&m.text[..], m.outbound, &m.status[..])).collect::<Vec<_>>());
+            eprintln!(
+                "[probe] A key={} msgs={:?}",
+                &k[..8],
+                v.iter()
+                    .map(|m| (&m.text[..], m.outbound, &m.status[..]))
+                    .collect::<Vec<_>>()
+            );
         }
     }
     assert!(
-        a_state.lock().messages.values().flatten().any(|m| m.text == "from B"),
+        a_state
+            .lock()
+            .messages
+            .values()
+            .flatten()
+            .any(|m| m.text == "from B"),
         "A must receive B's reverse-session reply"
     );
 }
@@ -385,21 +486,37 @@ async fn text_round_trips_between_two_daemons_over_relay() {
 #[tokio::test]
 async fn text_round_trips_over_two_relays_with_failover() {
     let _guard = relay_test_lock().await;
-// Two inline relays.
+    // Two inline relays.
     let (stop1_tx, stop1_rx) = tokio::sync::watch::channel(false);
     let (_stop2, stop2_rx) = tokio::sync::watch::channel(false);
     let r1_socket = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
     let r1_addr = r1_socket.local_addr().unwrap();
     let r2_socket = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
     let r2_addr = r2_socket.local_addr().unwrap();
-    tokio::spawn(run_relay_server(r1_socket, Arc::new(TokioMutex::new(Relay::new(8, 90, 63 * 1024))), stop1_rx));
-    tokio::spawn(run_relay_server(r2_socket, Arc::new(TokioMutex::new(Relay::new(8, 90, 63 * 1024))), stop2_rx));
+    tokio::spawn(run_relay_server(
+        r1_socket,
+        Arc::new(TokioMutex::new(Relay::new(8, 90, 63 * 1024))),
+        stop1_rx,
+    ));
+    tokio::spawn(run_relay_server(
+        r2_socket,
+        Arc::new(TokioMutex::new(Relay::new(8, 90, 63 * 1024))),
+        stop2_rx,
+    ));
 
     std::env::set_var("TRANSFERD_RELAY_ADDR", format!("{r1_addr},{r2_addr}"));
 
     // Two DHT nodes that know each other.
-    let dht_a = Arc::new(transferd_relay::DhtNode::start("127.0.0.1:0", [0x31u8; 32]).await.unwrap());
-    let dht_b = Arc::new(transferd_relay::DhtNode::start("127.0.0.1:0", [0x32u8; 32]).await.unwrap());
+    let dht_a = Arc::new(
+        transferd_relay::DhtNode::start("127.0.0.1:0", [0x31u8; 32])
+            .await
+            .unwrap(),
+    );
+    let dht_b = Arc::new(
+        transferd_relay::DhtNode::start("127.0.0.1:0", [0x32u8; 32])
+            .await
+            .unwrap(),
+    );
     let (da, db) = (dht_a.addr(), dht_b.addr());
     dht_a.bootstrap(vec![db]).await;
     dht_b.bootstrap(vec![da]).await;
@@ -411,16 +528,28 @@ async fn text_round_trips_over_two_relays_with_failover() {
     let b_url = format!("http://{b_grpc}");
     let mut b_acct = AccountServiceClient::connect(b_url.clone()).await.unwrap();
     b_acct
-        .create_identity(CreateIdentityRequest { display_name: "Bob".into() })
+        .create_identity(CreateIdentityRequest {
+            display_name: "Bob".into(),
+        })
         .await
         .unwrap();
     for _ in 0..100 {
-        if b_state.lock().relay_hub.is_some() { break; }
+        if b_state.lock().relay_hub.is_some() {
+            break;
+        }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    assert!(b_state.lock().relay_hub.is_some(), "Bob hub must register on both relays");
+    assert!(
+        b_state.lock().relay_hub.is_some(),
+        "Bob hub must register on both relays"
+    );
     publish_endpoint_if_ready(&b_state).await;
-    let b_pk = b_acct.get_public_key_hex(Empty {}).await.unwrap().into_inner().hex;
+    let b_pk = b_acct
+        .get_public_key_hex(Empty {})
+        .await
+        .unwrap()
+        .into_inner()
+        .hex;
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     // ── Alice (sender) ───────────────────────────────────────────────────────
@@ -430,19 +559,38 @@ async fn text_round_trips_over_two_relays_with_failover() {
     let a_url = format!("http://{a_grpc}");
     let mut a_acct = AccountServiceClient::connect(a_url.clone()).await.unwrap();
     a_acct
-        .create_identity(CreateIdentityRequest { display_name: "Alice".into() })
+        .create_identity(CreateIdentityRequest {
+            display_name: "Alice".into(),
+        })
         .await
         .unwrap();
     for _ in 0..100 {
-        if a_state.lock().relay_hub.is_some() { break; }
+        if a_state.lock().relay_hub.is_some() {
+            break;
+        }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    assert!(a_state.lock().relay_hub.is_some(), "Alice hub must register on both relays");
-    let a_pk = a_acct.get_public_key_hex(Empty {}).await.unwrap().into_inner().hex;
+    assert!(
+        a_state.lock().relay_hub.is_some(),
+        "Alice hub must register on both relays"
+    );
+    let a_pk = a_acct
+        .get_public_key_hex(Empty {})
+        .await
+        .unwrap()
+        .into_inner()
+        .hex;
 
     // Bob publishes BOTH relays; Alice resolves both.
-    let resolved = resolve_peer(&dht_a, &b_pk).await.expect("resolve Bob via DHT").0;
-    assert_eq!(resolved.len(), 2, "Bob must publish both relays: {resolved:?}");
+    let resolved = resolve_peer(&dht_a, &b_pk)
+        .await
+        .expect("resolve Bob via DHT")
+        .0;
+    assert_eq!(
+        resolved.len(),
+        2,
+        "Bob must publish both relays: {resolved:?}"
+    );
 
     a_state.lock().contacts.push(Contact {
         id: b_pk.clone(),
@@ -452,55 +600,106 @@ async fn text_round_trips_over_two_relays_with_failover() {
         blocked: false,
         address: None,
         hybrid_public_key: None,
-            limits: None,
+        limits: None,
     });
 
     // Message 1: over both relays (2 lanes).
     let mut a_msg = MessageServiceClient::connect(a_url.clone()).await.unwrap();
     a_msg
-        .send_text(SendTextRequest { contact_id: b_pk.clone(), text: "over two relays".into(), reply_to: String::new() })
+        .send_text(SendTextRequest {
+            contact_id: b_pk.clone(),
+            text: "over two relays".into(),
+            reply_to: String::new(),
+        })
         .await
         .unwrap();
     for _ in 0..500 {
         pump_transport(&a_state).await;
-        if b_state.lock().messages.values().flatten().any(|m| m.text == "over two relays") { break; }
+        if b_state
+            .lock()
+            .messages
+            .values()
+            .flatten()
+            .any(|m| m.text == "over two relays")
+        {
+            break;
+        }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     assert!(
-        b_state.lock().messages.values().flatten().any(|m| m.text == "over two relays"),
+        b_state
+            .lock()
+            .messages
+            .values()
+            .flatten()
+            .any(|m| m.text == "over two relays"),
         "message must deliver over the two-relay session"
     );
 
-// Kill relay 1. Delivery must continue over relay 2 (auto-routing).
+    // Kill relay 1. Delivery must continue over relay 2 (auto-routing).
     let _ = stop1_tx.send(true);
 
     a_msg
-        .send_text(SendTextRequest { contact_id: b_pk.clone(), text: "after relay1 died".into(), reply_to: String::new() })
+        .send_text(SendTextRequest {
+            contact_id: b_pk.clone(),
+            text: "after relay1 died".into(),
+            reply_to: String::new(),
+        })
         .await
         .unwrap();
     for _ in 0..1500 {
         pump_transport(&a_state).await;
-        if b_state.lock().messages.values().flatten().any(|m| m.text == "after relay1 died") { break; }
+        if b_state
+            .lock()
+            .messages
+            .values()
+            .flatten()
+            .any(|m| m.text == "after relay1 died")
+        {
+            break;
+        }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     assert!(
-        b_state.lock().messages.values().flatten().any(|m| m.text == "after relay1 died"),
+        b_state
+            .lock()
+            .messages
+            .values()
+            .flatten()
+            .any(|m| m.text == "after relay1 died"),
         "delivery must fail over to relay 2 after relay 1 dies"
     );
 
     // Reverse leg after failover.
     let mut b_msg = MessageServiceClient::connect(b_url.clone()).await.unwrap();
     b_msg
-        .send_text(SendTextRequest { contact_id: a_pk.clone(), text: "reply after failover".into(), reply_to: String::new() })
+        .send_text(SendTextRequest {
+            contact_id: a_pk.clone(),
+            text: "reply after failover".into(),
+            reply_to: String::new(),
+        })
         .await
         .unwrap();
     for _ in 0..1500 {
         pump_transport(&b_state).await;
-        if a_state.lock().messages.values().flatten().any(|m| m.text == "reply after failover") { break; }
+        if a_state
+            .lock()
+            .messages
+            .values()
+            .flatten()
+            .any(|m| m.text == "reply after failover")
+        {
+            break;
+        }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
     assert!(
-        a_state.lock().messages.values().flatten().any(|m| m.text == "reply after failover"),
+        a_state
+            .lock()
+            .messages
+            .values()
+            .flatten()
+            .any(|m| m.text == "reply after failover"),
         "reverse leg must survive relay 1 death"
     );
 }
@@ -517,10 +716,14 @@ async fn text_delivers_between_two_daemons_over_ws_relay() {
     let ws_addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
         loop {
-            let Ok((stream, peer)) = listener.accept().await else { break };
+            let Ok((stream, peer)) = listener.accept().await else {
+                break;
+            };
             let ws_relay = ws_relay.clone();
             tokio::spawn(async move {
-                let Ok(ws) = tokio_tungstenite::accept_async(stream).await else { return };
+                let Ok(ws) = tokio_tungstenite::accept_async(stream).await else {
+                    return;
+                };
                 relayd::ws::handle_connection(ws, peer, ws_relay).await;
             });
         }
@@ -529,8 +732,16 @@ async fn text_delivers_between_two_daemons_over_ws_relay() {
     std::env::set_var("TRANSFERD_RELAY_ADDR", format!("ws://{ws_addr}"));
 
     // Two DHT nodes that know each other.
-    let dht_a = Arc::new(transferd_relay::DhtNode::start("127.0.0.1:0", [0x41u8; 32]).await.unwrap());
-    let dht_b = Arc::new(transferd_relay::DhtNode::start("127.0.0.1:0", [0x42u8; 32]).await.unwrap());
+    let dht_a = Arc::new(
+        transferd_relay::DhtNode::start("127.0.0.1:0", [0x41u8; 32])
+            .await
+            .unwrap(),
+    );
+    let dht_b = Arc::new(
+        transferd_relay::DhtNode::start("127.0.0.1:0", [0x42u8; 32])
+            .await
+            .unwrap(),
+    );
     let (da, db) = (dht_a.addr(), dht_b.addr());
     dht_a.bootstrap(vec![db]).await;
     dht_b.bootstrap(vec![da]).await;
@@ -542,16 +753,28 @@ async fn text_delivers_between_two_daemons_over_ws_relay() {
     let b_url = format!("http://{b_grpc}");
     let mut b_acct = AccountServiceClient::connect(b_url.clone()).await.unwrap();
     b_acct
-        .create_identity(CreateIdentityRequest { display_name: "Bob".into() })
+        .create_identity(CreateIdentityRequest {
+            display_name: "Bob".into(),
+        })
         .await
         .unwrap();
     for _ in 0..100 {
-        if b_state.lock().relay_hub.is_some() { break; }
+        if b_state.lock().relay_hub.is_some() {
+            break;
+        }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    assert!(b_state.lock().relay_hub.is_some(), "Bob hub must register on the WS relay");
+    assert!(
+        b_state.lock().relay_hub.is_some(),
+        "Bob hub must register on the WS relay"
+    );
     publish_endpoint_if_ready(&b_state).await;
-    let b_pk = b_acct.get_public_key_hex(Empty {}).await.unwrap().into_inner().hex;
+    let b_pk = b_acct
+        .get_public_key_hex(Empty {})
+        .await
+        .unwrap()
+        .into_inner()
+        .hex;
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     // ── Alice (sender) ───────────────────────────────────────────────────────
@@ -561,18 +784,31 @@ async fn text_delivers_between_two_daemons_over_ws_relay() {
     let a_url = format!("http://{a_grpc}");
     let mut a_acct = AccountServiceClient::connect(a_url.clone()).await.unwrap();
     a_acct
-        .create_identity(CreateIdentityRequest { display_name: "Alice".into() })
+        .create_identity(CreateIdentityRequest {
+            display_name: "Alice".into(),
+        })
         .await
         .unwrap();
     for _ in 0..100 {
-        if a_state.lock().relay_hub.is_some() { break; }
+        if a_state.lock().relay_hub.is_some() {
+            break;
+        }
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
-    assert!(a_state.lock().relay_hub.is_some(), "Alice hub must register on the WS relay");
+    assert!(
+        a_state.lock().relay_hub.is_some(),
+        "Alice hub must register on the WS relay"
+    );
 
     // Bob published a ws:// endpoint; Alice resolves a wsrelay:// URI.
-    let resolved = resolve_peer(&dht_a, &b_pk).await.expect("resolve Bob via DHT").0;
-    assert!(resolved.iter().any(|a| a.starts_with("wsrelay://")), "Bob must publish a WS relay URI: {resolved:?}");
+    let resolved = resolve_peer(&dht_a, &b_pk)
+        .await
+        .expect("resolve Bob via DHT")
+        .0;
+    assert!(
+        resolved.iter().any(|a| a.starts_with("wsrelay://")),
+        "Bob must publish a WS relay URI: {resolved:?}"
+    );
 
     a_state.lock().contacts.push(Contact {
         id: b_pk.clone(),
@@ -582,17 +818,29 @@ async fn text_delivers_between_two_daemons_over_ws_relay() {
         blocked: false,
         address: None,
         hybrid_public_key: None,
-            limits: None,
+        limits: None,
     });
 
     let mut a_msg = MessageServiceClient::connect(a_url.clone()).await.unwrap();
     a_msg
-        .send_text(SendTextRequest { contact_id: b_pk.clone(), text: "over the websocket relay".into(), reply_to: String::new() })
+        .send_text(SendTextRequest {
+            contact_id: b_pk.clone(),
+            text: "over the websocket relay".into(),
+            reply_to: String::new(),
+        })
         .await
         .unwrap();
     for _ in 0..1000 {
         pump_transport(&a_state).await;
-        if b_state.lock().messages.values().flatten().any(|m| m.text == "over the websocket relay") { break; }
+        if b_state
+            .lock()
+            .messages
+            .values()
+            .flatten()
+            .any(|m| m.text == "over the websocket relay")
+        {
+            break;
+        }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     let s = b_state.lock();
@@ -612,8 +860,16 @@ async fn text_delivers_between_two_daemons_over_ws_relay() {
 async fn peer_discovers_direct_address_and_connects_without_a_relay() {
     let _guard = relay_test_lock().await;
     // No relay at all. Two DHT nodes that know each other.
-    let dht_a = Arc::new(transferd_relay::DhtNode::start("127.0.0.1:0", [0x51u8; 32]).await.unwrap());
-    let dht_b = Arc::new(transferd_relay::DhtNode::start("127.0.0.1:0", [0x52u8; 32]).await.unwrap());
+    let dht_a = Arc::new(
+        transferd_relay::DhtNode::start("127.0.0.1:0", [0x51u8; 32])
+            .await
+            .unwrap(),
+    );
+    let dht_b = Arc::new(
+        transferd_relay::DhtNode::start("127.0.0.1:0", [0x52u8; 32])
+            .await
+            .unwrap(),
+    );
     let (da, db) = (dht_a.addr(), dht_b.addr());
     dht_a.bootstrap(vec![db]).await;
     dht_b.bootstrap(vec![da]).await;
@@ -625,7 +881,9 @@ async fn peer_discovers_direct_address_and_connects_without_a_relay() {
     let b_url = format!("http://{b_grpc}");
     let mut b_acct = AccountServiceClient::connect(b_url.clone()).await.unwrap();
     b_acct
-        .create_identity(CreateIdentityRequest { display_name: "Bob".into() })
+        .create_identity(CreateIdentityRequest {
+            display_name: "Bob".into(),
+        })
         .await
         .unwrap();
     // Spawn the peer transport listener (localhost for the test) + record it.
@@ -637,7 +895,12 @@ async fn peer_discovers_direct_address_and_connects_without_a_relay() {
     .unwrap();
     b_state.lock().peer_listen = Some(b_listener);
     publish_endpoint_if_ready(&b_state).await;
-    let b_pk = b_acct.get_public_key_hex(Empty {}).await.unwrap().into_inner().hex;
+    let b_pk = b_acct
+        .get_public_key_hex(Empty {})
+        .await
+        .unwrap()
+        .into_inner()
+        .hex;
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     // ── Alice ─────────────────────────────────────────────────────────────────
@@ -647,14 +910,25 @@ async fn peer_discovers_direct_address_and_connects_without_a_relay() {
     let a_url = format!("http://{a_grpc}");
     let mut a_acct = AccountServiceClient::connect(a_url.clone()).await.unwrap();
     a_acct
-        .create_identity(CreateIdentityRequest { display_name: "Alice".into() })
+        .create_identity(CreateIdentityRequest {
+            display_name: "Alice".into(),
+        })
         .await
         .unwrap();
 
     // Bob published a DIRECT address (no relay configured at all).
-    let resolved = resolve_peer(&dht_a, &b_pk).await.expect("resolve Bob via DHT").0;
-    assert!(resolved.iter().any(|a| a.starts_with("tcp://")), "Bob must publish a direct tcp:// address: {resolved:?}");
-    assert!(!resolved.iter().any(|a| a.starts_with("relay://")), "no relay should be published: {resolved:?}");
+    let resolved = resolve_peer(&dht_a, &b_pk)
+        .await
+        .expect("resolve Bob via DHT")
+        .0;
+    assert!(
+        resolved.iter().any(|a| a.starts_with("tcp://")),
+        "Bob must publish a direct tcp:// address: {resolved:?}"
+    );
+    assert!(
+        !resolved.iter().any(|a| a.starts_with("relay://")),
+        "no relay should be published: {resolved:?}"
+    );
 
     a_state.lock().contacts.push(Contact {
         id: b_pk.clone(),
@@ -664,17 +938,29 @@ async fn peer_discovers_direct_address_and_connects_without_a_relay() {
         blocked: false,
         address: None,
         hybrid_public_key: None,
-            limits: None,
+        limits: None,
     });
 
     let mut a_msg = MessageServiceClient::connect(a_url.clone()).await.unwrap();
     a_msg
-        .send_text(SendTextRequest { contact_id: b_pk.clone(), text: "straight to the tailnet".into(), reply_to: String::new() })
+        .send_text(SendTextRequest {
+            contact_id: b_pk.clone(),
+            text: "straight to the tailnet".into(),
+            reply_to: String::new(),
+        })
         .await
         .unwrap();
     for _ in 0..500 {
         pump_transport(&a_state).await;
-        if b_state.lock().messages.values().flatten().any(|m| m.text == "straight to the tailnet") { break; }
+        if b_state
+            .lock()
+            .messages
+            .values()
+            .flatten()
+            .any(|m| m.text == "straight to the tailnet")
+        {
+            break;
+        }
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
     let s = b_state.lock();
@@ -695,15 +981,23 @@ async fn peer_discovers_direct_address_and_connects_without_a_relay() {
 #[tokio::test]
 #[ignore]
 async fn text_delivers_between_two_daemons_over_public_cloudflare_worker() {
-let _guard = relay_test_lock().await;
+    let _guard = relay_test_lock().await;
     std::env::set_var(
         "TRANSFERD_RELAY_ADDR",
         "wss://transferd-relay.limpidluci.workers.dev:443",
     );
 
     // Two loopback DHT nodes for discovery; the RELAY is the public Worker.
-    let dht_a = Arc::new(transferd_relay::DhtNode::start("127.0.0.1:0", [0x61u8; 32]).await.unwrap());
-    let dht_b = Arc::new(transferd_relay::DhtNode::start("127.0.0.1:0", [0x62u8; 32]).await.unwrap());
+    let dht_a = Arc::new(
+        transferd_relay::DhtNode::start("127.0.0.1:0", [0x61u8; 32])
+            .await
+            .unwrap(),
+    );
+    let dht_b = Arc::new(
+        transferd_relay::DhtNode::start("127.0.0.1:0", [0x62u8; 32])
+            .await
+            .unwrap(),
+    );
     let (da, db) = (dht_a.addr(), dht_b.addr());
     dht_a.bootstrap(vec![db]).await;
     dht_b.bootstrap(vec![da]).await;
@@ -714,14 +1008,29 @@ let _guard = relay_test_lock().await;
     let b_grpc = start_grpc(b_state.clone()).await;
     let b_url = format!("http://{b_grpc}");
     let mut b_acct = AccountServiceClient::connect(b_url.clone()).await.unwrap();
-    b_acct.create_identity(CreateIdentityRequest { display_name: "Bob".into() }).await.unwrap();
+    b_acct
+        .create_identity(CreateIdentityRequest {
+            display_name: "Bob".into(),
+        })
+        .await
+        .unwrap();
     for _ in 0..300 {
-        if b_state.lock().relay_hub.is_some() { break; }
+        if b_state.lock().relay_hub.is_some() {
+            break;
+        }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    assert!(b_state.lock().relay_hub.is_some(), "Bob hub must register on the public Worker");
+    assert!(
+        b_state.lock().relay_hub.is_some(),
+        "Bob hub must register on the public Worker"
+    );
     publish_endpoint_if_ready(&b_state).await;
-    let b_pk = b_acct.get_public_key_hex(Empty {}).await.unwrap().into_inner().hex;
+    let b_pk = b_acct
+        .get_public_key_hex(Empty {})
+        .await
+        .unwrap()
+        .into_inner()
+        .hex;
     tokio::time::sleep(Duration::from_millis(500)).await;
 
     // ── Alice ────────────────────────────────────────────────────────────────
@@ -730,15 +1039,31 @@ let _guard = relay_test_lock().await;
     let a_grpc = start_grpc(a_state.clone()).await;
     let a_url = format!("http://{a_grpc}");
     let mut a_acct = AccountServiceClient::connect(a_url.clone()).await.unwrap();
-    a_acct.create_identity(CreateIdentityRequest { display_name: "Alice".into() }).await.unwrap();
+    a_acct
+        .create_identity(CreateIdentityRequest {
+            display_name: "Alice".into(),
+        })
+        .await
+        .unwrap();
     for _ in 0..300 {
-        if a_state.lock().relay_hub.is_some() { break; }
+        if a_state.lock().relay_hub.is_some() {
+            break;
+        }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    assert!(a_state.lock().relay_hub.is_some(), "Alice hub must register on the public Worker");
+    assert!(
+        a_state.lock().relay_hub.is_some(),
+        "Alice hub must register on the public Worker"
+    );
 
-    let resolved = resolve_peer(&dht_a, &b_pk).await.expect("resolve Bob via DHT").0;
-    assert!(resolved.iter().any(|a| a.starts_with("wsrelay://")), "Bob must publish a wsrelay URI: {resolved:?}");
+    let resolved = resolve_peer(&dht_a, &b_pk)
+        .await
+        .expect("resolve Bob via DHT")
+        .0;
+    assert!(
+        resolved.iter().any(|a| a.starts_with("wsrelay://")),
+        "Bob must publish a wsrelay URI: {resolved:?}"
+    );
 
     a_state.lock().contacts.push(Contact {
         id: b_pk.clone(),
@@ -748,17 +1073,29 @@ let _guard = relay_test_lock().await;
         blocked: false,
         address: None,
         hybrid_public_key: None,
-            limits: None,
+        limits: None,
     });
 
     let mut a_msg = MessageServiceClient::connect(a_url.clone()).await.unwrap();
     a_msg
-        .send_text(SendTextRequest { contact_id: b_pk.clone(), text: "across the internet via the cloudflare worker".into(), reply_to: String::new() })
+        .send_text(SendTextRequest {
+            contact_id: b_pk.clone(),
+            text: "across the internet via the cloudflare worker".into(),
+            reply_to: String::new(),
+        })
         .await
         .unwrap();
     for _ in 0..600 {
         pump_transport(&a_state).await;
-        if b_state.lock().messages.values().flatten().any(|m| m.text == "across the internet via the cloudflare worker") { break; }
+        if b_state
+            .lock()
+            .messages
+            .values()
+            .flatten()
+            .any(|m| m.text == "across the internet via the cloudflare worker")
+        {
+            break;
+        }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     let s = b_state.lock();
@@ -771,10 +1108,6 @@ let _guard = relay_test_lock().await;
     assert!(!got.outbound);
 }
 
-
-
-
-
 /// LIVE ON-DEVICE E2E: the DESKTOP daemon delivers a message to the real Kindle
 /// through the deployed Cloudflare Worker. The Kindle's relay token is
 /// identity-derived (relay_token_for), so the desktop addresses it directly via
@@ -784,27 +1117,42 @@ let _guard = relay_test_lock().await;
 #[ignore]
 async fn desktop_sends_to_real_kindle_over_public_worker() {
     let _guard = relay_test_lock().await;
-    std::env::set_var("TRANSFERD_RELAY_ADDR", "wss://transferd-relay.limpidluci.workers.dev:443");
+    std::env::set_var(
+        "TRANSFERD_RELAY_ADDR",
+        "wss://transferd-relay.limpidluci.workers.dev:443",
+    );
 
     let a_state = new_state();
     let a_grpc = start_grpc(a_state.clone()).await;
     let a_url = format!("http://{a_grpc}");
     let mut a_acct = AccountServiceClient::connect(a_url.clone()).await.unwrap();
-    a_acct.create_identity(CreateIdentityRequest { display_name: "Desktop".into() }).await.unwrap();
+    a_acct
+        .create_identity(CreateIdentityRequest {
+            display_name: "Desktop".into(),
+        })
+        .await
+        .unwrap();
     for _ in 0..300 {
-        if a_state.lock().relay_hub.is_some() { break; }
+        if a_state.lock().relay_hub.is_some() {
+            break;
+        }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    assert!(a_state.lock().relay_hub.is_some(), "desktop hub must register on the Worker");
+    assert!(
+        a_state.lock().relay_hub.is_some(),
+        "desktop hub must register on the Worker"
+    );
 
-// The Kindle's public key (from env KINDLE_PK; identity is re-created each
+    // The Kindle's public key (from env KINDLE_PK; identity is re-created each
     // app launch since the mobile daemon doesn't persist it across restarts).
-    let kindle_pk = std::env::var("KINDLE_PK").unwrap_or_else(|_| "26da5db79219f42b9d30965cbcf7805e8ba0d044dca624108d49236e678fd818".into());
+    let kindle_pk = std::env::var("KINDLE_PK").unwrap_or_else(|_| {
+        "26da5db79219f42b9d30965cbcf7805e8ba0d044dca624108d49236e678fd818".into()
+    });
     let token_hex = hex::encode(relay_token_for(kindle_pk.as_str()));
     let kindle_addr = format!("wsrelay://transferd-relay.limpidluci.workers.dev:443/{token_hex}");
     eprintln!("[diag] kindle relay token: {token_hex}");
 
-a_state.lock().contacts.push(Contact {
+    a_state.lock().contacts.push(Contact {
         id: kindle_pk.to_string(),
         name: "Kindle".into(),
         last_seen_ts: 0,
@@ -819,12 +1167,26 @@ a_state.lock().contacts.push(Contact {
     {
         let s = a_state.lock();
         if let Some(hub) = &s.relay_hub {
-            eprintln!("[diag] desktop self_token = {}", hex::encode(hub.self_token()));
-            eprintln!("[diag] kindle token       = {}", hex::encode(relay_token_for(kindle_pk.as_str())));
+            eprintln!(
+                "[diag] desktop self_token = {}",
+                hex::encode(hub.self_token())
+            );
+            eprintln!(
+                "[diag] kindle token       = {}",
+                hex::encode(relay_token_for(kindle_pk.as_str()))
+            );
             let id = s.hybrid_signing_key().expect("desktop identity");
             let spec = hub.relay_specs()[0];
-            let result = hub.initiate(relay_token_for(kindle_pk.as_str()), &id, spec.0).await;
-            eprintln!("[diag] hub.initiate(kindle) via {} = {:?}", spec.0, result.as_ref().map(|pk| format!("{}..", hex::encode(&pk[..4]))));
+            let result = hub
+                .initiate(relay_token_for(kindle_pk.as_str()), &id, spec.0)
+                .await;
+            eprintln!(
+                "[diag] hub.initiate(kindle) via {} = {:?}",
+                spec.0,
+                result
+                    .as_ref()
+                    .map(|pk| format!("{}..", hex::encode(&pk[..4])))
+            );
             // Probe-only: if the handshake didn't establish, FAIL loudly — this is an
             // E2E test, not a diagnostic tool.
             if result.is_err() {
@@ -835,28 +1197,47 @@ a_state.lock().contacts.push(Contact {
         }
     }
 
-let mut a_msg = MessageServiceClient::connect(a_url.clone()).await.unwrap();
+    let mut a_msg = MessageServiceClient::connect(a_url.clone()).await.unwrap();
     a_msg
-        .send_text(SendTextRequest { contact_id: kindle_pk.to_string(), text: "across the internet to the kindle via the cloudflare worker".into(), reply_to: String::new() })
+        .send_text(SendTextRequest {
+            contact_id: kindle_pk.to_string(),
+            text: "across the internet to the kindle via the cloudflare worker".into(),
+            reply_to: String::new(),
+        })
         .await
         .expect("send must be accepted");
     for _ in 0..300 {
         pump_transport(&a_state).await;
-        let sent = a_state.lock().messages.values().flatten()
-            .any(|m| m.text == "across the internet to the kindle via the cloudflare worker" && m.status == "delivered");
-        if sent { break; }
+        let sent = a_state.lock().messages.values().flatten().any(|m| {
+            m.text == "across the internet to the kindle via the cloudflare worker"
+                && m.status == "delivered"
+        });
+        if sent {
+            break;
+        }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     let s = a_state.lock();
-    let m = s.messages.values().flatten()
+    let m = s
+        .messages
+        .values()
+        .flatten()
         .find(|m| m.text == "across the internet to the kindle via the cloudflare worker")
         .expect("message must be found");
-let hub = a_state.lock().relay_hub.clone();
+    let hub = a_state.lock().relay_hub.clone();
     if let Some(hub) = hub {
         let tok = relay_token_for(kindle_pk.as_str());
-        eprintln!("[diag] desktop hub has_session(kindle)={} root={:?}", hub.has_session(tok).await, hub.session_root(tok).await.map(|r| format!("{r:02x?}")));
+        eprintln!(
+            "[diag] desktop hub has_session(kindle)={} root={:?}",
+            hub.has_session(tok).await,
+            hub.session_root(tok).await.map(|r| format!("{r:02x?}"))
+        );
     }
-    assert_eq!(m.status, "delivered", "relay must DELIVER to the Kindle (not just ack): {:?}", m.status);
+    assert_eq!(
+        m.status, "delivered",
+        "relay must DELIVER to the Kindle (not just ack): {:?}",
+        m.status
+    );
 }
 
 /// Compute relay tokens for a set of historical Kindle pks to identify a
@@ -898,7 +1279,12 @@ async fn desktop_sends_to_kindle_over_tailnet_direct_lane() {
     let a_grpc = start_grpc(a_state.clone()).await;
     let a_url = format!("http://{a_grpc}");
     let mut a_acct = AccountServiceClient::connect(a_url.clone()).await.unwrap();
-    a_acct.create_identity(CreateIdentityRequest { display_name: "Desktop".into() }).await.unwrap();
+    a_acct
+        .create_identity(CreateIdentityRequest {
+            display_name: "Desktop".into(),
+        })
+        .await
+        .unwrap();
 
     a_state.lock().contacts.push(Contact {
         id: kindle_pk.clone(),
@@ -913,21 +1299,35 @@ async fn desktop_sends_to_kindle_over_tailnet_direct_lane() {
 
     let mut a_msg = MessageServiceClient::connect(a_url.clone()).await.unwrap();
     a_msg
-        .send_text(SendTextRequest { contact_id: kindle_pk.clone(), text: "over the tailnet direct lane (no relay)".into(), reply_to: String::new() })
+        .send_text(SendTextRequest {
+            contact_id: kindle_pk.clone(),
+            text: "over the tailnet direct lane (no relay)".into(),
+            reply_to: String::new(),
+        })
         .await
         .expect("send must be accepted");
     for _ in 0..300 {
         pump_transport(&a_state).await;
-        let sent = a_state.lock().messages.values().flatten()
-            .any(|m| m.text == "over the tailnet direct lane (no relay)" && m.status == "delivered");
-        if sent { break; }
+        let sent = a_state.lock().messages.values().flatten().any(|m| {
+            m.text == "over the tailnet direct lane (no relay)" && m.status == "delivered"
+        });
+        if sent {
+            break;
+        }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-let s = a_state.lock();
-    let m = s.messages.values().flatten()
+    let s = a_state.lock();
+    let m = s
+        .messages
+        .values()
+        .flatten()
         .find(|m| m.text == "over the tailnet direct lane (no relay)")
         .expect("message must reach 'delivered' (tailnet direct lane acked)");
-    assert_eq!(m.status, "delivered", "tailnet direct lane must deliver: {:?}", m.status);
+    assert_eq!(
+        m.status, "delivered",
+        "tailnet direct lane must deliver: {:?}",
+        m.status
+    );
 }
 
 /// LIVE TAILNET DIRECT-LANE E2E to the XIAOMI (Redmi Note 12 Pro 5G,
@@ -943,7 +1343,12 @@ async fn desktop_sends_to_xiaomi_over_tailnet_direct_lane() {
     let a_grpc = start_grpc(a_state.clone()).await;
     let a_url = format!("http://{a_grpc}");
     let mut a_acct = AccountServiceClient::connect(a_url.clone()).await.unwrap();
-    a_acct.create_identity(CreateIdentityRequest { display_name: "Desktop".into() }).await.unwrap();
+    a_acct
+        .create_identity(CreateIdentityRequest {
+            display_name: "Desktop".into(),
+        })
+        .await
+        .unwrap();
 
     a_state.lock().contacts.push(Contact {
         id: xiaomi_pk.clone(),
@@ -958,21 +1363,35 @@ async fn desktop_sends_to_xiaomi_over_tailnet_direct_lane() {
 
     let mut a_msg = MessageServiceClient::connect(a_url.clone()).await.unwrap();
     a_msg
-        .send_text(SendTextRequest { contact_id: xiaomi_pk.clone(), text: "over the tailnet to the xiaomi (no relay)".into(), reply_to: String::new() })
+        .send_text(SendTextRequest {
+            contact_id: xiaomi_pk.clone(),
+            text: "over the tailnet to the xiaomi (no relay)".into(),
+            reply_to: String::new(),
+        })
         .await
         .expect("send must be accepted");
     for _ in 0..300 {
         pump_transport(&a_state).await;
-        let sent = a_state.lock().messages.values().flatten()
-.any(|m| m.text == "over the tailnet to the xiaomi (no relay)" && m.status == "delivered");
-        if sent { break; }
+        let sent = a_state.lock().messages.values().flatten().any(|m| {
+            m.text == "over the tailnet to the xiaomi (no relay)" && m.status == "delivered"
+        });
+        if sent {
+            break;
+        }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     let s = a_state.lock();
-    let m = s.messages.values().flatten()
+    let m = s
+        .messages
+        .values()
+        .flatten()
         .find(|m| m.text == "over the tailnet to the xiaomi (no relay)")
         .expect("message must reach sent/delivered (tailnet direct lane)");
-    assert_eq!(m.status, "delivered", "tailnet direct lane must deliver: {:?}", m.status);
+    assert_eq!(
+        m.status, "delivered",
+        "tailnet direct lane must deliver: {:?}",
+        m.status
+    );
 }
 
 /// LIVE RELAY-PATH E2E to the XIAOMI: the desktop routes to the Xiaomi through
@@ -982,7 +1401,10 @@ async fn desktop_sends_to_xiaomi_over_tailnet_direct_lane() {
 #[ignore]
 async fn desktop_sends_to_xiaomi_over_public_worker() {
     let _guard = relay_test_lock().await;
-    std::env::set_var("TRANSFERD_RELAY_ADDR", "wss://transferd-relay.limpidluci.workers.dev:443");
+    std::env::set_var(
+        "TRANSFERD_RELAY_ADDR",
+        "wss://transferd-relay.limpidluci.workers.dev:443",
+    );
     let xiaomi_pk = std::env::var("XIAOMI_PK").unwrap_or_default();
     let token = hex::encode(relay_token_for(xiaomi_pk.as_str()));
     let xiaomi_addr = format!("wsrelay://transferd-relay.limpidluci.workers.dev:443/{token}");
@@ -991,12 +1413,22 @@ async fn desktop_sends_to_xiaomi_over_public_worker() {
     let a_grpc = start_grpc(a_state.clone()).await;
     let a_url = format!("http://{a_grpc}");
     let mut a_acct = AccountServiceClient::connect(a_url.clone()).await.unwrap();
-    a_acct.create_identity(CreateIdentityRequest { display_name: "Desktop".into() }).await.unwrap();
+    a_acct
+        .create_identity(CreateIdentityRequest {
+            display_name: "Desktop".into(),
+        })
+        .await
+        .unwrap();
     for _ in 0..300 {
-        if a_state.lock().relay_hub.is_some() { break; }
+        if a_state.lock().relay_hub.is_some() {
+            break;
+        }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    assert!(a_state.lock().relay_hub.is_some(), "desktop hub must register on the Worker");
+    assert!(
+        a_state.lock().relay_hub.is_some(),
+        "desktop hub must register on the Worker"
+    );
 
     a_state.lock().contacts.push(Contact {
         id: xiaomi_pk.clone(),
@@ -1011,21 +1443,35 @@ async fn desktop_sends_to_xiaomi_over_public_worker() {
 
     let mut a_msg = MessageServiceClient::connect(a_url.clone()).await.unwrap();
     a_msg
-        .send_text(SendTextRequest { contact_id: xiaomi_pk.clone(), text: "to the xiaomi via the cloudflare worker relay".into(), reply_to: String::new() })
+        .send_text(SendTextRequest {
+            contact_id: xiaomi_pk.clone(),
+            text: "to the xiaomi via the cloudflare worker relay".into(),
+            reply_to: String::new(),
+        })
         .await
         .expect("send must be accepted");
-for _ in 0..300 {
+    for _ in 0..300 {
         pump_transport(&a_state).await;
-        let sent = a_state.lock().messages.values().flatten()
-            .any(|m| m.text == "to the xiaomi via the cloudflare worker relay" && m.status == "delivered");
-        if sent { break; }
+        let sent = a_state.lock().messages.values().flatten().any(|m| {
+            m.text == "to the xiaomi via the cloudflare worker relay" && m.status == "delivered"
+        });
+        if sent {
+            break;
+        }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     let s = a_state.lock();
-    let m = s.messages.values().flatten()
+    let m = s
+        .messages
+        .values()
+        .flatten()
         .find(|m| m.text == "to the xiaomi via the cloudflare worker relay")
         .expect("message must be found");
-    assert_eq!(m.status, "delivered", "relay path must DELIVER to the Xiaomi (not just ack): {:?}", m.status);
+    assert_eq!(
+        m.status, "delivered",
+        "relay path must DELIVER to the Xiaomi (not just ack): {:?}",
+        m.status
+    );
 }
 
 /// LIVE TAILNET WS-RELAY E2E: the desktop delivers to the real Kindle through
@@ -1047,12 +1493,22 @@ async fn desktop_sends_to_kindle_over_local_tailnet_ws_relay() {
     let a_grpc = start_grpc(a_state.clone()).await;
     let a_url = format!("http://{a_grpc}");
     let mut a_acct = AccountServiceClient::connect(a_url.clone()).await.unwrap();
-    a_acct.create_identity(CreateIdentityRequest { display_name: "Desktop".into() }).await.unwrap();
+    a_acct
+        .create_identity(CreateIdentityRequest {
+            display_name: "Desktop".into(),
+        })
+        .await
+        .unwrap();
     for _ in 0..300 {
-        if a_state.lock().relay_hub.is_some() { break; }
+        if a_state.lock().relay_hub.is_some() {
+            break;
+        }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
-    assert!(a_state.lock().relay_hub.is_some(), "desktop hub must register on the local relay");
+    assert!(
+        a_state.lock().relay_hub.is_some(),
+        "desktop hub must register on the local relay"
+    );
 
     a_state.lock().contacts.push(Contact {
         id: kindle_pk.clone(),
@@ -1067,19 +1523,33 @@ async fn desktop_sends_to_kindle_over_local_tailnet_ws_relay() {
 
     let mut a_msg = MessageServiceClient::connect(a_url.clone()).await.unwrap();
     a_msg
-        .send_text(SendTextRequest { contact_id: kindle_pk.clone(), text: "to the kindle via the local tailnet ws relay".into(), reply_to: String::new() })
+        .send_text(SendTextRequest {
+            contact_id: kindle_pk.clone(),
+            text: "to the kindle via the local tailnet ws relay".into(),
+            reply_to: String::new(),
+        })
         .await
         .expect("send must be accepted");
     for _ in 0..300 {
         pump_transport(&a_state).await;
-        let sent = a_state.lock().messages.values().flatten()
-            .any(|m| m.text == "to the kindle via the local tailnet ws relay" && m.status == "delivered");
-        if sent { break; }
+        let sent = a_state.lock().messages.values().flatten().any(|m| {
+            m.text == "to the kindle via the local tailnet ws relay" && m.status == "delivered"
+        });
+        if sent {
+            break;
+        }
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
     let s = a_state.lock();
-    let m = s.messages.values().flatten()
+    let m = s
+        .messages
+        .values()
+        .flatten()
         .find(|m| m.text == "to the kindle via the local tailnet ws relay")
         .expect("message must be found");
-    assert_eq!(m.status, "delivered", "must DELIVER to the Kindle via the local relay: {:?}", m.status);
+    assert_eq!(
+        m.status, "delivered",
+        "must DELIVER to the Kindle via the local relay: {:?}",
+        m.status
+    );
 }
