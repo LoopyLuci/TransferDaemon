@@ -7,6 +7,8 @@
   dropped. Each session now starts its frame numbers at a random point. Its stream ids start at a random point too, so
   a restarted peer's first stream is not taken for resends of the old process's data. This makes the first share
   listing after an Android app restart work without restarting the desktop daemon.
+- **Fix:** saving the overlay's state no longer fails with "No such file or directory" when several saves run at once,
+  as they do while a fresh node brings its first routes up. Each save writes its own temporary file.
 
 ## 2.3.0 — 2026-10-10
 
