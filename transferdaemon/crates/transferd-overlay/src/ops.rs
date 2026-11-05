@@ -12,6 +12,7 @@
 //! | `overlay.invite_accept` | `{invite, name?}` | `{node_id, name}` |
 //! | `overlay.expose` | `{service, local_addr, allow}` | — |
 //! | `overlay.unexpose` | `{service}` | — |
+//! | `overlay.unpair` | `{node_id}` | — |
 //! | `overlay.connect` | `{node_id\|group, service}` | `{local_addr, route}` |
 //! | `overlay.disconnect` | `{local_addr}` | — |
 //! | `overlay.services` | — | — |
@@ -72,6 +73,11 @@ pub async fn call(node: &Arc<OverlayNode>, op: &str, args: Value) -> Result<Valu
         "overlay.unexpose" => {
             let service = str_arg(&args, "service")?;
             node.unexpose(&service)?;
+            Ok(json!({}))
+        }
+        "overlay.unpair" => {
+            let node_id = str_arg(&args, "node_id")?;
+            node.unpair(&node_id).await?;
             Ok(json!({}))
         }
         "overlay.connect" => {
@@ -224,6 +230,7 @@ pub fn operations() -> Vec<(&'static str, &'static str, bool, Value, Value)> {
         ("overlay.connect", "Reach a node's service (by node id or by group) and get a stable local endpoint", true,
             obj(json!({"node_id": {"type": "string"}, "group": {"type": "string"}, "service": {"type": "string"}}), &["service"]),
             obj(json!({"local_addr": {"type": "string"}, "route": {"type": "string"}, "service": {"type": "string"}}), &[])),
+        ("overlay.unpair", "Forget a paired node: its record and key, its session, and its place in every access list and group. Pairing with it again takes a new invite", true, obj(json!({"node_id": {"type": "string"}}), &["node_id"]), obj(json!({}), &[])),
         ("overlay.disconnect", "Close a forwarded endpoint", true, obj(json!({"local_addr": {"type": "string"}}), &["local_addr"]), obj(json!({}), &[])),
         ("overlay.services", "What this node exposes, what it has connected, and its service groups", false, obj(json!({}), &[]),
             obj(json!({"exposed": {"type": "array"}, "connected": {"type": "array"}, "groups": {"type": "array"}}), &[])),
@@ -434,15 +441,17 @@ mod tests {
                     json!({"node_id": &"a".repeat(64), "service": "http"})
                 }
                 "overlay.disconnect" => json!({"local_addr": "127.0.0.1:1"}),
+                "overlay.unpair" => json!({"node_id": &"a".repeat(64)}),
                 "overlay.group_set" => json!({"name": "g", "members": []}),
                 _ => json!({}),
             };
             let result = call(&node, id, args).await;
-            // These reach outside the node by design (a peer, or an invite from someone else);
-            // everything else must answer with nothing but this node.
+            // These need a reachable peer, an invite from someone else, or a node we are paired
+            // with; with none of those they refuse. Everything else must answer with nothing but
+            // this node.
             if matches!(
                 id,
-                "overlay.connect" | "overlay.probe" | "overlay.invite_accept"
+                "overlay.connect" | "overlay.probe" | "overlay.invite_accept" | "overlay.unpair"
             ) {
                 assert!(
                     result.is_err(),

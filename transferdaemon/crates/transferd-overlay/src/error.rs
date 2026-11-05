@@ -29,6 +29,10 @@ pub enum OverlayError {
     #[error("{node} may not use service {service:?}")]
     Denied { node: String, service: String },
 
+    /// The node is not paired with this one, so there is nothing to forget.
+    #[error("{node} is not paired with this node")]
+    NotPaired { node: String },
+
     /// The service's rate limit refused the connection.
     #[error("service {service:?} is rate limited ({reason})")]
     RateLimited { service: String, reason: String },
@@ -74,6 +78,7 @@ impl OverlayError {
             Self::Unreachable { .. } => "unreachable",
             Self::NoSuchService { .. } => "no_such_service",
             Self::Denied { .. } => "denied",
+            Self::NotPaired { .. } => "not_paired",
             Self::RateLimited { .. } => "rate_limited",
             Self::GroupEmpty { .. } => "group_empty",
             Self::Listen { .. } => "listen_failed",

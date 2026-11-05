@@ -1804,6 +1804,40 @@ impl OverlayNode {
         })
     }
 
+    /// Forget a node we are paired with: its record and key leave the state file, its session is
+    /// shut down, and it leaves every access list and group. Pairing with it again takes a new
+    /// invite. This undoes only our side of the pairing: the node still lists us until it forgets
+    /// us too.
+    pub async fn unpair(&self, node_id: &str) -> Result<()> {
+        if self.inner.paired.lock().remove(node_id).is_none() {
+            return Err(OverlayError::NotPaired {
+                node: node_id.to_string(),
+            });
+        }
+        self.inner.presented.lock().remove(node_id);
+        for service in self.inner.exposes.write().values_mut() {
+            if let Acl::Nodes(nodes) = &mut service.allow {
+                nodes.retain(|n| n != &node_id.to_ascii_lowercase());
+            }
+        }
+        for members in self.inner.groups.write().values_mut() {
+            members.retain(|m| !m.eq_ignore_ascii_case(node_id));
+        }
+        let removed = self.inner.peers.lock().remove(node_id);
+        if let Some(peer) = removed {
+            peer.session.shutdown().await;
+        }
+        let mut state = self.load_state();
+        state.nodes.remove(node_id);
+        self.save_state_with(&state);
+        self.save_state();
+        self.emit(OverlayEvent::new("peer.unpaired", node_id, "forgotten"));
+        let mut record = AuditRecord::new("unpair");
+        record.peer = node_id.to_string();
+        self.audit(record);
+        Ok(())
+    }
+
     /// Publish addresses a peer may try to dial us on directly.
     ///
     /// They travel in this node's invites, so a peer that pairs with us learns them; a node
@@ -2140,5 +2174,70 @@ mod tests {
         assert_eq!(paired[0].node_id, a.node_id());
         assert_eq!(paired[0].name, "laptop");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn unpairing_forgets_the_node_across_a_restart() {
+        let dir = std::env::temp_dir().join(format!("tdov-unpair-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let state_path = dir.join("overlay.json");
+        let with_state = |name: &str| OverlayConfig {
+            state_path: Some(state_path.clone()),
+            ..OverlayConfig::local(NodeIdentity::generate(name))
+        };
+        let a = OverlayNode::start(OverlayConfig::local(NodeIdentity::generate("a")))
+            .await
+            .expect("a node");
+        let b = OverlayNode::start(with_state("b")).await.expect("b node");
+        b.invite_accept(&a.invite_create(600), None).expect("pair");
+        b.unpair(&a.node_id()).await.expect("unpair");
+        assert!(b.paired_nodes().is_empty());
+        drop(b);
+
+        let b = OverlayNode::start(with_state("b"))
+            .await
+            .expect("b restarts");
+        assert!(b.paired_nodes().is_empty(), "the forgetting was saved too");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn unpairing_takes_a_node_out_of_every_access_list() {
+        let a = OverlayNode::start(OverlayConfig::local(NodeIdentity::generate("a")))
+            .await
+            .expect("a node");
+        let b = OverlayNode::start(OverlayConfig::local(NodeIdentity::generate("b")))
+            .await
+            .expect("b node");
+        b.invite_accept(&a.invite_create(600), None).expect("pair");
+        b.expose(
+            "http",
+            "127.0.0.1:1".parse().expect("an address"),
+            vec![a.node_id()],
+            "",
+        )
+        .expect("expose");
+        b.set_group("web", vec![a.node_id()]);
+        assert!(b.inner.exposes.read()["http"]
+            .allow
+            .permits(&a.node_id(), false));
+
+        b.unpair(&a.node_id()).await.expect("unpair");
+
+        assert!(!b.inner.exposes.read()["http"]
+            .allow
+            .permits(&a.node_id(), false));
+        assert!(b.groups().iter().all(|g| !g.members.contains(&a.node_id())));
+    }
+
+    #[tokio::test]
+    async fn unpairing_a_node_that_is_not_paired_is_an_error() {
+        let b = OverlayNode::start(OverlayConfig::local(NodeIdentity::generate("b")))
+            .await
+            .expect("b node");
+        assert!(matches!(
+            b.unpair(&"a".repeat(64)).await,
+            Err(OverlayError::NotPaired { .. })
+        ));
     }
 }
