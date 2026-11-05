@@ -1123,6 +1123,14 @@ impl Session {
         true
     }
 
+    /// Whether the frame at `key` has been out for longer than its route's smoothed round trip.
+    fn older_than_round_trip(&self, key: (u64, u64), now: Instant) -> bool {
+        self.inflight.get(&key).is_some_and(|e| {
+            let srtt = self.cc.get(&e.route).and_then(RouteCc::srtt);
+            now.duration_since(e.sent_at) > srtt.unwrap_or_default()
+        })
+    }
+
     /// Frames that outlived their route's timeout are lost: the route's window shrinks, its
     /// timeout doubles, and the frames go out again, on another route where there is one.
     fn expire(&mut self) {
@@ -1247,8 +1255,12 @@ impl Session {
             self.recover.remove(&stream);
         } else if cumulative > 0 && self.recover.contains_key(&stream) {
             // A partial acknowledgement: what it stops at was lost along with the frame just repaired.
+            // That needs a later frame to have arrived: with nothing above the gap, the frame in it
+            // may only be on its way, and an acknowledgement is a snapshot of what had arrived.
             let key = (stream, next);
-            if self.inflight.get(&key).is_some_and(|e| !e.retx) {
+            let original = self.inflight.get(&key).is_some_and(|e| !e.retx);
+            let overtaken = self.high_sack.get(&stream).is_some_and(|h| *h > next);
+            if original && overtaken && self.older_than_round_trip(key, now) {
                 self.mark_lost(key, now, "partial");
             }
         }
@@ -1286,11 +1298,7 @@ impl Session {
             entry.1 += 1;
             if entry.1 == DUP_ACKS {
                 let key = (stream, next);
-                let old_enough = self.inflight.get(&key).is_some_and(|e| {
-                    let srtt = self.cc.get(&e.route).and_then(RouteCc::srtt);
-                    now.duration_since(e.sent_at) > srtt.unwrap_or_default()
-                });
-                if old_enough {
+                if self.older_than_round_trip(key, now) {
                     self.mark_lost(key, now, "dupack");
                 }
             }
