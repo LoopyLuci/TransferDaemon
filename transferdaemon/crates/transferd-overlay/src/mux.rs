@@ -375,26 +375,43 @@ impl RecvSide {
 /// Every stream carries bytes both ways, so each one has a send side and a receive side on
 /// both ends. The two ends allocate ids from disjoint halves (odd and even), so a stream either
 /// end opens never collides with one the other opened.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct Mux {
     send: BTreeMap<u64, SendSide>,
     recv: BTreeMap<u64, RecvSide>,
+    /// The last id counted. It starts from a random point (see [`fresh_stream_base`]).
     next_stream: u64,
     /// This end allocates even ids rather than odd ones.
     even: bool,
 }
 
+/// A random point to count stream ids from. A restarted peer counts from the start again, and the
+/// other end may still hold the streams of the process it replaced; starting from a fresh point
+/// makes it unlikely that the new streams reuse those ids. 31 bits leave room to count up without
+/// overflowing.
+fn fresh_stream_base() -> u64 {
+    rand::random::<u64>() >> 33
+}
+
+impl Default for Mux {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Mux {
     /// A mux allocating odd stream ids.
     pub fn new() -> Self {
-        Self::default()
+        Self::with_parity(true)
     }
 
     /// A mux allocating odd ids (`odd`) or even ones; the two ends of a session must differ.
     pub fn with_parity(odd: bool) -> Self {
         Self {
+            send: BTreeMap::new(),
+            recv: BTreeMap::new(),
+            next_stream: fresh_stream_base(),
             even: !odd,
-            ..Self::default()
         }
     }
 
@@ -735,7 +752,12 @@ mod tests {
         m.send_side(b).expect("b").frame(b"two", false);
         let pending = m.pending_retransmits();
         assert_eq!(pending.len(), 2);
-        assert_eq!(pending[0].stream, a);
-        assert_eq!(pending[1].stream, b);
+        // Resends come out in stream-id order, and the ids are random, so compare in that order.
+        let mut expected = vec![a, b];
+        expected.sort();
+        assert_eq!(
+            pending.iter().map(|f| f.stream).collect::<Vec<_>>(),
+            expected
+        );
     }
 }

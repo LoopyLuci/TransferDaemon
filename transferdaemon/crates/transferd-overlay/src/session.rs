@@ -1873,11 +1873,11 @@ mod tests {
         }
     }
 
-    /// Waits for the next stream the peer asks to open, and accepts it.
+    /// Waits for the next stream the peer asks to open, accepts it, and returns its id.
     async fn accept_next_open(
         desk: &SessionHandle,
         events: &mut mpsc::UnboundedReceiver<SessionEvent>,
-    ) -> bool {
+    ) -> Option<StreamId> {
         while let Some(event) = events.recv().await {
             if let SessionEvent::OpenRequest {
                 stream, service, ..
@@ -1886,10 +1886,19 @@ mod tests {
                 return desk
                     .authorize(stream, service, true, String::new())
                     .await
-                    .is_ok();
+                    .ok()
+                    .map(|_| stream);
             }
         }
-        false
+        None
+    }
+
+    /// Reads the next bytes the desktop gets on a stream, or gives up after a few seconds.
+    async fn next_bytes(desk: &SessionHandle, stream: StreamId) -> Option<Vec<u8>> {
+        tokio::time::timeout(Duration::from_secs(5), desk.recv(stream))
+            .await
+            .ok()?
+            .ok()?
     }
 
     /// A peer process restarts and its new session comes up on a fresh route, while the desktop
@@ -1923,7 +1932,10 @@ mod tests {
             accept_next_open(&desk, &mut desk_events),
         )
         .await;
-        assert!(accepted.is_ok_and(|ok| ok), "the first open reaches the desktop");
+        assert!(
+            accepted.is_ok_and(|id| id.is_some()),
+            "the first open reaches the desktop"
+        );
         assert!(first.await.expect("join").is_ok(), "the first open is accepted");
 
         // The old process is gone, so its route carries nothing more. The desktop's session
@@ -1946,9 +1958,99 @@ mod tests {
         )
         .await;
         assert!(
-            heard.is_ok_and(|ok| ok),
+            heard.is_ok_and(|id| id.is_some()),
             "the desktop hears the restarted peer's open"
         );
         assert!(second.await.expect("join").is_ok(), "the restarted peer's open is accepted");
+    }
+
+    /// A peer process restarts and numbers its streams from the start again. The desktop still
+    /// holds the streams of the process it replaced, so the new process's first stream must not
+    /// land on one of them: its bytes would be taken for resends of data the desktop already has.
+    #[tokio::test]
+    async fn a_restarted_peer_first_stream_delivers_its_bytes() {
+        let desk_id = NodeIdentity::generate("desktop");
+        let phone_id = NodeIdentity::generate("phone");
+
+        let (desk_events_tx, mut desk_events) = mpsc::unbounded_channel();
+        let (old_route, phone_old_end) = link_pair(1);
+        let desk = spawn(
+            setup(&desk_id, &phone_id),
+            vec![old_route.clone() as Arc<dyn Link>],
+            desk_events_tx,
+        )
+        .await;
+
+        // The first phone process opens a stream and sends on it.
+        let (phone_old_tx, _phone_old_events) = mpsc::unbounded_channel();
+        let phone_first = spawn(
+            setup(&phone_id, &desk_id),
+            vec![phone_old_end as Arc<dyn Link>],
+            phone_old_tx,
+        )
+        .await;
+        let open = tokio::spawn(async move {
+            let stream = phone_first.open("cfs").await;
+            (phone_first, stream)
+        });
+        let accepted = tokio::time::timeout(
+            Duration::from_secs(5),
+            accept_next_open(&desk, &mut desk_events),
+        )
+        .await;
+        let first = accepted
+            .expect("the first open reaches the desktop")
+            .expect("the desktop accepts it");
+        let (phone_first, opened) = open.await.expect("join");
+        assert_eq!(opened.expect("the first open is accepted"), first);
+        phone_first
+            .send(first, b"first".to_vec(), false)
+            .await
+            .expect("the first send goes out");
+        assert_eq!(
+            next_bytes(&desk, first).await,
+            Some(b"first".to_vec()),
+            "the desktop reads the first stream"
+        );
+
+        // The old process is gone. The desktop keeps its session and takes the restarted phone
+        // on a new route.
+        phone_first.shutdown().await;
+        old_route.mark_down();
+        let (new_route, phone_new_end) = link_pair(2);
+        desk.add_link(new_route as Arc<dyn Link>).await;
+        let (phone_new_tx, _phone_new_events) = mpsc::unbounded_channel();
+        let phone_restarted = spawn(
+            setup(&phone_id, &desk_id),
+            vec![phone_new_end as Arc<dyn Link>],
+            phone_new_tx,
+        )
+        .await;
+        let open = tokio::spawn(async move {
+            let stream = phone_restarted.open("cfs").await;
+            (phone_restarted, stream)
+        });
+        let accepted = tokio::time::timeout(
+            Duration::from_secs(5),
+            accept_next_open(&desk, &mut desk_events),
+        )
+        .await;
+        let second = accepted
+            .expect("the desktop hears the restarted peer's open")
+            .expect("the desktop accepts it");
+        let (phone_restarted, opened) = open.await.expect("join");
+        assert_eq!(
+            opened.expect("the restarted peer's open is accepted"),
+            second
+        );
+        phone_restarted
+            .send(second, b"second".to_vec(), false)
+            .await
+            .expect("the restarted send goes out");
+        assert_eq!(
+            next_bytes(&desk, second).await,
+            Some(b"second".to_vec()),
+            "the desktop reads the restarted peer's bytes"
+        );
     }
 }

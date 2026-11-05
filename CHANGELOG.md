@@ -4,8 +4,9 @@
 
 - **Fix:** a peer that restarts and reconnects to a session still open on this side is heard. Its control frames
   were numbered from the start again, so they matched numbers the old process had used and were acknowledged but
-  dropped. Each session now starts its frame numbers at a random point. This makes the first share listing after an
-  Android app restart work without restarting the desktop daemon.
+  dropped. Each session now starts its frame numbers at a random point. Its stream ids start at a random point too, so
+  a restarted peer's first stream is not taken for resends of the old process's data. This makes the first share
+  listing after an Android app restart work without restarting the desktop daemon.
 
 ## 2.3.0 — 2026-10-10
 
