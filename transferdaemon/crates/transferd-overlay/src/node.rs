@@ -1906,6 +1906,7 @@ impl OverlayNode {
     }
 
     /// Whether this node is paired with `node_id`.
+    #[cfg(test)]
     pub(crate) fn is_paired(&self, node_id: &str) -> bool {
         self.inner.paired.lock().contains(node_id)
     }
