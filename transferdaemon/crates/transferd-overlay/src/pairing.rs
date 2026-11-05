@@ -34,6 +34,12 @@ const PAIRING_MAGIC: &[u8] = b"TDPAIR1";
 const MAX_METHOD_ID: usize = 32;
 /// How long the listener waits for enough of an inbound connection's first bytes to route it.
 const ROUTE_WAIT: Duration = Duration::from_secs(5);
+/// How long either side waits for the other in a short-code exchange. A connection that goes quiet
+/// fails within this time and gives its code back, so no connection can hold the code open.
+#[cfg(not(test))]
+const EXCHANGE_WAIT: Duration = Duration::from_secs(10);
+#[cfg(test)]
+const EXCHANGE_WAIT: Duration = Duration::from_secs(1);
 
 /// The text prefix of a short-code offer. The version is in it, so an offer from another build is
 /// refused by name.
@@ -226,7 +232,7 @@ impl PairingMethod for ShortCode {
         for addr in &addrs {
             match tokio::time::timeout(DIAL_TIMEOUT, TcpStream::connect(addr)).await {
                 Ok(Ok(stream)) => {
-                    return pair_as_accepter(node, stream, &addrs, &code, name).await;
+                    return bounded(pair_as_accepter(node, stream, &addrs, &code, name)).await;
                 }
                 Ok(Err(e)) => last_error = format!("{addr}: {e}"),
                 Err(_) => last_error = format!("{addr} did not answer"),
@@ -239,7 +245,7 @@ impl PairingMethod for ShortCode {
 
     async fn answer(&self, node: &OverlayNode, mut stream: TcpStream) -> Result<NodeRecord> {
         let _ = stream.set_nodelay(true);
-        let hello_bytes = read_blob(&mut stream).await?;
+        let hello_bytes = bounded(read_blob(&mut stream)).await?;
         let msg_b = unhello(&hello_bytes, self.id())?;
         // Take the code for this attempt. Until it settles no other attempt can start, so guesses
         // cannot run in parallel.
@@ -255,7 +261,7 @@ impl PairingMethod for ShortCode {
                 return Err(OverlayError::protocol("a pairing asked for no open code"));
             }
         };
-        match respond(node, &mut stream, &pending.code, msg_b).await {
+        match bounded(respond(node, &mut stream, &pending.code, msg_b)).await {
             Ok(peer) => {
                 let direct = Vec::new();
                 register_peer(node, peer, direct)
@@ -407,6 +413,13 @@ fn wrong_code() -> OverlayError {
     OverlayError::protocol(
         "the pairing did not complete: the code may be wrong, or it may have expired",
     )
+}
+
+/// Runs one step of a short-code exchange, and fails if the other side goes quiet.
+async fn bounded<T>(step: impl std::future::Future<Output = Result<T>>) -> Result<T> {
+    tokio::time::timeout(EXCHANGE_WAIT, step)
+        .await
+        .unwrap_or_else(|_| Err(OverlayError::protocol("the other node went quiet")))
 }
 
 /// A fresh code: ten characters from the Crockford alphabet. A byte mod 32 is uniform, since 256
@@ -702,6 +715,42 @@ mod tests {
             .await
             .expect("the first pairs");
         assert!(second.pair_accept(&offer, None).await.is_err());
+    }
+
+    /// A connection that starts an exchange and then goes quiet gives its code back once the
+    /// exchange times out. It does not hold the code open, so the right code still pairs.
+    #[tokio::test]
+    async fn a_stalled_attempt_gives_the_code_back() {
+        let inviter = node("inviter").await;
+        let accepter = node("accepter").await;
+        let offer = inviter.pair_offer("short-code", 600).expect("an offer");
+        let listener = inviter.listener_addr().expect("the inviter listens");
+
+        // A valid first message for a guessed code, and then silence.
+        let (_guess, msg) = Spake2::<Ed25519Group>::start_symmetric(
+            &Password::new(b"a guess"),
+            &Identity::new(SPAKE_ID),
+        );
+        let mut stalled = TcpStream::connect(listener).await.expect("connects");
+        write_blob(&mut stalled, &hello("short-code", &msg))
+            .await
+            .expect("the hello is sent");
+
+        let inviter_side = inviter.clone();
+        settle("the stalled attempt to give the code back", move || {
+            inviter_side
+                .pending_code()
+                .lock()
+                .as_ref()
+                .map(|p| p.failures)
+                == Some(1)
+        })
+        .await;
+        accepter
+            .pair_accept(&offer, None)
+            .await
+            .expect("the code still pairs");
+        drop(stalled);
     }
 
     #[tokio::test]
