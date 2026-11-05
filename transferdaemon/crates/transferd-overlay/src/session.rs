@@ -523,7 +523,7 @@ pub async fn spawn(
             ctrl_unacked: std::collections::BTreeMap::new(),
             ctrl_seen: std::collections::BTreeSet::new(),
             version: max_version,
-            frame_seq: 0,
+            frame_seq: fresh_frame_seq(),
             ready: false,
             stopped: false,
             events,
@@ -575,6 +575,13 @@ pub async fn spawn(
         });
     });
     handle
+}
+
+/// Where a session's frame numbers start. A random start, as TCP picks its sequence numbers, so a
+/// restarted peer never reuses a number the other end still remembers from the process before it.
+/// Control frames are told apart by these numbers, so a reused one would be taken for a resend.
+fn fresh_frame_seq() -> u64 {
+    rand::random::<u64>() >> 2
 }
 
 fn random_nonce() -> [u8; 16] {
@@ -1827,4 +1834,121 @@ pub type StreamBytes = Arc<AtomicU64>;
 /// Increase a shared byte counter.
 pub fn count(bytes: &StreamBytes, n: u64) {
     bytes.fetch_add(n, Ordering::Relaxed);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::identity::NodeIdentity;
+    use crate::link::{Link, Pipe, PipeLink, RouteKind};
+
+    type Queue = Arc<parking_lot::Mutex<std::collections::VecDeque<Vec<u8>>>>;
+
+    /// Two ends of an in-memory link: each end writes into the queue the other end reads.
+    fn link_pair(id: u32) -> (Arc<PipeLink>, Arc<PipeLink>) {
+        let a_to_b: Queue = Default::default();
+        let b_to_a: Queue = Default::default();
+        let end = |out: Queue, inbox: Queue| Pipe {
+            write: Box::new(move |bytes| {
+                out.lock().push_back(bytes);
+                Ok(())
+            }),
+            incoming: Box::new(move || Ok(inbox.lock().pop_front())),
+            close: Box::new(|| {}),
+        };
+        (
+            PipeLink::new(id, RouteKind::Direct, "pipe", end(a_to_b.clone(), b_to_a.clone())),
+            PipeLink::new(id, RouteKind::Direct, "pipe", end(b_to_a, a_to_b)),
+        )
+    }
+
+    fn setup(me: &NodeIdentity, peer: &NodeIdentity) -> SessionSetup {
+        SessionSetup {
+            peer_node_id: peer.node_id().to_string(),
+            peer_name: peer.name().to_string(),
+            identity: me.clone(),
+            services: Vec::new(),
+            max_version: protocol::VERSION_CURRENT as u8,
+            ext: Vec::new(),
+        }
+    }
+
+    /// Waits for the next stream the peer asks to open, and accepts it.
+    async fn accept_next_open(
+        desk: &SessionHandle,
+        events: &mut mpsc::UnboundedReceiver<SessionEvent>,
+    ) -> bool {
+        while let Some(event) = events.recv().await {
+            if let SessionEvent::OpenRequest {
+                stream, service, ..
+            } = event
+            {
+                return desk
+                    .authorize(stream, service, true, String::new())
+                    .await
+                    .is_ok();
+            }
+        }
+        false
+    }
+
+    /// A peer process restarts and its new session comes up on a fresh route, while the desktop
+    /// keeps the session it had with the old process. The new process numbers its control frames
+    /// from the start again, so its open must not be taken for a resend of the old one.
+    #[tokio::test]
+    async fn a_restarted_peer_is_heard_on_the_session_it_comes_back_to() {
+        let desk_id = NodeIdentity::generate("desktop");
+        let phone_id = NodeIdentity::generate("phone");
+
+        let (desk_events_tx, mut desk_events) = mpsc::unbounded_channel();
+        let (old_route, phone_old_end) = link_pair(1);
+        let desk = spawn(
+            setup(&desk_id, &phone_id),
+            vec![old_route.clone() as Arc<dyn Link>],
+            desk_events_tx,
+        )
+        .await;
+
+        // The first phone process opens a stream, and the desktop accepts it.
+        let (phone_old_tx, _phone_old_events) = mpsc::unbounded_channel();
+        let phone_first = spawn(
+            setup(&phone_id, &desk_id),
+            vec![phone_old_end as Arc<dyn Link>],
+            phone_old_tx,
+        )
+        .await;
+        let first = tokio::spawn(async move { phone_first.open("cfs").await });
+        let accepted = tokio::time::timeout(
+            Duration::from_secs(5),
+            accept_next_open(&desk, &mut desk_events),
+        )
+        .await;
+        assert!(accepted.is_ok_and(|ok| ok), "the first open reaches the desktop");
+        assert!(first.await.expect("join").is_ok(), "the first open is accepted");
+
+        // The old process is gone, so its route carries nothing more. The desktop's session
+        // stays up and takes the restarted phone on a new route.
+        old_route.mark_down();
+        let (new_route, phone_new_end) = link_pair(2);
+        desk.add_link(new_route as Arc<dyn Link>).await;
+        let (phone_new_tx, _phone_new_events) = mpsc::unbounded_channel();
+        let phone_restarted = spawn(
+            setup(&phone_id, &desk_id),
+            vec![phone_new_end as Arc<dyn Link>],
+            phone_new_tx,
+        )
+        .await;
+        let second = tokio::spawn(async move { phone_restarted.open("cfs").await });
+
+        let heard = tokio::time::timeout(
+            Duration::from_secs(5),
+            accept_next_open(&desk, &mut desk_events),
+        )
+        .await;
+        assert!(
+            heard.is_ok_and(|ok| ok),
+            "the desktop hears the restarted peer's open"
+        );
+        assert!(second.await.expect("join").is_ok(), "the restarted peer's open is accepted");
+    }
 }
