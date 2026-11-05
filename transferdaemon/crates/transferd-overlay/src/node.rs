@@ -589,7 +589,7 @@ impl OverlayNode {
     /// Make sure there is a session with `node_id`, dialling if there is not.
     pub async fn ensure_session(&self, node_id: &str) -> Result<SessionHandle> {
         if let Some(peer) = self.inner.peers.lock().get(node_id) {
-            if peer.session.is_live() {
+            if peer.session.is_usable() {
                 return Ok(peer.session.clone());
             }
         }
@@ -604,7 +604,7 @@ impl OverlayNode {
             .clone();
         let _guard = gate.lock().await;
         if let Some(peer) = self.inner.peers.lock().get(node_id) {
-            if peer.session.is_live() {
+            if peer.session.is_usable() {
                 return Ok(peer.session.clone());
             }
         }
@@ -1330,7 +1330,7 @@ impl OverlayNode {
             .peers
             .lock()
             .values()
-            .filter(|p| p.session.is_live())
+            .filter(|p| p.session.is_usable())
             .map(|p| p.session.clone())
             .collect();
         if sessions.is_empty() {
@@ -2010,7 +2010,7 @@ impl OverlayNode {
                 serde_json::json!({
                     "peer": peer.record.node_id,
                     "name": peer.record.name,
-                    "state": if peer.session.is_live() { "up" } else { "down" },
+                    "state": if peer.session.is_usable() { "up" } else { "down" },
                     "routes": peer.session.routes(),
                 })
             })
@@ -2023,7 +2023,7 @@ impl OverlayNode {
         peers
             .values()
             .map(|peer| {
-                let live = peer.session.is_live();
+                let live = peer.session.is_usable();
                 serde_json::json!({
                     "node_id": peer.record.node_id,
                     "name": peer.record.name,
@@ -2080,6 +2080,32 @@ fn detached_session(node_id: &str) -> SessionHandle {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_session_is_usable_while_a_route_is_up_and_not_once_every_route_is_down() {
+        let route = |active| crate::protocol::RouteReport {
+            kind: "tcp".into(),
+            rtt_ms: 1.0,
+            loss: 0.0,
+            mbps: 1.0,
+            active,
+            cwnd: 0,
+            in_flight: 0,
+            srtt_ms: 0.0,
+            rto_ms: 0.0,
+            sent_bytes: 0,
+            retx_bytes: 0,
+        };
+        assert!(crate::session::routes_usable(&[]), "nothing measured yet");
+        assert!(
+            crate::session::routes_usable(&[route(false), route(true)]),
+            "one route up"
+        );
+        assert!(
+            !crate::session::routes_usable(&[route(false), route(false)]),
+            "every route down"
+        );
+    }
 
     #[test]
     fn an_address_is_classified_by_where_it_points() {

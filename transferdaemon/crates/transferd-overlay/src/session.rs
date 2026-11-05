@@ -160,6 +160,12 @@ pub enum SessionCommand {
     Shutdown,
 }
 
+/// Whether any of these routes is up. Nothing measured yet counts as usable: the session has only
+/// just been made.
+pub(crate) fn routes_usable(routes: &[protocol::RouteReport]) -> bool {
+    routes.is_empty() || routes.iter().any(|r| r.active)
+}
+
 /// The sending half of a session: the handle the rest of the node uses to talk to it.
 pub struct SessionHandle {
     pub peer_node_id: String,
@@ -289,6 +295,13 @@ impl SessionHandle {
     /// Whether the session can still carry traffic.
     pub fn is_live(&self) -> bool {
         !self.commands.is_closed()
+    }
+
+    /// Whether the session can carry traffic now: its loop runs and a route is up. A session whose
+    /// routes have all closed is over for the peer even while its loop still runs, so a call dials
+    /// again instead of waiting on it.
+    pub fn is_usable(&self) -> bool {
+        self.is_live() && routes_usable(&self.routes.read())
     }
 
     /// A handle that was never connected: used for peers we know but have not dialled yet.
