@@ -6,23 +6,23 @@
 //!
 //! Enable with the `real-webrtc` feature flag.
 
+use crate::media::MediaCapture;
+use crate::types::{AudioSamples, CallState, IceCandidateInit, VideoFrame};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::{mpsc, Mutex};
-use crate::media::MediaCapture;
-use crate::types::{AudioSamples, CallState, IceCandidateInit, VideoFrame};
 
 // webrtc-rs imports
-use webrtc::api::APIBuilder;
 use webrtc::api::media_engine::MediaEngine;
 use webrtc::api::setting_engine::SettingEngine;
+use webrtc::api::APIBuilder;
+use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
-use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::RTCPeerConnection;
+use webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability;
 use webrtc::track::track_local::track_local_static_rtp::TrackLocalStaticRTP;
 use webrtc::track::track_local::{TrackLocal, TrackLocalWriter};
-use webrtc::rtp_transceiver::rtp_codec::RTCRtpCodecCapability;
 
 // ---------------------------------------------------------------------------
 // RtcCallSession
@@ -134,22 +134,30 @@ impl RtcCallSession {
         };
 
         // Set up media capture forwarding
-        session.start_media_capture(media, audio_stop_rx, video_stop_rx).await;
+        session
+            .start_media_capture(media, audio_stop_rx, video_stop_rx)
+            .await;
 
         // Set up ICE candidate forwarding
         session.setup_ice_forwarding().await;
 
         // Generate SDP offer, applying the configured bandwidth cap.
-        let mut offer = session.peer_connection.create_offer(None).await
+        let mut offer = session
+            .peer_connection
+            .create_offer(None)
+            .await
             .map_err(|e| WebRtcError::SdpError(e.to_string()))?;
         if let Some(kbps) = session.max_kbps {
             offer.sdp = inject_b_as(&offer.sdp, kbps);
         }
-        session.peer_connection.set_local_description(offer.clone()).await
+        session
+            .peer_connection
+            .set_local_description(offer.clone())
+            .await
             .map_err(|e| WebRtcError::SdpError(e.to_string()))?;
 
-        session.local_sdp = serde_json::to_string(&offer)
-            .map_err(|e| WebRtcError::SdpError(e.to_string()))?;
+        session.local_sdp =
+            serde_json::to_string(&offer).map_err(|e| WebRtcError::SdpError(e.to_string()))?;
 
         Ok(session)
     }
@@ -197,37 +205,50 @@ impl RtcCallSession {
         };
 
         // Set up media capture forwarding
-        session.start_media_capture(media, audio_stop_rx, video_stop_rx).await;
+        session
+            .start_media_capture(media, audio_stop_rx, video_stop_rx)
+            .await;
 
         // Set up ICE candidate forwarding
         session.setup_ice_forwarding().await;
 
         // Set remote description (offer from caller)
-        let offer: RTCSessionDescription = serde_json::from_str(&remote_sdp)
-            .map_err(|e| WebRtcError::SdpError(e.to_string()))?;
-        session.peer_connection.set_remote_description(offer).await
+        let offer: RTCSessionDescription =
+            serde_json::from_str(&remote_sdp).map_err(|e| WebRtcError::SdpError(e.to_string()))?;
+        session
+            .peer_connection
+            .set_remote_description(offer)
+            .await
             .map_err(|e| WebRtcError::SdpError(e.to_string()))?;
 
         // Generate SDP answer, applying the configured bandwidth cap.
-        let mut answer = session.peer_connection.create_answer(None).await
+        let mut answer = session
+            .peer_connection
+            .create_answer(None)
+            .await
             .map_err(|e| WebRtcError::SdpError(e.to_string()))?;
         if let Some(kbps) = session.max_kbps {
             answer.sdp = inject_b_as(&answer.sdp, kbps);
         }
-        session.peer_connection.set_local_description(answer.clone()).await
+        session
+            .peer_connection
+            .set_local_description(answer.clone())
+            .await
             .map_err(|e| WebRtcError::SdpError(e.to_string()))?;
 
-        session.local_sdp = serde_json::to_string(&answer)
-            .map_err(|e| WebRtcError::SdpError(e.to_string()))?;
+        session.local_sdp =
+            serde_json::to_string(&answer).map_err(|e| WebRtcError::SdpError(e.to_string()))?;
 
         Ok(session)
     }
 
     /// Set the remote SDP answer (for outgoing calls).
     pub async fn set_remote_answer(&self, answer_sdp: &str) -> Result<(), WebRtcError> {
-        let answer: RTCSessionDescription = serde_json::from_str(answer_sdp)
-            .map_err(|e| WebRtcError::SdpError(e.to_string()))?;
-        self.peer_connection.set_remote_description(answer).await
+        let answer: RTCSessionDescription =
+            serde_json::from_str(answer_sdp).map_err(|e| WebRtcError::SdpError(e.to_string()))?;
+        self.peer_connection
+            .set_remote_description(answer)
+            .await
             .map_err(|e| WebRtcError::SdpError(e.to_string()))?;
         Ok(())
     }
@@ -394,10 +415,12 @@ impl RtcCallSession {
                             }
                         }));
                     }
-                None => {
-                    tracing::warn!("[WebRTC] Video capture not available, continuing with audio only");
-                    self.video = false;
-                }
+                    None => {
+                        tracing::warn!(
+                            "[WebRTC] Video capture not available, continuing with audio only"
+                        );
+                        self.video = false;
+                    }
                 }
             }
         }
@@ -406,21 +429,23 @@ impl RtcCallSession {
     async fn setup_ice_forwarding(&mut self) {
         let ice_tx = self.ice_tx.clone();
 
-        self.peer_connection.on_ice_candidate(Box::new(move |candidate: Option<webrtc::ice_transport::ice_candidate::RTCIceCandidate>| {
-            let ice_tx = ice_tx.clone();
-            Box::pin(async move {
-                if let Some(candidate) = candidate {
-                    if let Ok(json) = candidate.to_json() {
-                        let ice_candidate = IceCandidateInit {
-                            candidate: json.candidate,
-                            sdp_mid: json.sdp_mid,
-                            sdp_mline_index: json.sdp_mline_index,
-                        };
-                        let _ = ice_tx.send(ice_candidate).await;
+        self.peer_connection.on_ice_candidate(Box::new(
+            move |candidate: Option<webrtc::ice_transport::ice_candidate::RTCIceCandidate>| {
+                let ice_tx = ice_tx.clone();
+                Box::pin(async move {
+                    if let Some(candidate) = candidate {
+                        if let Ok(json) = candidate.to_json() {
+                            let ice_candidate = IceCandidateInit {
+                                candidate: json.candidate,
+                                sdp_mid: json.sdp_mid,
+                                sdp_mline_index: json.sdp_mline_index,
+                            };
+                            let _ = ice_tx.send(ice_candidate).await;
+                        }
                     }
-                }
-            })
-        }));
+                })
+            },
+        ));
     }
 }
 
@@ -447,7 +472,8 @@ async fn setup_peer_connection(
     // `MediaEngine::default()` is an empty codec table — without registration,
     // SDP offer/answer generation fails with `ErrSenderWithNoCodecs`.
     let mut media_engine = MediaEngine::default();
-    media_engine.register_default_codecs()
+    media_engine
+        .register_default_codecs()
         .map_err(|e| WebRtcError::MediaError(format!("register_default_codecs: {e}")))?;
 
     // Create setting engine
@@ -462,8 +488,11 @@ async fn setup_peer_connection(
     // Create peer connection
     let config = RTCConfiguration::default();
 
-    let peer_connection = Arc::new(api.new_peer_connection(config).await
-        .map_err(|e| WebRtcError::PeerConnectionError(e.to_string()))?);
+    let peer_connection = Arc::new(
+        api.new_peer_connection(config)
+            .await
+            .map_err(|e| WebRtcError::PeerConnectionError(e.to_string()))?,
+    );
 
     // Create audio track.  `clock_rate`/`channels` must match the opus codec
     // registered in the media engine so the SDP offer/answer population finds it.
@@ -478,20 +507,25 @@ async fn setup_peer_connection(
         format!("transferd-audio-{call_id}"),
     ));
 
-    let _audio_transceiver = peer_connection.add_transceiver_from_track(
-        Arc::clone(&audio_track) as Arc<dyn TrackLocal + Send + Sync>,
-        None,
-    ).await.map_err(|e| WebRtcError::PeerConnectionError(e.to_string()))?;
+    let _audio_transceiver = peer_connection
+        .add_transceiver_from_track(
+            Arc::clone(&audio_track) as Arc<dyn TrackLocal + Send + Sync>,
+            None,
+        )
+        .await
+        .map_err(|e| WebRtcError::PeerConnectionError(e.to_string()))?;
 
     // ICE candidate channel
     let (ice_tx, ice_rx) = mpsc::channel(16);
 
     // Monitor connection state
-    peer_connection.on_peer_connection_state_change(Box::new(move |state: RTCPeerConnectionState| {
-        Box::pin(async move {
-            tracing::info!("[WebRTC] Connection state: {:?}", state);
-        })
-    }));
+    peer_connection.on_peer_connection_state_change(Box::new(
+        move |state: RTCPeerConnectionState| {
+            Box::pin(async move {
+                tracing::info!("[WebRTC] Connection state: {:?}", state);
+            })
+        },
+    ));
 
     // Handle incoming tracks from remote peer
     let (remote_audio_tx, remote_audio_rx) = mpsc::channel(64);

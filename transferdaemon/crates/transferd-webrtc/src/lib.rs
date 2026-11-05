@@ -3,20 +3,20 @@
 //! Default build: pure-Rust `SimulatedCallSession` (no hardware, fast tests).
 //! Enable the `real-webrtc` feature to swap in `webrtc-rs` + `cpal` + `nokhwa`.
 
-pub mod media;
-pub mod manager;
-pub mod session;
-pub mod types;
 #[cfg(feature = "grpc-signaling")]
 pub mod grpc_signaling;
+pub mod manager;
+pub mod media;
 #[cfg(feature = "real-webrtc")]
 pub mod rtc_session;
+pub mod session;
+pub mod types;
 
 pub use manager::CallManager;
-pub use media::{MediaCapture, MockMediaCapture, SilentCapture, new_default_capture};
 #[cfg(feature = "desktop-capture")]
 pub use media::DesktopMediaCapture;
-pub use session::SimulatedCallSession;
+pub use media::{new_default_capture, MediaCapture, MockMediaCapture, SilentCapture};
 #[cfg(feature = "real-webrtc")]
 pub use rtc_session::{RtcCallSession, WebRtcError};
+pub use session::SimulatedCallSession;
 pub use types::{AudioSamples, CallState, IceCandidateInit, VideoFrame};

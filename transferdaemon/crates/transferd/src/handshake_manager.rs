@@ -46,7 +46,10 @@ impl std::fmt::Debug for SessionKey {
 
 impl Clone for SessionKey {
     fn clone(&self) -> Self {
-        Self { key: Zeroizing::new(*self.key), session_id: self.session_id }
+        Self {
+            key: Zeroizing::new(*self.key),
+            session_id: self.session_id,
+        }
     }
 }
 
@@ -84,13 +87,10 @@ impl HandshakeManager {
         peer_addr: &str,
         identity: &HybridSigningKey,
     ) -> Result<(SessionKey, HybridVerifyingKey), HandshakeError> {
-        let mut stream = timeout(
-            self.handshake_timeout,
-            TcpStream::connect(peer_addr),
-        )
-        .await
-        .map_err(|_| HandshakeError::Timeout)?
-        .map_err(|e| HandshakeError::ConnectionFailed(e.to_string()))?;
+        let mut stream = timeout(self.handshake_timeout, TcpStream::connect(peer_addr))
+            .await
+            .map_err(|_| HandshakeError::Timeout)?
+            .map_err(|e| HandshakeError::ConnectionFailed(e.to_string()))?;
         self.run_initiator_on(&mut stream, identity).await
     }
 
@@ -140,7 +140,13 @@ impl HandshakeManager {
         let hybrid_key = init.finalize(auth_resp.hello);
         let key_bytes: [u8; 32] = *hybrid_key.as_bytes();
         let session_id = SessionId(key_bytes[..16].try_into().unwrap_or([0u8; 16]));
-        Ok((SessionKey { key: Zeroizing::new(key_bytes), session_id }, peer_identity))
+        Ok((
+            SessionKey {
+                key: Zeroizing::new(key_bytes),
+                session_id,
+            },
+            peer_identity,
+        ))
     }
 
     /// Run the responder side of the handshake.
@@ -189,7 +195,13 @@ impl HandshakeManager {
         let peer_identity = auth_hello.identity_pk;
         let key_bytes: [u8; 32] = *hybrid_key.as_bytes();
         let session_id = SessionId(key_bytes[..16].try_into().unwrap_or([0u8; 16]));
-        Ok((SessionKey { key: Zeroizing::new(key_bytes), session_id }, peer_identity))
+        Ok((
+            SessionKey {
+                key: Zeroizing::new(key_bytes),
+                session_id,
+            },
+            peer_identity,
+        ))
     }
 }
 
@@ -198,9 +210,13 @@ impl HandshakeManager {
 // ---------------------------------------------------------------------------
 
 async fn write_len_prefixed(stream: &mut TcpStream, bytes: &[u8]) -> Result<(), HandshakeError> {
-    stream.write_all(&(bytes.len() as u32).to_le_bytes()).await
+    stream
+        .write_all(&(bytes.len() as u32).to_le_bytes())
+        .await
         .map_err(|e| HandshakeError::IoError(e.to_string()))?;
-    stream.write_all(bytes).await
+    stream
+        .write_all(bytes)
+        .await
         .map_err(|e| HandshakeError::IoError(e.to_string()))
 }
 
@@ -209,7 +225,8 @@ async fn read_len_prefixed(
     timeout_dur: Duration,
 ) -> Result<Vec<u8>, HandshakeError> {
     let mut len_buf = [0u8; 4];
-    timeout(timeout_dur, stream.read_exact(&mut len_buf)).await
+    timeout(timeout_dur, stream.read_exact(&mut len_buf))
+        .await
         .map_err(|_| HandshakeError::Timeout)?
         .map_err(|e| HandshakeError::IoError(e.to_string()))?;
     let len = u32::from_le_bytes(len_buf) as usize;
@@ -217,7 +234,8 @@ async fn read_len_prefixed(
         return Err(HandshakeError::ProtocolError("Message too large".into()));
     }
     let mut buf = vec![0u8; len];
-    timeout(timeout_dur, stream.read_exact(&mut buf)).await
+    timeout(timeout_dur, stream.read_exact(&mut buf))
+        .await
         .map_err(|_| HandshakeError::Timeout)?
         .map_err(|e| HandshakeError::IoError(e.to_string()))?;
     Ok(buf)
@@ -274,7 +292,10 @@ mod tests {
         let responder = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
             let manager = HandshakeManager::new();
-            manager.run_responder(&mut stream, &resp_identity).await.unwrap()
+            manager
+                .run_responder(&mut stream, &resp_identity)
+                .await
+                .unwrap()
         });
 
         let (init_key, peer_vk) = manager
@@ -308,7 +329,9 @@ mod tests {
         let responder = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
             // Read the initiator flight.
-            let req_buf = read_len_prefixed(&mut stream, Duration::from_secs(5)).await.unwrap();
+            let req_buf = read_len_prefixed(&mut stream, Duration::from_secs(5))
+                .await
+                .unwrap();
             let auth_hello = AuthInitiatorHello::from_wire(&req_buf).unwrap();
             assert!(auth_hello.verify(), "initiator identity must verify");
 
@@ -320,7 +343,9 @@ mod tests {
                 CIPHERSUITE_HYBRID_X25519_MLKEM768,
                 &attacker,
             );
-            write_len_prefixed(&mut stream, &flight.to_wire()).await.unwrap();
+            write_len_prefixed(&mut stream, &flight.to_wire())
+                .await
+                .unwrap();
         });
 
         // The initiator must accept the flight (the attacker's signature is
@@ -347,7 +372,9 @@ mod tests {
         let responder_task = tokio::spawn(async move {
             let (mut stream, _) = listener.accept().await.unwrap();
             let manager = HandshakeManager::new();
-            manager.run_responder(&mut stream, &responder_identity).await
+            manager
+                .run_responder(&mut stream, &responder_identity)
+                .await
         });
 
         // MITM client: send a tampered initiator flight, then expect the

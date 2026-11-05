@@ -15,8 +15,12 @@ pub struct SimulatedWiFiLane {
 impl SimulatedWiFiLane {
     pub fn new(id: u32, rtt: Duration, bandwidth_bps: f64) -> Self {
         let metrics = Arc::new(LaneMetrics::default());
-        metrics.rtt_ms.store((rtt.as_millis() as u64) * 1_000, Ordering::SeqCst);
-        metrics.bandwidth_bps.store(bandwidth_bps as u64, Ordering::SeqCst);
+        metrics
+            .rtt_ms
+            .store((rtt.as_millis() as u64) * 1_000, Ordering::SeqCst);
+        metrics
+            .bandwidth_bps
+            .store(bandwidth_bps as u64, Ordering::SeqCst);
         Self {
             id,
             metrics,
@@ -29,9 +33,15 @@ impl SimulatedWiFiLane {
 
 #[async_trait]
 impl TransportLane for SimulatedWiFiLane {
-    fn id(&self) -> u32 { self.id }
-    fn metrics(&self) -> Arc<LaneMetrics> { self.metrics.clone() }
-    fn capacity(&self) -> usize { self.capacity.load(Ordering::Relaxed) }
+    fn id(&self) -> u32 {
+        self.id
+    }
+    fn metrics(&self) -> Arc<LaneMetrics> {
+        self.metrics.clone()
+    }
+    fn capacity(&self) -> usize {
+        self.capacity.load(Ordering::Relaxed)
+    }
 
     async fn send(&self, chunk: Chunk) -> Result<(), TransportError> {
         if self.capacity.load(Ordering::Relaxed) == 0 {
@@ -45,6 +55,10 @@ impl TransportLane for SimulatedWiFiLane {
         Ok(())
     }
 
-    async fn recv(&mut self) -> Option<Result<Chunk, TransportError>> { None }
-    fn is_alive(&self) -> bool { true }
+    async fn recv(&mut self) -> Option<Result<Chunk, TransportError>> {
+        None
+    }
+    fn is_alive(&self) -> bool {
+        true
+    }
 }

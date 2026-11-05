@@ -2,8 +2,8 @@
 //! or the Cloudflare Worker). Same chunk framing as the UDP relay lane; only
 //! the transport is WebSocket, so it works where UDP is blocked.
 
-use crate::lanes::relay_ws_client::RelayWsClient;
 use crate::lanes::relay_client::PREFIX_CHUNK;
+use crate::lanes::relay_ws_client::RelayWsClient;
 use crate::transport::{Chunk, LaneMetrics, TransportError, TransportLane, WireChunk};
 use async_trait::async_trait;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -63,15 +63,26 @@ impl RelayWsLane {
 
 #[async_trait]
 impl TransportLane for RelayWsLane {
-    fn id(&self) -> u32 { self.id }
-    fn metrics(&self) -> Arc<LaneMetrics> { self.metrics.clone() }
-    fn capacity(&self) -> usize { if self.alive.load(Ordering::Relaxed) { 64 } else { 0 } }
-    fn is_alive(&self) -> bool { self.alive.load(Ordering::Relaxed) }
+    fn id(&self) -> u32 {
+        self.id
+    }
+    fn metrics(&self) -> Arc<LaneMetrics> {
+        self.metrics.clone()
+    }
+    fn capacity(&self) -> usize {
+        if self.alive.load(Ordering::Relaxed) {
+            64
+        } else {
+            0
+        }
+    }
+    fn is_alive(&self) -> bool {
+        self.alive.load(Ordering::Relaxed)
+    }
 
     async fn send(&self, chunk: Chunk) -> Result<(), TransportError> {
         let wire = WireChunk::from(&chunk);
-        let raw = bincode::serialize(&wire)
-            .map_err(|_| TransportError::ProtocolViolation)?;
+        let raw = bincode::serialize(&wire).map_err(|_| TransportError::ProtocolViolation)?;
         let plaintext = pad_plaintext(&raw);
 
         let gsn = chunk.gsn.0;

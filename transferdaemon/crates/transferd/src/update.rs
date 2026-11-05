@@ -50,11 +50,8 @@ pub enum UpdateCheckResult {
 /// - Ordering::Equal if v1 == v2
 /// - Ordering::Greater if v1 > v2
 fn compare_versions(v1: &str, v2: &str) -> std::cmp::Ordering {
-    let parse_version = |v: &str| -> Vec<u32> {
-        v.split('.')
-            .filter_map(|s| s.parse().ok())
-            .collect()
-    };
+    let parse_version =
+        |v: &str| -> Vec<u32> { v.split('.').filter_map(|s| s.parse().ok()).collect() };
 
     let parts1 = parse_version(v1);
     let parts2 = parse_version(v2);
@@ -89,7 +86,7 @@ pub async fn check_for_updates() -> UpdateCheckResult {
         Ok(output) => {
             if !output.status.success() {
                 return UpdateCheckResult::Error(
-                    String::from_utf8_lossy(&output.stderr).to_string()
+                    String::from_utf8_lossy(&output.stderr).to_string(),
                 );
             }
 
@@ -107,20 +104,11 @@ pub async fn check_for_updates() -> UpdateCheckResult {
                         return UpdateCheckResult::UpToDate;
                     }
 
-                    let download_url = json["html_url"]
-                        .as_str()
-                        .unwrap_or("")
-                        .to_string();
+                    let download_url = json["html_url"].as_str().unwrap_or("").to_string();
 
-                    let release_notes = json["body"]
-                        .as_str()
-                        .unwrap_or("")
-                        .to_string();
+                    let release_notes = json["body"].as_str().unwrap_or("").to_string();
 
-                    let published_at = json["published_at"]
-                        .as_str()
-                        .unwrap_or("")
-                        .to_string();
+                    let published_at = json["published_at"].as_str().unwrap_or("").to_string();
 
                     // Get the first asset size (installer)
                     let size_bytes = json["assets"]
@@ -152,7 +140,12 @@ pub async fn download_update(info: &UpdateInfo) -> Result<std::path::PathBuf, St
 
     // Use curl to download the file
     let output = Command::new("curl")
-        .args(["-L", "-o", temp_path.to_str().unwrap_or(""), &info.download_url])
+        .args([
+            "-L",
+            "-o",
+            temp_path.to_str().unwrap_or(""),
+            &info.download_url,
+        ])
         .output()
         .map_err(|e| format!("Download failed: {e}"))?;
 
@@ -237,12 +230,21 @@ pub fn install_update(update_path: &std::path::Path) -> Result<(), String> {
 
         // Mount the DMG
         let output = Command::new("hdiutil")
-            .args(["attach", "-nobrowse", "-mountpoint", mount_point.to_str().unwrap_or(""), update_path.to_str().unwrap_or("")])
+            .args([
+                "attach",
+                "-nobrowse",
+                "-mountpoint",
+                mount_point.to_str().unwrap_or(""),
+                update_path.to_str().unwrap_or(""),
+            ])
             .output()
             .map_err(|e| format!("Failed to mount DMG: {e}"))?;
 
         if !output.status.success() {
-            return Err(format!("Failed to mount DMG: {}", String::from_utf8_lossy(&output.stderr)));
+            return Err(format!(
+                "Failed to mount DMG: {}",
+                String::from_utf8_lossy(&output.stderr)
+            ));
         }
 
         // Find the .app bundle in the mounted volume
@@ -275,7 +277,11 @@ pub fn install_update(update_path: &std::path::Path) -> Result<(), String> {
 
         // Copy new app
         Command::new("cp")
-            .args(["-R", app_path.to_str().unwrap_or(""), dest.to_str().unwrap_or("")])
+            .args([
+                "-R",
+                app_path.to_str().unwrap_or(""),
+                dest.to_str().unwrap_or(""),
+            ])
             .output()
             .map_err(|e| format!("Failed to copy app: {e}"))?;
 
@@ -354,11 +360,23 @@ mod tests {
 
     #[test]
     fn test_version_comparison() {
-        assert_eq!(compare_versions("1.0.0", "1.0.0"), std::cmp::Ordering::Equal);
+        assert_eq!(
+            compare_versions("1.0.0", "1.0.0"),
+            std::cmp::Ordering::Equal
+        );
         assert_eq!(compare_versions("1.0.0", "1.0.1"), std::cmp::Ordering::Less);
-        assert_eq!(compare_versions("1.0.1", "1.0.0"), std::cmp::Ordering::Greater);
+        assert_eq!(
+            compare_versions("1.0.1", "1.0.0"),
+            std::cmp::Ordering::Greater
+        );
         assert_eq!(compare_versions("1.0.0", "1.1.0"), std::cmp::Ordering::Less);
-        assert_eq!(compare_versions("1.1.0", "1.0.0"), std::cmp::Ordering::Greater);
-        assert_eq!(compare_versions("2.0.0", "1.9.9"), std::cmp::Ordering::Greater);
+        assert_eq!(
+            compare_versions("1.1.0", "1.0.0"),
+            std::cmp::Ordering::Greater
+        );
+        assert_eq!(
+            compare_versions("2.0.0", "1.9.9"),
+            std::cmp::Ordering::Greater
+        );
     }
 }

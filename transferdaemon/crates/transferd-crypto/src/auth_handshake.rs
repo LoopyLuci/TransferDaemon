@@ -115,13 +115,23 @@ const IDENTITY_PK_LEN: usize = 2624;
 const TRANSCRIPT_LEN: usize = 32;
 const SIGNATURE_LEN: usize = 4691;
 
-const AUTH_INITIATOR_HELLO_LEN: usize =
-    1 + VERSION_LEN + CIPHERSUITE_LEN + X25519_PK_LEN + KEM_EK_LEN + IDENTITY_PK_LEN
-        + TRANSCRIPT_LEN + SIGNATURE_LEN;
+const AUTH_INITIATOR_HELLO_LEN: usize = 1
+    + VERSION_LEN
+    + CIPHERSUITE_LEN
+    + X25519_PK_LEN
+    + KEM_EK_LEN
+    + IDENTITY_PK_LEN
+    + TRANSCRIPT_LEN
+    + SIGNATURE_LEN;
 
-const AUTH_RESPONDER_HELLO_LEN: usize =
-    1 + VERSION_LEN + CIPHERSUITE_LEN + X25519_PK_LEN + KEM_CT_LEN + IDENTITY_PK_LEN
-        + TRANSCRIPT_LEN + SIGNATURE_LEN;
+const AUTH_RESPONDER_HELLO_LEN: usize = 1
+    + VERSION_LEN
+    + CIPHERSUITE_LEN
+    + X25519_PK_LEN
+    + KEM_CT_LEN
+    + IDENTITY_PK_LEN
+    + TRANSCRIPT_LEN
+    + SIGNATURE_LEN;
 
 fn transcript(tag: u8, version: u16, suite: u16, body: &[u8], identity_pk: &[u8]) -> [u8; 32] {
     let mut h = blake3::Hasher::new();
@@ -161,9 +171,22 @@ impl AuthInitiatorHello {
         let hello = init.hello();
         let identity_pk = sk.verifying_key();
         let id_bytes = identity_pk.to_bytes();
-        let transcript = transcript(TAG_AUTH_INITIATOR, version, ciphersuite, &hello.to_wire(), &id_bytes);
+        let transcript = transcript(
+            TAG_AUTH_INITIATOR,
+            version,
+            ciphersuite,
+            &hello.to_wire(),
+            &id_bytes,
+        );
         let signature = sk.sign(&transcript);
-        Self { version, ciphersuite, hello, identity_pk, transcript, signature }
+        Self {
+            version,
+            ciphersuite,
+            hello,
+            identity_pk,
+            transcript,
+            signature,
+        }
     }
 
     /// Serialize to wire bytes.
@@ -197,7 +220,14 @@ impl AuthInitiatorHello {
         transcript.copy_from_slice(&data[off..off + TRANSCRIPT_LEN]);
         off += TRANSCRIPT_LEN;
         let signature = HybridSignature::from_bytes(&data[off..off + SIGNATURE_LEN])?;
-        Some(Self { version, ciphersuite, hello, identity_pk, transcript, signature })
+        Some(Self {
+            version,
+            ciphersuite,
+            hello,
+            identity_pk,
+            transcript,
+            signature,
+        })
     }
 
     /// Recompute the transcript and verify the identity signature.
@@ -215,12 +245,30 @@ impl AuthInitiatorHello {
 
 impl AuthResponderHello {
     /// Build the signed responder flight from the ephemeral hello + identity.
-    pub fn build(hello: &ResponderHello, version: u16, ciphersuite: u16, sk: &HybridSigningKey) -> Self {
+    pub fn build(
+        hello: &ResponderHello,
+        version: u16,
+        ciphersuite: u16,
+        sk: &HybridSigningKey,
+    ) -> Self {
         let identity_pk = sk.verifying_key();
         let id_bytes = identity_pk.to_bytes();
-        let transcript = transcript(TAG_AUTH_RESPONDER, version, ciphersuite, &hello.to_wire(), &id_bytes);
+        let transcript = transcript(
+            TAG_AUTH_RESPONDER,
+            version,
+            ciphersuite,
+            &hello.to_wire(),
+            &id_bytes,
+        );
         let signature = sk.sign(&transcript);
-        Self { version, ciphersuite, hello: hello.clone(), identity_pk, transcript, signature }
+        Self {
+            version,
+            ciphersuite,
+            hello: hello.clone(),
+            identity_pk,
+            transcript,
+            signature,
+        }
     }
 
     /// Serialize to wire bytes.
@@ -254,7 +302,14 @@ impl AuthResponderHello {
         transcript.copy_from_slice(&data[off..off + TRANSCRIPT_LEN]);
         off += TRANSCRIPT_LEN;
         let signature = HybridSignature::from_bytes(&data[off..off + SIGNATURE_LEN])?;
-        Some(Self { version, ciphersuite, hello, identity_pk, transcript, signature })
+        Some(Self {
+            version,
+            ciphersuite,
+            hello,
+            identity_pk,
+            transcript,
+            signature,
+        })
     }
 
     /// Recompute the transcript and verify the identity signature.
@@ -283,7 +338,10 @@ mod tests {
     fn ciphersuite_registry_is_consistent() {
         // Ids are unique; sunset comes after introduction; ids are monotonic.
         for (i, cs) in CIPHERSUITES.iter().enumerate() {
-            assert!(CIPHERSUITES[i..].iter().skip(1).all(|o| o.id != cs.id), "unique ids");
+            assert!(
+                CIPHERSUITES[i..].iter().skip(1).all(|o| o.id != cs.id),
+                "unique ids"
+            );
             let (iy, im) = parse_ym(cs.introduced).expect("valid introduced");
             let (sy, sm) = parse_ym(cs.sunset).expect("valid sunset");
             assert!((sy, sm) > (iy, im), "sunset after introduction");
@@ -291,12 +349,28 @@ mod tests {
         // The current suite is active today and negotiable.
         let now = crate::common::now_ym();
         assert!(!is_sunset(&CIPHERSUITES[0], now.0, now.1));
-        assert_eq!(negotiate(CIPHERSUITE_HYBRID_X25519_MLKEM768, &[CIPHERSUITE_HYBRID_X25519_MLKEM768], now.0, now.1),
-                   Some(CIPHERSUITE_HYBRID_X25519_MLKEM768));
-        assert_eq!(newest_active(now.0, now.1), Some(CIPHERSUITE_HYBRID_X25519_MLKEM768));
+        assert_eq!(
+            negotiate(
+                CIPHERSUITE_HYBRID_X25519_MLKEM768,
+                &[CIPHERSUITE_HYBRID_X25519_MLKEM768],
+                now.0,
+                now.1
+            ),
+            Some(CIPHERSUITE_HYBRID_X25519_MLKEM768)
+        );
+        assert_eq!(
+            newest_active(now.0, now.1),
+            Some(CIPHERSUITE_HYBRID_X25519_MLKEM768)
+        );
         // Unsupported and sunset suites are not negotiable.
-        assert_eq!(negotiate(0x0001, &[CIPHERSUITE_HYBRID_X25519_MLKEM768], now.0, now.1), None);
-        assert_eq!(negotiate(CIPHERSUITE_HYBRID_X25519_MLKEM768, &[], now.0, now.1), None);
+        assert_eq!(
+            negotiate(0x0001, &[CIPHERSUITE_HYBRID_X25519_MLKEM768], now.0, now.1),
+            None
+        );
+        assert_eq!(
+            negotiate(CIPHERSUITE_HYBRID_X25519_MLKEM768, &[], now.0, now.1),
+            None
+        );
         assert!(is_sunset(&CIPHERSUITES[0], 2036, 1));
     }
 
@@ -304,7 +378,12 @@ mod tests {
     fn initiator_flight_roundtrip_and_verify() {
         let init = Initiator::new();
         let sk = test_signing_key();
-        let flight = AuthInitiatorHello::build(&init, PROTOCOL_VERSION, CIPHERSUITE_HYBRID_X25519_MLKEM768, &sk);
+        let flight = AuthInitiatorHello::build(
+            &init,
+            PROTOCOL_VERSION,
+            CIPHERSUITE_HYBRID_X25519_MLKEM768,
+            &sk,
+        );
         assert!(flight.verify());
         let wire = flight.to_wire();
         assert_eq!(wire.len(), AUTH_INITIATOR_HELLO_LEN);
@@ -319,7 +398,12 @@ mod tests {
         let hello = init.hello();
         let (resp, _key) = Responder::new().respond(&hello);
         let sk = test_signing_key();
-        let flight = AuthResponderHello::build(&resp, PROTOCOL_VERSION, CIPHERSUITE_HYBRID_X25519_MLKEM768, &sk);
+        let flight = AuthResponderHello::build(
+            &resp,
+            PROTOCOL_VERSION,
+            CIPHERSUITE_HYBRID_X25519_MLKEM768,
+            &sk,
+        );
         assert!(flight.verify());
         let wire = flight.to_wire();
         assert_eq!(wire.len(), AUTH_RESPONDER_HELLO_LEN);
@@ -331,7 +415,12 @@ mod tests {
     fn tampered_signature_is_rejected() {
         let init = Initiator::new();
         let sk = test_signing_key();
-        let flight = AuthInitiatorHello::build(&init, PROTOCOL_VERSION, CIPHERSUITE_HYBRID_X25519_MLKEM768, &sk);
+        let flight = AuthInitiatorHello::build(
+            &init,
+            PROTOCOL_VERSION,
+            CIPHERSUITE_HYBRID_X25519_MLKEM768,
+            &sk,
+        );
         let mut wire = flight.to_wire();
         // Flip a bit in the signature region.
         let sig_start = AUTH_INITIATOR_HELLO_LEN - SIGNATURE_LEN;
@@ -345,7 +434,12 @@ mod tests {
         let init = Initiator::new();
         let sk1 = test_signing_key();
         let sk2 = HybridSigningKey::from_bip39_seed(&[8u8; 64]);
-        let flight = AuthInitiatorHello::build(&init, PROTOCOL_VERSION, CIPHERSUITE_HYBRID_X25519_MLKEM768, &sk1);
+        let flight = AuthInitiatorHello::build(
+            &init,
+            PROTOCOL_VERSION,
+            CIPHERSUITE_HYBRID_X25519_MLKEM768,
+            &sk1,
+        );
         // Swap the identity pk to sk2's while keeping sk1's signature.
         let mut clone = flight;
         clone.identity_pk = sk2.verifying_key();

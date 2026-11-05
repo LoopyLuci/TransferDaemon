@@ -15,8 +15,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use bytes::Bytes;
 use transferd_api::{AccountServiceClient, CreateIdentityRequest};
 use transferd_core::lanes::tcp_lane::TcpLane;
-use transferd_core::transport::TransportLane;
 use transferd_core::transport::Chunk;
+use transferd_core::transport::TransportLane;
 use transferd_core::types::{Gsn, SessionId};
 use transferd_crypto::identity::HybridSigningKey;
 use transferd_crypto::ratchet::DoubleRatchet;
@@ -25,18 +25,27 @@ use transferd_lib::peer_manager::directional_keys;
 use transferd_lib::wire::WireMsg;
 
 fn now_secs() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let device_grpc = std::env::args().nth(1).unwrap_or_else(|| "http://127.0.0.1:50051".into());
-    let device_transport = std::env::args().nth(2).unwrap_or_else(|| "127.0.0.1:50052".into());
+    let device_grpc = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "http://127.0.0.1:50051".into());
+    let device_transport = std::env::args()
+        .nth(2)
+        .unwrap_or_else(|| "127.0.0.1:50052".into());
 
     // 1. Give the device daemon an identity so its transport accepts us.
     let mut acct = AccountServiceClient::connect(device_grpc).await?;
-    acct.create_identity(CreateIdentityRequest { display_name: "Kindle".into() })
-        .await?;
+    acct.create_identity(CreateIdentityRequest {
+        display_name: "Kindle".into(),
+    })
+    .await?;
     println!("[probe] device identity created");
 
     // 2. Authenticated hybrid handshake to the device transport (initiator).

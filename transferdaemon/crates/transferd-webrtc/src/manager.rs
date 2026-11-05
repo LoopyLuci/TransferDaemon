@@ -8,11 +8,11 @@
 //! With the `real-webrtc` feature, uses `RtcCallSession` for actual peer-to-peer
 //! media transport. Without it, uses `SimulatedCallSession` for testing.
 
-use std::sync::Arc;
-use tokio::sync::Mutex;
 use crate::media::MediaCapture;
 use crate::session::SimulatedCallSession;
 use crate::types::{CallState, IceCandidateInit, VideoFrame};
+use std::sync::Arc;
+use tokio::sync::Mutex;
 
 #[cfg(feature = "real-webrtc")]
 use crate::rtc_session::RtcCallSession;
@@ -34,7 +34,9 @@ pub struct CallManager {
 }
 
 impl CallManager {
-    pub fn new() -> Self { Self::default() }
+    pub fn new() -> Self {
+        Self::default()
+    }
 
     /// Start an outgoing call.
     pub async fn start_call(
@@ -47,10 +49,9 @@ impl CallManager {
         let max_kbps = max_kbps.or(self.max_kbps);
         #[cfg(feature = "real-webrtc")]
         {
-            let sess = RtcCallSession::new_outgoing(conv_id, video, media, max_kbps).await
-                .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
-                    Box::new(e)
-                })?;
+            let sess = RtcCallSession::new_outgoing(conv_id, video, media, max_kbps)
+                .await
+                .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })?;
             let call_id = sess.call_id.clone();
             let _local_sdp = sess.local_sdp_json().to_string();
             *self.session.lock().await = Some(SessionInner::Real(sess));
@@ -79,12 +80,10 @@ impl CallManager {
         let max_kbps = max_kbps.or(self.max_kbps);
         #[cfg(feature = "real-webrtc")]
         {
-            let sess = RtcCallSession::new_incoming(
-                call_id, conv_id, video, remote_sdp, media, max_kbps,
-            ).await
-                .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
-                    Box::new(e)
-                })?;
+            let sess =
+                RtcCallSession::new_incoming(call_id, conv_id, video, remote_sdp, media, max_kbps)
+                    .await
+                    .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) })?;
             let local_sdp = sess.local_sdp_json().to_string();
             sess.activate().await;
             *self.session.lock().await = Some(SessionInner::Real(sess));
@@ -93,9 +92,9 @@ impl CallManager {
 
         #[cfg(not(feature = "real-webrtc"))]
         {
-            let sess = SimulatedCallSession::new_incoming(
-                call_id, conv_id, video, remote_sdp, media,
-            ).await;
+            let sess =
+                SimulatedCallSession::new_incoming(call_id, conv_id, video, remote_sdp, media)
+                    .await;
             let local_sdp = sess.local_sdp.clone();
             sess.activate().await;
             *self.session.lock().await = Some(SessionInner::Simulated(sess));
@@ -174,7 +173,10 @@ impl CallManager {
     }
 
     /// Set the remote SDP answer (for outgoing calls, real WebRTC only).
-    pub async fn set_remote_answer(&self, _answer_sdp: &str) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn set_remote_answer(
+        &self,
+        _answer_sdp: &str,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let guard = self.session.lock().await;
         if let Some(inner) = &*guard {
             match inner {
@@ -183,12 +185,10 @@ impl CallManager {
                     Ok(())
                 }
                 #[cfg(feature = "real-webrtc")]
-                SessionInner::Real(s) => {
-                    s.set_remote_answer(_answer_sdp).await
-                        .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
-                            Box::new(e)
-                        })
-                }
+                SessionInner::Real(s) => s
+                    .set_remote_answer(_answer_sdp)
+                    .await
+                    .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> { Box::new(e) }),
             }
         } else {
             Ok(())

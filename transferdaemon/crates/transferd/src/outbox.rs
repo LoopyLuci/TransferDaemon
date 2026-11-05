@@ -37,9 +37,20 @@ fn started() -> &'static Mutex<HashMap<String, Instant>> {
 }
 
 /// Split a file into wire messages for `msg_id`.
-pub fn file_chunks(sender: &str, msg_id: &str, file_name: &str, mime: &str, ts: u64, data: &[u8]) -> Vec<WireMsg> {
+pub fn file_chunks(
+    sender: &str,
+    msg_id: &str,
+    file_name: &str,
+    mime: &str,
+    ts: u64,
+    data: &[u8],
+) -> Vec<WireMsg> {
     let total = data.len().div_ceil(CHUNK).max(1) as u32;
-    let parts: Vec<&[u8]> = if data.is_empty() { vec![&[][..]] } else { data.chunks(CHUNK).collect() };
+    let parts: Vec<&[u8]> = if data.is_empty() {
+        vec![&[][..]]
+    } else {
+        data.chunks(CHUNK).collect()
+    };
     parts
         .into_iter()
         .enumerate()
@@ -60,8 +71,15 @@ pub fn file_chunks(sender: &str, msg_id: &str, file_name: &str, mime: &str, ts: 
 impl DaemonState {
     /// A chunk (or a whole text) of `msg_id` went out on a lane.
     pub fn note_dispatched(&mut self, msg_id: &str) {
-        if let Some(t) = self.transfers.iter_mut().find(|t| t.id == msg_id && t.outbound) {
-            let begun = *started().lock().entry(msg_id.to_string()).or_insert_with(Instant::now);
+        if let Some(t) = self
+            .transfers
+            .iter_mut()
+            .find(|t| t.id == msg_id && t.outbound)
+        {
+            let begun = *started()
+                .lock()
+                .entry(msg_id.to_string())
+                .or_insert_with(Instant::now);
             t.xferd_bytes = (t.xferd_bytes + CHUNK as u64).min(t.size_bytes);
             let secs = begun.elapsed().as_secs_f64().max(0.001);
             t.bps = (t.xferd_bytes as f64 * 8.0 / secs) as u64;
@@ -80,10 +98,26 @@ impl DaemonState {
     }
 
     /// An inbound file chunk arrived (receiver-side progress).
-    pub fn note_inbound_chunk(&mut self, sender: &str, msg_id: &str, file_name: &str, size: u64, chunk: usize, done: bool) {
+    pub fn note_inbound_chunk(
+        &mut self,
+        sender: &str,
+        msg_id: &str,
+        file_name: &str,
+        size: u64,
+        chunk: usize,
+        done: bool,
+    ) {
         let id = format!("in-{}-{msg_id}", &sender[..sender.len().min(12)]);
-        let name = self.contacts.iter().find(|c| c.id == sender).map(|c| c.name.clone()).unwrap_or_else(|| sender.to_string());
-        let begun = *started().lock().entry(id.clone()).or_insert_with(Instant::now);
+        let name = self
+            .contacts
+            .iter()
+            .find(|c| c.id == sender)
+            .map(|c| c.name.clone())
+            .unwrap_or_else(|| sender.to_string());
+        let begun = *started()
+            .lock()
+            .entry(id.clone())
+            .or_insert_with(Instant::now);
         let t = match self.transfers.iter_mut().position(|t| t.id == id) {
             Some(i) => &mut self.transfers[i],
             None => {
@@ -101,7 +135,11 @@ impl DaemonState {
                 &mut self.transfers[last]
             }
         };
-        t.xferd_bytes = if done { size } else { (t.xferd_bytes + chunk as u64).min(size) };
+        t.xferd_bytes = if done {
+            size
+        } else {
+            (t.xferd_bytes + chunk as u64).min(size)
+        };
         t.bps = (t.xferd_bytes as f64 * 8.0 / begun.elapsed().as_secs_f64().max(0.001)) as u64;
         if done {
             t.lanes_active = 0;
@@ -135,10 +173,24 @@ pub async fn flush(state: &Arc<Mutex<DaemonState>>, contact_id: &str) -> usize {
     let queued = pm.queued_msg_ids(contact_id);
     let (pending, sender, paths) = {
         let s = state.lock();
-        let pending: Vec<_> = s.pending_for(contact_id).into_iter().filter(|m| !queued.contains(&m.id)).collect();
-        let sender = s.identity.as_ref().map(|i| i.public_key.clone()).unwrap_or_default();
-        let paths: HashMap<String, String> =
-            pending.iter().filter_map(|m| s.settings.get(&file_key(&m.id)).map(|p| (m.id.clone(), p.clone()))).collect();
+        let pending: Vec<_> = s
+            .pending_for(contact_id)
+            .into_iter()
+            .filter(|m| !queued.contains(&m.id))
+            .collect();
+        let sender = s
+            .identity
+            .as_ref()
+            .map(|i| i.public_key.clone())
+            .unwrap_or_default();
+        let paths: HashMap<String, String> = pending
+            .iter()
+            .filter_map(|m| {
+                s.settings
+                    .get(&file_key(&m.id))
+                    .map(|p| (m.id.clone(), p.clone()))
+            })
+            .collect();
         (pending, sender, paths)
     };
     let mut n = 0;
@@ -150,7 +202,14 @@ pub async fn flush(state: &Arc<Mutex<DaemonState>>, contact_id: &str) -> usize {
                 continue;
             };
             match std::fs::read(path) {
-                Ok(data) if data.len() as u64 <= MAX_FILE => file_chunks(&sender, &m.id, &m.file_name, &m.file_mime, m.timestamp_ts, &data),
+                Ok(data) if data.len() as u64 <= MAX_FILE => file_chunks(
+                    &sender,
+                    &m.id,
+                    &m.file_name,
+                    &m.file_mime,
+                    m.timestamp_ts,
+                    &data,
+                ),
                 Ok(_) => {
                     failed.push((m.id.clone(), "the file is too large".into()));
                     continue;
@@ -202,27 +261,46 @@ mod tests {
         let data = vec![7u8; CHUNK * 2 + 5];
         let parts = file_chunks("me", "m1", "f.bin", "application/octet-stream", 1, &data);
         assert_eq!(parts.len(), 3);
-        assert!(matches!(&parts[2], WireMsg::File { seq: 2, total_chunks: 3, data, file_size, .. }
-                         if data.len() == 5 && *file_size == (CHUNK * 2 + 5) as u64));
-        assert_eq!(file_chunks("me", "m2", "empty", "", 1, &[]).len(), 1, "an empty file is still one message");
+        assert!(
+            matches!(&parts[2], WireMsg::File { seq: 2, total_chunks: 3, data, file_size, .. }
+                         if data.len() == 5 && *file_size == (CHUNK * 2 + 5) as u64)
+        );
+        assert_eq!(
+            file_chunks("me", "m2", "empty", "", 1, &[]).len(),
+            1,
+            "an empty file is still one message"
+        );
     }
 
     #[test]
     fn progress_counts_chunks_and_completes_on_ack() {
         let mut s = DaemonState::default();
         s.transfers.push(crate::state::Transfer {
-            id: "m1".into(), contact_name: "Bob".into(), file_name: "f".into(), size_bytes: (CHUNK * 3) as u64,
-            xferd_bytes: 0, outbound: true, lanes_active: 1, bps: 0,
+            id: "m1".into(),
+            contact_name: "Bob".into(),
+            file_name: "f".into(),
+            size_bytes: (CHUNK * 3) as u64,
+            xferd_bytes: 0,
+            outbound: true,
+            lanes_active: 1,
+            bps: 0,
         });
         s.settings.insert(file_key("m1"), "C:/f".into());
         s.note_dispatched("m1");
         assert_eq!(s.transfers[0].xferd_bytes, CHUNK as u64);
         s.note_delivered("m1");
         assert_eq!(s.transfers[0].xferd_bytes, (CHUNK * 3) as u64);
-        assert!(!s.settings.contains_key(&file_key("m1")), "delivered files leave the outbox");
+        assert!(
+            !s.settings.contains_key(&file_key("m1")),
+            "delivered files leave the outbox"
+        );
         s.note_inbound_chunk("abcdef", "x", "in.bin", 100, 60, false);
         s.note_inbound_chunk("abcdef", "x", "in.bin", 100, 40, true);
-        let t = s.transfers.iter().find(|t| !t.outbound).map(|t| (t.xferd_bytes, t.lanes_active));
+        let t = s
+            .transfers
+            .iter()
+            .find(|t| !t.outbound)
+            .map(|t| (t.xferd_bytes, t.lanes_active));
         assert_eq!(t, Some((100, 0)));
     }
 }

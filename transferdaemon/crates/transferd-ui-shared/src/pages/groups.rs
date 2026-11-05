@@ -42,7 +42,11 @@ impl GroupsPage {
 
         // Header row: title + "New group" toggle.
         ui.horizontal(|ui| {
-            ui.label(RichText::new("👥 Groups").size(16.0).color(tokens.palette.text_primary));
+            ui.label(
+                RichText::new("👥 Groups")
+                    .size(16.0)
+                    .color(tokens.palette.text_primary),
+            );
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui.button("+ New group").clicked() {
                     self.show_create = !self.show_create;
@@ -121,7 +125,11 @@ impl GroupsPage {
         if state.groups.is_empty() {
             ui.vertical_centered(|ui| {
                 ui.add_space(ui.available_height() / 4.0);
-                ui.label(RichText::new("👥").size(48.0).color(tokens.palette.text_disabled));
+                ui.label(
+                    RichText::new("👥")
+                        .size(48.0)
+                        .color(tokens.palette.text_disabled),
+                );
                 ui.add_space(tokens.spacing.sm);
                 ui.label(
                     RichText::new("No groups yet — create one to start chatting together")
@@ -224,7 +232,9 @@ impl GroupChatPage {
 
     pub fn show(&mut self, ui: &mut egui::Ui, state: &mut AppState) {
         let tokens = DesignTokens::current();
-        let Some(gid) = state.open_group.clone() else { return };
+        let Some(gid) = state.open_group.clone() else {
+            return;
+        };
 
         // Resolve the group (fresh copy from state).
         let group = state.groups.iter().find(|g| g.id == gid).cloned();
@@ -253,7 +263,9 @@ impl GroupChatPage {
                             );
                             if ui.button("Save").clicked() {
                                 let rt = tokio::runtime::Handle::current();
-                                let _ = rt.block_on(state.daemon.rename_group(&gid, self.rename_input.clone()));
+                                let _ = rt.block_on(
+                                    state.daemon.rename_group(&gid, self.rename_input.clone()),
+                                );
                                 let groups = rt.block_on(state.daemon.get_groups());
                                 state.groups = groups;
                                 self.rename_mode = false;
@@ -277,7 +289,8 @@ impl GroupChatPage {
                         }
                         if ui.button("✏️").clicked() {
                             self.rename_mode = !self.rename_mode;
-                            self.rename_input = group.as_ref().map(|g| g.name.clone()).unwrap_or_default();
+                            self.rename_input =
+                                group.as_ref().map(|g| g.name.clone()).unwrap_or_default();
                         }
                     });
                 });
@@ -294,7 +307,11 @@ impl GroupChatPage {
                         ScrollArea::vertical().show(ui, |ui| {
                             for m in &g.members {
                                 ui.horizontal(|ui| {
-                                    ui.label(format!("{} — {}", m.public_key.chars().take(12).collect::<String>(), m.role_name()));
+                                    ui.label(format!(
+                                        "{} — {}",
+                                        m.public_key.chars().take(12).collect::<String>(),
+                                        m.role_name()
+                                    ));
                                 });
                             }
                         });
@@ -303,11 +320,15 @@ impl GroupChatPage {
                         for m in &g.members {
                             let pk = m.public_key.clone();
                             if ui
-                                .small_button(format!("Remove {}", pk.chars().take(10).collect::<String>()))
+                                .small_button(format!(
+                                    "Remove {}",
+                                    pk.chars().take(10).collect::<String>()
+                                ))
                                 .clicked()
                             {
                                 let rt = tokio::runtime::Handle::current();
-                                let _ = rt.block_on(state.daemon.remove_group_members(&gid, vec![pk]));
+                                let _ =
+                                    rt.block_on(state.daemon.remove_group_members(&gid, vec![pk]));
                                 let groups = rt.block_on(state.daemon.get_groups());
                                 state.groups = groups;
                             }
@@ -338,7 +359,8 @@ impl GroupChatPage {
                         let label = if m.outbound {
                             "You".to_string()
                         } else {
-                            m.sender_pk.as_deref()
+                            m.sender_pk
+                                .as_deref()
                                 .map(|s| s.chars().take(10).collect::<String>())
                                 .unwrap_or_else(|| "Member".into())
                         };
@@ -349,7 +371,13 @@ impl GroupChatPage {
                                     .color(tokens.palette.text_disabled),
                             );
                         });
-                        message_bubble(ui, m, bubble_max_w, Some(tokens.palette.accent), &self.messages);
+                        message_bubble(
+                            ui,
+                            m,
+                            bubble_max_w,
+                            Some(tokens.palette.accent),
+                            &self.messages,
+                        );
                         ui.add_space(tokens.spacing.xxs);
                     }
                     ui.add_space(tokens.spacing.sm);

@@ -14,9 +14,9 @@ use std::sync::Arc;
 
 use bytes::Bytes;
 use parking_lot::Mutex as PkMutex;
-use tokio::sync::{Mutex, oneshot};
+use tokio::sync::{oneshot, Mutex};
 
-use transferd_core::lanes::relay_client::{PREFIX_CHUNK, PREFIX_HANDSHAKE, RelayClient};
+use transferd_core::lanes::relay_client::{RelayClient, PREFIX_CHUNK, PREFIX_HANDSHAKE};
 use transferd_core::lanes::relay_ws_client::RelayForward;
 use transferd_core::transport::Chunk;
 use transferd_core::types::{Gsn, SessionId};
@@ -112,7 +112,11 @@ pub(crate) fn resolve_addr(s: &str) -> Option<std::net::SocketAddr> {
             return None;
         }
     };
-    addrs.iter().find(|a| a.is_ipv4()).copied().or_else(|| addrs.first().copied())
+    addrs
+        .iter()
+        .find(|a| a.is_ipv4())
+        .copied()
+        .or_else(|| addrs.first().copied())
 }
 
 /// Parse the comma-separated `TRANSFERD_RELAY_ADDR` into `(addr, kind)` pairs.
@@ -155,7 +159,8 @@ pub async fn spawn_inbound_relay_listener(state: Arc<PkMutex<DaemonState>>) {
         );
         return;
     }
-    let relay_specs: Vec<(std::net::SocketAddr, RelayKind)> = configured.iter().map(|(s, _)| *s).collect();
+    let relay_specs: Vec<(std::net::SocketAddr, RelayKind)> =
+        configured.iter().map(|(s, _)| *s).collect();
     let authorities: Vec<Option<String>> = configured.into_iter().map(|(_, a)| a).collect();
 
     let token = {
@@ -182,7 +187,10 @@ pub async fn spawn_inbound_relay_listener(state: Arc<PkMutex<DaemonState>>) {
     match RelayHub::start(state.clone(), relay_specs.clone(), authorities, token).await {
         Ok(hub) => {
             state.lock().relay_hub = Some(hub);
-            tracing::info!("[relay] inbound listeners registered on {} relays", relay_specs.len());
+            tracing::info!(
+                "[relay] inbound listeners registered on {} relays",
+                relay_specs.len()
+            );
             // If a DHT node is available, publish our endpoint so contacts can
             // discover us by public key.
             crate::peer_discovery::publish_endpoint_if_ready(&state).await;
@@ -194,9 +202,8 @@ pub async fn spawn_inbound_relay_listener(state: Arc<PkMutex<DaemonState>>) {
 }
 
 impl RelayHub {
-
-/// Connect every relay (UDP or WS), register `self_token`, and spawn a receive
-/// loop per relay. `state` is used to apply inbound messages.
+    /// Connect every relay (UDP or WS), register `self_token`, and spawn a receive
+    /// loop per relay. `state` is used to apply inbound messages.
     pub async fn start(
         state: Arc<PkMutex<DaemonState>>,
         relay_specs: Vec<(std::net::SocketAddr, RelayKind)>,
@@ -206,18 +213,29 @@ impl RelayHub {
         let mut relays: Vec<HubRelay> = Vec::with_capacity(relay_specs.len());
         enum Loop {
             Udp(Arc<RelayClient>),
-            Ws(tokio::sync::mpsc::Receiver<Vec<u8>>, Arc<dyn RelayForward + Send + Sync>),
+            Ws(
+                tokio::sync::mpsc::Receiver<Vec<u8>>,
+                Arc<dyn RelayForward + Send + Sync>,
+            ),
         }
         let mut loops: Vec<Loop> = Vec::with_capacity(relay_specs.len());
         for ((addr, kind), authority) in relay_specs.into_iter().zip(authorities) {
             match kind {
                 RelayKind::Udp => {
-                    let client = Arc::new(
-                        RelayClient::bind(addr).await.map_err(|e| e.to_string())?,
-                    );
-                    client.register(self_token).await.map_err(|e| e.to_string())?;
+                    let client =
+                        Arc::new(RelayClient::bind(addr).await.map_err(|e| e.to_string())?);
+                    client
+                        .register(self_token)
+                        .await
+                        .map_err(|e| e.to_string())?;
                     client.spawn_keepalive_loop(self_token);
-                    relays.push(HubRelay { kind, addr, authority: None, forward: client.clone(), ws_client: None });
+                    relays.push(HubRelay {
+                        kind,
+                        addr,
+                        authority: None,
+                        forward: client.clone(),
+                        ws_client: None,
+                    });
                     loops.push(Loop::Udp(client));
                 }
                 RelayKind::Ws(tls) => {
@@ -234,7 +252,13 @@ impl RelayHub {
                         .map_err(|e| e.to_string())?;
                     let client = Arc::new(client);
                     client.spawn_keepalive_loop(self_token);
-                    relays.push(HubRelay { kind, addr, authority, forward: client.clone(), ws_client: Some(client.clone()) });
+                    relays.push(HubRelay {
+                        kind,
+                        addr,
+                        authority,
+                        forward: client.clone(),
+                        ws_client: Some(client.clone()),
+                    });
                     loops.push(Loop::Ws(rx, client));
                 }
             }
@@ -266,7 +290,10 @@ impl RelayHub {
             }
         }
 
-        tracing::info!("[relay] inbound listeners registered token on {} relays", hub.relays.len());
+        tracing::info!(
+            "[relay] inbound listeners registered token on {} relays",
+            hub.relays.len()
+        );
         Ok(hub)
     }
 
@@ -306,7 +333,10 @@ impl RelayHub {
     /// hostname to different IPs, so the hostname is the stable identity).
     pub fn has_relay_authority(&self, authority: &str) -> bool {
         self.relays.iter().any(|r| {
-            r.authority.as_deref().map(|a| a == authority).unwrap_or(false)
+            r.authority
+                .as_deref()
+                .map(|a| a == authority)
+                .unwrap_or(false)
                 || r.addr.to_string() == authority
         })
     }
@@ -316,8 +346,14 @@ impl RelayHub {
         self.relays.iter().find(|r| r.addr == addr).map(|r| r.kind)
     }
 
-    fn client_for(&self, addr: std::net::SocketAddr) -> Option<&Arc<dyn RelayForward + Send + Sync>> {
-        self.relays.iter().find(|r| r.addr == addr).map(|r| &r.forward)
+    fn client_for(
+        &self,
+        addr: std::net::SocketAddr,
+    ) -> Option<&Arc<dyn RelayForward + Send + Sync>> {
+        self.relays
+            .iter()
+            .find(|r| r.addr == addr)
+            .map(|r| &r.forward)
     }
 
     /// The concrete WebSocket relay client for `addr` (None for UDP relays).
@@ -325,7 +361,10 @@ impl RelayHub {
         &self,
         addr: std::net::SocketAddr,
     ) -> Option<Arc<transferd_core::lanes::relay_ws_client::RelayWsClient>> {
-        self.relays.iter().find(|r| r.addr == addr).and_then(|r| r.ws_client.clone())
+        self.relays
+            .iter()
+            .find(|r| r.addr == addr)
+            .and_then(|r| r.ws_client.clone())
     }
 
     /// Initiate a relay session with `peer_token`, performing the authenticated
@@ -370,13 +409,10 @@ impl RelayHub {
             .await
             .map_err(|e| e.to_string())?;
 
-        let auth_resp = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            rx,
-        )
-        .await
-        .map_err(|_| "relay handshake timed out".to_string())?
-        .map_err(|_| "relay handshake channel closed".to_string())?;
+        let auth_resp = tokio::time::timeout(std::time::Duration::from_secs(5), rx)
+            .await
+            .map_err(|_| "relay handshake timed out".to_string())?
+            .map_err(|_| "relay handshake channel closed".to_string())?;
 
         if !auth_resp.verify() {
             return Err("relay responder identity signature failed to verify".to_string());
@@ -397,22 +433,41 @@ impl RelayHub {
         );
         tracing::debug!(
             "[relay] initiator session token={}.. root={}..",
-            peer_token[..2].iter().map(|b| format!("{b:02x}")).collect::<String>(),
-            key_bytes[..2].iter().map(|b| format!("{b:02x}")).collect::<String>(),
+            peer_token[..2]
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>(),
+            key_bytes[..2]
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>(),
         );
         Ok(peer_hybrid_pk)
     }
 
     /// The per-peer shared secret (used as the ratchet root by the caller).
     pub async fn session_root(&self, peer_token: [u8; 32]) -> Option<[u8; 32]> {
-        self.sessions.lock().await.get(&(peer_token, true)).map(|s| s.shared)
+        self.sessions
+            .lock()
+            .await
+            .get(&(peer_token, true))
+            .map(|s| s.shared)
     }
 
     /// Per-direction (send, recv) keys for an established peer session.
     pub async fn send_keys(&self, peer_token: [u8; 32]) -> Option<([u8; 32], [u8; 32])> {
-        let s = self.sessions.lock().await.get(&(peer_token, true)).cloned()?;
+        let s = self
+            .sessions
+            .lock()
+            .await
+            .get(&(peer_token, true))
+            .cloned()?;
         let (role0, role1) = directional_keys(&s.shared);
-        Some(if s.we_initiated { (role0, role1) } else { (role1, role0) })
+        Some(if s.we_initiated {
+            (role0, role1)
+        } else {
+            (role1, role0)
+        })
     }
 
     /// Whether an initiator session with `peer_token` has been established.
@@ -428,14 +483,17 @@ impl RelayHub {
         let socket = client.socket();
         let mut buf = vec![0u8; 65536];
         loop {
-            let Ok((len, _)) = socket.recv_from(&mut buf).await else { break };
+            let Ok((len, _)) = socket.recv_from(&mut buf).await else {
+                break;
+            };
             let frame = &buf[..len];
-            let Some((&tag, body)) = frame.split_first() else { continue };
+            let Some((&tag, body)) = frame.split_first() else {
+                continue;
+            };
             if tag != relayd::protocol::Tag::Ack as u8 {
                 continue;
             }
-            let Ok(delivered) = bincode::deserialize::<relayd::protocol::DeliveredMsg>(body)
-            else {
+            let Ok(delivered) = bincode::deserialize::<relayd::protocol::DeliveredMsg>(body) else {
                 continue;
             };
             let raw = &delivered.ciphertext;
@@ -470,7 +528,12 @@ impl RelayHub {
     }
 
     /// Handle a handshake payload: `[sender_token: 32][Auth flight]`.
-    async fn handle_handshake(&self, forward: &Arc<dyn RelayForward + Send + Sync>, payload: &[u8], state: &Arc<PkMutex<DaemonState>>) {
+    async fn handle_handshake(
+        &self,
+        forward: &Arc<dyn RelayForward + Send + Sync>,
+        payload: &[u8],
+        state: &Arc<PkMutex<DaemonState>>,
+    ) {
         if payload.len() < 32 {
             return;
         }
@@ -491,7 +554,9 @@ impl RelayHub {
         }
 
         // Otherwise we are the responder: verify and reply.
-        let Some(auth_hello) = AuthInitiatorHello::from_wire(body) else { return };
+        let Some(auth_hello) = AuthInitiatorHello::from_wire(body) else {
+            return;
+        };
         if auth_hello.version != PROTOCOL_VERSION {
             return;
         }
@@ -523,8 +588,14 @@ impl RelayHub {
         );
         tracing::debug!(
             "[relay] responder session token={}.. root={}..",
-            sender_token[..2].iter().map(|b| format!("{b:02x}")).collect::<String>(),
-            key_bytes[..2].iter().map(|b| format!("{b:02x}")).collect::<String>(),
+            sender_token[..2]
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>(),
+            key_bytes[..2]
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>(),
         );
 
         let flight = AuthResponderHello::build(
@@ -541,13 +612,18 @@ impl RelayHub {
     }
 
     /// Handle an encrypted chunk: `[sender_token: 32][nonce][tag][ciphertext]`.
-    async fn handle_chunk(&self, forward: &Arc<dyn RelayForward + Send + Sync>, payload: &[u8], state: &Arc<PkMutex<DaemonState>>) {
+    async fn handle_chunk(
+        &self,
+        forward: &Arc<dyn RelayForward + Send + Sync>,
+        payload: &[u8],
+        state: &Arc<PkMutex<DaemonState>>,
+    ) {
         tracing::debug!("[relay] inbound chunk ({} bytes)", payload.len());
         if payload.len() < 32 + 28 {
             tracing::warn!("[relay] chunk too short: {} bytes", payload.len());
             return;
         }
-let sender_token: [u8; 32] = match payload[..32].try_into() {
+        let sender_token: [u8; 32] = match payload[..32].try_into() {
             Ok(t) => t,
             Err(_) => {
                 tracing::warn!("[relay] chunk token parse failed");
@@ -572,7 +648,13 @@ let sender_token: [u8; 32] = match payload[..32].try_into() {
         let mut chosen: Option<RelaySession> = None;
         let mut decrypted: Vec<u8> = Vec::new();
         for we_initiated in [true, false] {
-            let Some(session) = self.sessions.lock().await.get(&(sender_token, we_initiated)).cloned() else {
+            let Some(session) = self
+                .sessions
+                .lock()
+                .await
+                .get(&(sender_token, we_initiated))
+                .cloned()
+            else {
                 continue;
             };
             let recv_key = if session.we_initiated {
@@ -656,7 +738,10 @@ let sender_token: [u8; 32] = match payload[..32].try_into() {
         }
 
         // Apply to state; ack when the message expects one.
-        let reply = { let mut s = state.lock(); s.apply_inbound(&msg) };
+        let reply = {
+            let mut s = state.lock();
+            s.apply_inbound(&msg)
+        };
         if let Some(ack) = reply {
             if let Ok(ack_bytes) = ack.encode() {
                 // Ratchet the ack with our per-message key.
@@ -681,11 +766,7 @@ let sender_token: [u8; 32] = match payload[..32].try_into() {
 }
 
 /// Encrypt a chunk into the relay frame layout `[PREFIX_CHUNK][token][nonce][tag][ct]`.
-fn encrypt_chunk(
-    send_key: &[u8; 32],
-    chunk: &Chunk,
-    self_token: &[u8; 32],
-) -> Result<Vec<u8>, ()> {
+fn encrypt_chunk(send_key: &[u8; 32], chunk: &Chunk, self_token: &[u8; 32]) -> Result<Vec<u8>, ()> {
     let wire = transferd_core::transport::WireChunk::from(chunk);
     let raw = bincode::serialize(&wire).map_err(|_| ())?;
     let plaintext = pad_plaintext(&raw);
@@ -694,7 +775,9 @@ fn encrypt_chunk(
 
     let encryptor = DmiEncryptor::new(send_key);
     let mut buf = plaintext;
-    let tag = encryptor.encrypt_detached(&mut buf, &nonce, &aad).map_err(|_| ())?;
+    let tag = encryptor
+        .encrypt_detached(&mut buf, &nonce, &aad)
+        .map_err(|_| ())?;
 
     let mut payload = Vec::with_capacity(1 + 32 + 12 + 16 + buf.len());
     payload.push(PREFIX_CHUNK);

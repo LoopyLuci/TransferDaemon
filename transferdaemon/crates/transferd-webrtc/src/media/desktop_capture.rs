@@ -9,9 +9,8 @@
 
 use async_trait::async_trait;
 use std::sync::{
-    Arc,
     atomic::{AtomicBool, Ordering},
-    mpsc as std_mpsc,
+    mpsc as std_mpsc, Arc,
 };
 use tokio::sync::mpsc;
 
@@ -37,7 +36,9 @@ impl DesktopMediaCapture {
 }
 
 impl Default for DesktopMediaCapture {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[async_trait]
@@ -89,7 +90,9 @@ impl MediaCapture for DesktopMediaCapture {
 
 fn silence_loop(tok_tx: mpsc::Sender<AudioSamples>, stopped: Arc<AtomicBool>) {
     while !stopped.load(Ordering::Relaxed) {
-        if tok_tx.blocking_send(vec![0.0f32; 480]).is_err() { break; }
+        if tok_tx.blocking_send(vec![0.0f32; 480]).is_err() {
+            break;
+        }
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
 }
@@ -100,7 +103,10 @@ fn capture_audio(tok_tx: mpsc::Sender<AudioSamples>, stopped: Arc<AtomicBool>) {
     let host = cpal::default_host();
     let device = match host.default_input_device() {
         Some(d) => d,
-        None => { silence_loop(tok_tx, stopped); return; }
+        None => {
+            silence_loop(tok_tx, stopped);
+            return;
+        }
     };
     let config = match device.default_input_config() {
         Ok(c) => c,
@@ -132,10 +138,8 @@ fn capture_audio(tok_tx: mpsc::Sender<AudioSamples>, stopped: Arc<AtomicBool>) {
             device.build_input_stream(
                 &cfg,
                 move |data: &[i16], _: &cpal::InputCallbackInfo| {
-                    let floats: Vec<f32> = data
-                        .iter()
-                        .map(|&s| s as f32 / i16::MAX as f32)
-                        .collect();
+                    let floats: Vec<f32> =
+                        data.iter().map(|&s| s as f32 / i16::MAX as f32).collect();
                     let _ = tx.try_send(floats);
                 },
                 err_fn,
@@ -183,7 +187,9 @@ fn capture_audio(tok_tx: mpsc::Sender<AudioSamples>, stopped: Arc<AtomicBool>) {
     // Chunk raw samples into 480-sample (10 ms @ 48 kHz) frames.
     let mut buf = Vec::<f32>::with_capacity(960);
     loop {
-        if stopped.load(Ordering::Relaxed) { break; }
+        if stopped.load(Ordering::Relaxed) {
+            break;
+        }
         match raw_rx.recv_timeout(std::time::Duration::from_millis(50)) {
             Ok(chunk) => {
                 buf.extend_from_slice(&chunk);
@@ -208,14 +214,12 @@ fn capture_audio(tok_tx: mpsc::Sender<AudioSamples>, stopped: Arc<AtomicBool>) {
 /// Returns `false` if the camera could not be opened (caller may log).
 fn capture_video(tok_tx: mpsc::Sender<VideoFrame>, stopped: Arc<AtomicBool>) -> bool {
     use nokhwa::{
-        Camera,
         pixel_format::RgbAFormat,
         utils::{CameraIndex, RequestedFormat, RequestedFormatType},
+        Camera,
     };
 
-    let format = RequestedFormat::new::<RgbAFormat>(
-        RequestedFormatType::AbsoluteHighestResolution,
-    );
+    let format = RequestedFormat::new::<RgbAFormat>(RequestedFormatType::AbsoluteHighestResolution);
 
     let mut camera = match Camera::new(CameraIndex::Index(0), format) {
         Ok(c) => c,
@@ -235,11 +239,13 @@ fn capture_video(tok_tx: mpsc::Sender<VideoFrame>, stopped: Arc<AtomicBool>) -> 
             Ok(buf) => match buf.decode_image::<RgbAFormat>() {
                 Ok(img) => {
                     let frame = VideoFrame {
-                        width:  img.width(),
+                        width: img.width(),
                         height: img.height(),
-                        rgba:   img.into_raw(),
+                        rgba: img.into_raw(),
                     };
-                    if tok_tx.blocking_send(frame).is_err() { break; }
+                    if tok_tx.blocking_send(frame).is_err() {
+                        break;
+                    }
                 }
                 Err(e) => tracing::error!("transferd-webrtc: frame decode error: {e}"),
             },

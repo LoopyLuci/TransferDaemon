@@ -46,7 +46,11 @@ pub struct WsRelay {
 
 impl WsRelay {
     pub fn new(difficulty: u32, ttl_secs: u64) -> Self {
-        Self::with_limits(difficulty, ttl_secs, crate::limits::RelayLimits::unrestricted())
+        Self::with_limits(
+            difficulty,
+            ttl_secs,
+            crate::limits::RelayLimits::unrestricted(),
+        )
     }
 
     pub fn with_limits(difficulty: u32, ttl_secs: u64, limits: crate::limits::RelayLimits) -> Self {
@@ -66,8 +70,12 @@ impl WsRelay {
     /// Check a ghost registration (policy, then the per-key session cap); the ghost key it proves.
     pub fn admit_ghost(&self, msg: &GhostRegisterMsg) -> Result<[u8; 32], String> {
         let key = self.ghost.admit(msg)?;
-        let held = self.ghost_of.iter()
-            .filter(|(t, k)| **k == key && **t != msg.register.session_token && self.clients.contains_key(*t))
+        let held = self
+            .ghost_of
+            .iter()
+            .filter(|(t, k)| {
+                **k == key && **t != msg.register.session_token && self.clients.contains_key(*t)
+            })
             .count();
         if held >= self.ghost.max_sessions_per_key {
             return Err(format!("this ghost key already holds {held} sessions here"));
@@ -144,7 +152,9 @@ pub async fn handle_connection(
                     let verdict = if !r.challenge.verify(&reg.session_token, reg.pow_nonce) {
                         Err((ErrorCode::InvalidPoW, "invalid PoW".to_string()))
                     } else {
-                        r.admit_ghost(&msg).map_err(|e| (ErrorCode::GhostRejected, format!("ghost key rejected: {e}")))
+                        r.admit_ghost(&msg).map_err(|e| {
+                            (ErrorCode::GhostRejected, format!("ghost key rejected: {e}"))
+                        })
                     };
                     match verdict {
                         Ok(key) => {
@@ -155,7 +165,15 @@ pub async fn handle_connection(
                             r.send_challenge(&tx);
                         }
                         Err((code, detail)) => {
-                            let e = encode(Tag::Error, &ErrorMsg { code, seq: reg.seq, detail }).unwrap_or_default();
+                            let e = encode(
+                                Tag::Error,
+                                &ErrorMsg {
+                                    code,
+                                    seq: reg.seq,
+                                    detail,
+                                },
+                            )
+                            .unwrap_or_default();
                             let _ = tx.send(Message::Binary(e));
                         }
                     }
@@ -163,11 +181,17 @@ pub async fn handle_connection(
             }
             Tag::Register if r.ghost.required => {
                 if let Ok(msg) = bincode::deserialize::<RegisterMsg>(body) {
-                    let e = encode(Tag::Error, &ErrorMsg {
-                        code: ErrorCode::GhostRequired,
-                        seq: msg.seq,
-                        detail: "this relay admits only registrations with a ghost key certificate".into(),
-                    }).unwrap_or_default();
+                    let e = encode(
+                        Tag::Error,
+                        &ErrorMsg {
+                            code: ErrorCode::GhostRequired,
+                            seq: msg.seq,
+                            detail:
+                                "this relay admits only registrations with a ghost key certificate"
+                                    .into(),
+                        },
+                    )
+                    .unwrap_or_default();
                     let _ = tx.send(Message::Binary(e));
                 }
             }
@@ -258,14 +282,29 @@ pub async fn handle_connection(
                 // can see a NAT's mapped address is the one the datagram went through.
                 if let Ok(msg) = bincode::deserialize::<LocateMsg>(body) {
                     // As on UDP: only the connection the token registered on may ask for it.
-                    let known = r.clients.get(&msg.self_token).map(|(a, _)| *a == peer).unwrap_or(false);
+                    let known = r
+                        .clients
+                        .get(&msg.self_token)
+                        .map(|(a, _)| *a == peer)
+                        .unwrap_or(false);
                     let peer_addr = r.clients.get(&msg.peer_token).map(|(a, _)| *a);
                     let reply = if known {
-                        encode(Tag::Locate, &LocatedMsg { self_addr: peer, peer_addr, request: msg.seq })
+                        encode(
+                            Tag::Locate,
+                            &LocatedMsg {
+                                self_addr: peer,
+                                peer_addr,
+                                request: msg.seq,
+                            },
+                        )
                     } else {
                         encode(
                             Tag::Error,
-                            &ErrorMsg { code: ErrorCode::TokenNotFound, seq: msg.seq, detail: "not registered".into() },
+                            &ErrorMsg {
+                                code: ErrorCode::TokenNotFound,
+                                seq: msg.seq,
+                                detail: "not registered".into(),
+                            },
                         )
                     };
                     let _ = tx.send(Message::Binary(reply.unwrap_or_default()));

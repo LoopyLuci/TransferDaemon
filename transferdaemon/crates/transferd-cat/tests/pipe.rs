@@ -13,18 +13,30 @@ fn random(n: usize) -> Vec<u8> {
     v
 }
 
-async fn exchange(listener: Listener, address: CatAddress, a: Vec<u8>, b: Vec<u8>) -> (Vec<u8>, Vec<u8>, bool) {
+async fn exchange(
+    listener: Listener,
+    address: CatAddress,
+    a: Vec<u8>,
+    b: Vec<u8>,
+) -> (Vec<u8>, Vec<u8>, bool) {
     let (a2, b2) = (a.clone(), b.clone());
     let l = tokio::spawn(async move {
-        let s = listener.accept(Duration::from_secs(20)).await.expect("accept");
+        let s = listener
+            .accept(Duration::from_secs(20))
+            .await
+            .expect("accept");
         let mut got = Vec::new();
-        s.pipe(std::io::Cursor::new(a2), &mut got).await.expect("listener pipe");
+        s.pipe(std::io::Cursor::new(a2), &mut got)
+            .await
+            .expect("listener pipe");
         got
     });
     let d = dial(&address, Duration::from_secs(20)).await.expect("dial");
     let direct = d.direct;
     let mut got = Vec::new();
-    d.pipe(std::io::Cursor::new(b2), &mut got).await.expect("dialer pipe");
+    d.pipe(std::io::Cursor::new(b2), &mut got)
+        .await
+        .expect("dialer pipe");
     let l_got = l.await.expect("listener task");
     (l_got, got, direct)
 }
@@ -33,10 +45,13 @@ async fn exchange(listener: Listener, address: CatAddress, a: Vec<u8>, b: Vec<u8
 async fn both_ways_on_the_direct_path() {
     let listener = Listener::bind(None).await.expect("bind");
     let addr = listener.address.clone();
-    let (a, b) = (random(2 << 20), random(2 << 20) );
+    let (a, b) = (random(2 << 20), random(2 << 20));
     let (listener_got, dialer_got, direct) = exchange(listener, addr, a.clone(), b.clone()).await;
     assert!(direct, "no relay: the direct path");
-    assert_eq!(listener_got, b, "the dialer's bytes reached the listener intact");
+    assert_eq!(
+        listener_got, b,
+        "the dialer's bytes reached the listener intact"
+    );
     assert_eq!(dialer_got, a, "and the listener's reached the dialer");
 }
 
@@ -64,14 +79,21 @@ async fn a_wrong_secret_gets_nowhere() {
     addr.secret[0] ^= 1;
     let accept = tokio::spawn(listener.accept(Duration::from_secs(5)));
     let r = dial(&addr, Duration::from_secs(5)).await;
-    assert!(r.is_err(), "the handshake confirmation must not check out with another secret");
+    assert!(
+        r.is_err(),
+        "the handshake confirmation must not check out with another secret"
+    );
     let _ = accept.await;
 }
 
 #[test]
 fn addresses_round_trip() {
-    let a = CatAddress { relay: Some("203.0.113.5:7777".parse().expect("addr")), token: [7; 32], secret: [9; 32],
-                         direct: vec!["192.0.2.1:5000".parse().expect("addr")] };
+    let a = CatAddress {
+        relay: Some("203.0.113.5:7777".parse().expect("addr")),
+        token: [7; 32],
+        secret: [9; 32],
+        direct: vec!["192.0.2.1:5000".parse().expect("addr")],
+    };
     assert_eq!(CatAddress::parse(&a.to_text()).expect("parse"), a);
     assert!(CatAddress::parse("tdcat:-/zz/00/").is_err());
 }

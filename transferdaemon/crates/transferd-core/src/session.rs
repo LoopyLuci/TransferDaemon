@@ -104,9 +104,9 @@ impl Session {
                 break;
             }
 
-            let lane_idx = self.ate.select_lane(
-                chunk.gsn, self.send_base, &metrics_refs, &capacities,
-            );
+            let lane_idx =
+                self.ate
+                    .select_lane(chunk.gsn, self.send_base, &metrics_refs, &capacities);
 
             if let Some(idx) = lane_idx {
                 // Snapshot metrics before the send for the telemetry record.
@@ -134,7 +134,10 @@ impl Session {
                         // QoS-critical: mirror on a second lane (first arrival wins at receiver).
                         if chunk.qos_critical {
                             let mirror = self.ate.select_two_lanes(
-                                chunk.gsn, self.send_base, &metrics_refs, &capacities,
+                                chunk.gsn,
+                                self.send_base,
+                                &metrics_refs,
+                                &capacities,
                             );
                             if let Some((_, mirror_idx)) = mirror {
                                 if mirror_idx != idx {
@@ -182,9 +185,13 @@ impl Session {
         }
     }
 
-    pub fn pending_len(&self) -> usize { self.pending.len() }
+    pub fn pending_len(&self) -> usize {
+        self.pending.len()
+    }
 
     /// The GSN the next enqueued chunk will be assigned. Used by upper layers to
     /// correlate sent chunks with their message IDs for delivery status.
-    pub fn next_gsn(&self) -> Gsn { self.next_gsn }
+    pub fn next_gsn(&self) -> Gsn {
+        self.next_gsn
+    }
 }

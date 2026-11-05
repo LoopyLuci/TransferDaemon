@@ -17,7 +17,10 @@ const MAGIC: &[u8] = b"TDP1";
 
 /// Whether the cache is wanted (on unless `TRANSFERD_AUTO_UNLOCK` is `off`/`0`/`false`).
 pub fn enabled() -> bool {
-    !matches!(std::env::var("TRANSFERD_AUTO_UNLOCK").as_deref(), Ok("off") | Ok("0") | Ok("false"))
+    !matches!(
+        std::env::var("TRANSFERD_AUTO_UNLOCK").as_deref(),
+        Ok("off") | Ok("0") | Ok("false")
+    )
 }
 
 pub fn write(path: &Path, phrase: &str) -> std::io::Result<()> {
@@ -37,7 +40,11 @@ pub fn write(path: &Path, phrase: &str) -> std::io::Result<()> {
 
 pub fn read(path: &Path) -> Option<String> {
     let raw = std::fs::read(path).ok()?;
-    let plain = if let Some(blob) = raw.strip_prefix(MAGIC) { unprotect(blob)? } else { raw };
+    let plain = if let Some(blob) = raw.strip_prefix(MAGIC) {
+        unprotect(blob)?
+    } else {
+        raw
+    };
     let s = String::from_utf8(plain).ok()?;
     let s = s.trim().to_string();
     (!s.is_empty()).then_some(s)
@@ -73,24 +80,45 @@ mod dpapi {
     };
 
     pub fn run(data: &[u8], encrypt: bool) -> std::io::Result<Vec<u8>> {
-        let input = CRYPT_INTEGER_BLOB { cbData: data.len() as u32, pbData: data.as_ptr() as *mut u8 };
-        let mut output = CRYPT_INTEGER_BLOB { cbData: 0, pbData: std::ptr::null_mut() };
+        let input = CRYPT_INTEGER_BLOB {
+            cbData: data.len() as u32,
+            pbData: data.as_ptr() as *mut u8,
+        };
+        let mut output = CRYPT_INTEGER_BLOB {
+            cbData: 0,
+            pbData: std::ptr::null_mut(),
+        };
         // SAFETY: input points at `data` for the call's duration; DPAPI allocates output with LocalAlloc, which is
         // copied out and freed below.
         let ok = unsafe {
             if encrypt {
-                CryptProtectData(&input, std::ptr::null(), std::ptr::null(), std::ptr::null(), std::ptr::null(),
-                                 CRYPTPROTECT_UI_FORBIDDEN, &mut output)
+                CryptProtectData(
+                    &input,
+                    std::ptr::null(),
+                    std::ptr::null(),
+                    std::ptr::null(),
+                    std::ptr::null(),
+                    CRYPTPROTECT_UI_FORBIDDEN,
+                    &mut output,
+                )
             } else {
-                CryptUnprotectData(&input, std::ptr::null_mut(), std::ptr::null(), std::ptr::null(), std::ptr::null(),
-                                   CRYPTPROTECT_UI_FORBIDDEN, &mut output)
+                CryptUnprotectData(
+                    &input,
+                    std::ptr::null_mut(),
+                    std::ptr::null(),
+                    std::ptr::null(),
+                    std::ptr::null(),
+                    CRYPTPROTECT_UI_FORBIDDEN,
+                    &mut output,
+                )
             }
         };
         if ok == 0 || output.pbData.is_null() {
             return Err(std::io::Error::last_os_error());
         }
         // SAFETY: DPAPI returned cbData valid bytes at pbData.
-        let out = unsafe { std::slice::from_raw_parts(output.pbData, output.cbData as usize).to_vec() };
+        let out =
+            unsafe { std::slice::from_raw_parts(output.pbData, output.cbData as usize).to_vec() };
         unsafe {
             LocalFree(output.pbData as _);
         }
@@ -106,13 +134,20 @@ mod tests {
     fn round_trips_and_reads_old_plain_caches() {
         let dir = std::env::temp_dir().join(format!("td-phrase-{}", std::process::id()));
         let p = dir.join("user_data.phrase");
-        write(&p, "abandon ability able about above absent absorb abstract absurd abuse access accident").expect("write");
+        write(
+            &p,
+            "abandon ability able about above absent absorb abstract absurd abuse access accident",
+        )
+        .expect("write");
         assert_eq!(read(&p).as_deref(), Some("abandon ability able about above absent absorb abstract absurd abuse access accident"));
         #[cfg(windows)]
         {
             let raw = std::fs::read(&p).unwrap_or_default();
             assert!(raw.starts_with(MAGIC), "protected on Windows");
-            assert!(!String::from_utf8_lossy(&raw).contains("abandon"), "not readable as text");
+            assert!(
+                !String::from_utf8_lossy(&raw).contains("abandon"),
+                "not readable as text"
+            );
         }
         std::fs::write(&p, "legacy plain phrase\n").ok();
         assert_eq!(read(&p).as_deref(), Some("legacy plain phrase"));

@@ -38,10 +38,11 @@ pub async fn probe_daemon(addr: &str) -> bool {
     use transferd_api::Empty;
 
     let channel = match tonic::transport::Channel::from_shared(addr.to_owned()) {
-        Ok(e) => e
-            .connect_timeout(Duration::from_millis(300))
-            .connect()
-            .await,
+        Ok(e) => {
+            e.connect_timeout(Duration::from_millis(300))
+                .connect()
+                .await
+        }
         Err(_) => return false,
     };
 

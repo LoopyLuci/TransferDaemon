@@ -39,10 +39,16 @@ async fn unauthenticated_request_rejected_when_token_set() {
     let channel = Channel::from_shared(url).unwrap().connect().await.unwrap();
     let mut client = AccountServiceClient::new(channel);
     let err = client
-        .create_identity(CreateIdentityRequest { display_name: "Eve".into() })
+        .create_identity(CreateIdentityRequest {
+            display_name: "Eve".into(),
+        })
         .await
         .unwrap_err();
-    assert_eq!(err.code(), tonic::Code::Unauthenticated, "no token must be rejected");
+    assert_eq!(
+        err.code(),
+        tonic::Code::Unauthenticated,
+        "no token must be rejected"
+    );
 }
 
 #[tokio::test]
@@ -56,10 +62,17 @@ async fn wrong_token_rejected() {
 
     let channel = Channel::from_shared(url).unwrap().connect().await.unwrap();
     let mut client = AccountServiceClient::new(AuthChannel::new(channel, "wrong-token"));
-    let err = client.create_identity(CreateIdentityRequest { display_name: "Eve".into() })
+    let err = client
+        .create_identity(CreateIdentityRequest {
+            display_name: "Eve".into(),
+        })
         .await
         .unwrap_err();
-    assert_eq!(err.code(), tonic::Code::Unauthenticated, "wrong token must be rejected");
+    assert_eq!(
+        err.code(),
+        tonic::Code::Unauthenticated,
+        "wrong token must be rejected"
+    );
 }
 
 #[tokio::test]
@@ -74,7 +87,9 @@ async fn authenticated_request_succeeds_when_token_set() {
     let channel = Channel::from_shared(url).unwrap().connect().await.unwrap();
     let mut client = AccountServiceClient::new(AuthChannel::new(channel, "valid-token-42"));
     let reply = client
-        .create_identity(CreateIdentityRequest { display_name: "Alice".into() })
+        .create_identity(CreateIdentityRequest {
+            display_name: "Alice".into(),
+        })
         .await
         .unwrap()
         .into_inner();
@@ -89,7 +104,9 @@ async fn no_token_daemon_accepts_plain_requests() {
     let channel = Channel::from_shared(url).unwrap().connect().await.unwrap();
     let mut client = AccountServiceClient::new(channel);
     let reply = client
-        .create_identity(CreateIdentityRequest { display_name: "Dev".into() })
+        .create_identity(CreateIdentityRequest {
+            display_name: "Dev".into(),
+        })
         .await
         .unwrap()
         .into_inner();

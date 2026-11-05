@@ -9,7 +9,6 @@ pub enum AuthPolicy {
     AllowList(Vec<[u8; 32]>),
 }
 
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RelaySettings {
     pub enabled: bool,
@@ -49,4 +48,3 @@ impl Default for RelaySettings {
         }
     }
 }
-

@@ -15,7 +15,10 @@ pub static PENDING_PATH: Mutex<Option<String>> = Mutex::new(None);
 
 /// Take the pending path (if any) and return it, clearing the slot.
 pub fn take() -> Option<String> {
-    PENDING_PATH.lock().unwrap_or_else(|e| e.into_inner()).take()
+    PENDING_PATH
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take()
 }
 
 // ---------------------------------------------------------------------------
@@ -35,10 +38,7 @@ pub mod android {
         _class: JClass,
         path: JString,
     ) {
-        let p: String = env
-            .get_string(&path)
-            .map(Into::into)
-            .unwrap_or_default();
+        let p: String = env.get_string(&path).map(Into::into).unwrap_or_default();
         if !p.is_empty() {
             *PENDING_PATH.lock().unwrap() = Some(p);
         }
@@ -56,7 +56,8 @@ pub mod android {
                 Err(_) => return,
             };
             let mut env = vm.get_env().unwrap_or_else(|_| {
-                vm.attach_current_thread_permanently().expect("attach JNI thread")
+                vm.attach_current_thread_permanently()
+                    .expect("attach JNI thread")
             });
             let helper = match env.find_class("com/transferdaemon/app/FilePickerActivity") {
                 Ok(c) => c,

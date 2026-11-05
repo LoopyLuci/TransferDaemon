@@ -36,11 +36,11 @@
 //! 5. **Thread Safety**: Ensure callbacks are dispatched to the correct threads
 //!    and use proper synchronization for frame data.
 
+use crate::media::MediaCapture;
+use crate::types::{AudioSamples, VideoFrame};
 use async_trait::async_trait;
 use std::sync::Arc;
 use tokio::sync::mpsc;
-use crate::media::MediaCapture;
-use crate::types::{AudioSamples, VideoFrame};
 
 /// iOS media capture implementation using AVFoundation.
 ///
@@ -58,7 +58,9 @@ impl IosMediaCapture {
     ///
     /// * `video` - Whether to enable video capture
     pub fn new(video: bool) -> Self {
-        Self { video_enabled: video }
+        Self {
+            video_enabled: video,
+        }
     }
 }
 
@@ -152,7 +154,7 @@ impl MediaCapture for IosMediaCapture {
                 // Generate a placeholder video frame (color bars)
                 let rgba: Vec<u8> = (0..640 * 480 * 4)
                     .map(|i| match i % 4 {
-                        3 => 255,   // alpha
+                        3 => 255,         // alpha
                         _ => frame_count, // cycling colors
                     })
                     .collect();
@@ -186,8 +188,8 @@ impl MediaCapture for IosMediaCapture {
 // Swift Bridge Functions (C-ABI)
 // ---------------------------------------------------------------------------
 
-/// These functions would be implemented in Swift and called from Rust.
-/// They are declared here to show the expected interface.
+// These functions would be implemented in Swift and called from Rust.
+// They are declared here to show the expected interface.
 
 // #[no_mangle]
 // pub extern "C" fn ios_audio_start(callback: extern "C" fn(*const f32, usize)) -> bool;

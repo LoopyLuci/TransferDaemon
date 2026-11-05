@@ -13,10 +13,10 @@
 //!
 //! The ATE scheduler then selects the optimal path for each chunk.
 
+use parking_lot::Mutex;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
-use parking_lot::Mutex;
 
 /// Configuration for mesh networking.
 pub struct MeshConfig {
@@ -82,8 +82,11 @@ impl MeshNetwork {
     /// Start the mesh network.
     pub async fn start(&mut self) {
         self.running = true;
-        tracing::info!("[Mesh] Started: direct={}, relay={}",
-            self.config.enable_direct, self.config.enable_relay);
+        tracing::info!(
+            "[Mesh] Started: direct={}, relay={}",
+            self.config.enable_direct,
+            self.config.enable_relay
+        );
     }
 
     /// Stop the mesh network.
@@ -94,13 +97,15 @@ impl MeshNetwork {
 
     /// Register a peer in the mesh.
     pub fn register_peer(&mut self, public_key: &str) {
-        self.peers.entry(public_key.to_string()).or_insert(MeshPeer {
-            public_key: public_key.to_string(),
-            direct_addr: None,
-            relay_addr: None,
-            online: false,
-            last_seen: 0,
-        });
+        self.peers
+            .entry(public_key.to_string())
+            .or_insert(MeshPeer {
+                public_key: public_key.to_string(),
+                direct_addr: None,
+                relay_addr: None,
+                online: false,
+                last_seen: 0,
+            });
     }
 
     /// Update a peer's direct connection address.
@@ -158,8 +163,10 @@ impl MeshNetwork {
     pub async fn create_lanes(
         &self,
         public_key: &str,
-    ) -> (Option<Box<dyn transferd_core::transport::TransportLane>>, Option<Box<dyn transferd_core::transport::TransportLane>>) {
-
+    ) -> (
+        Option<Box<dyn transferd_core::transport::TransportLane>>,
+        Option<Box<dyn transferd_core::transport::TransportLane>>,
+    ) {
         if let Some(peer) = self.peers.get(public_key) {
             // Try direct TCP connection
             if self.config.enable_direct {
@@ -167,12 +174,11 @@ impl MeshNetwork {
                     match tokio::net::TcpStream::connect(addr).await {
                         Ok(stream) => {
                             if let Ok(lane) = transferd_core::lanes::tcp_lane::TcpLane::from_stream(
-                                0x54435020,
-                                stream,
-                                &[0u8; 32],
-                                &[0u8; 32],
+                                0x54435020, stream, &[0u8; 32], &[0u8; 32],
                             ) {
-                                tracing::info!("[Mesh] Direct TCP connection to {public_key} at {addr}");
+                                tracing::info!(
+                                    "[Mesh] Direct TCP connection to {public_key} at {addr}"
+                                );
                                 return (Some(Box::new(lane)), None);
                             }
                         }
@@ -198,8 +204,10 @@ pub async fn run_mesh_loop(mesh: Arc<Mutex<MeshNetwork>>) {
     loop {
         interval.tick().await;
         let m = mesh.lock();
-        tracing::debug!("[Mesh] Maintenance: {} peers, {} online",
+        tracing::debug!(
+            "[Mesh] Maintenance: {} peers, {} online",
             m.peers.len(),
-            m.peers.values().filter(|p| p.online).count());
+            m.peers.values().filter(|p| p.online).count()
+        );
     }
 }

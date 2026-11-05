@@ -140,10 +140,7 @@ pub async fn retry_pending_sessions(state: &Arc<PkMutex<DaemonState>>) {
 }
 
 /// Handle one inbound peer connection: handshake → lane → message loop.
-pub async fn handle_inbound_connection(
-    state: Arc<PkMutex<DaemonState>>,
-    mut stream: TcpStream,
-) {
+pub async fn handle_inbound_connection(state: Arc<PkMutex<DaemonState>>, mut stream: TcpStream) {
     // Complete the authenticated hybrid handshake as responder.
     let identity = match state.lock().hybrid_signing_key() {
         Some(id) => id,
@@ -213,7 +210,17 @@ pub async fn handle_inbound_connection(
 
         // Files accumulate here (TCP preserves order, so chunks are contiguous);
         // once complete they are written to disk and stored as a message.
-        if let WireMsg::File { msg_id, file_name, file_size, mime, seq, total_chunks, data, .. } = &msg {
+        if let WireMsg::File {
+            msg_id,
+            file_name,
+            file_size,
+            mime,
+            seq,
+            total_chunks,
+            data,
+            ..
+        } = &msg
+        {
             // Inbound limit check: the RECEIVER's own limits decide what it
             // accepts. A file that exceeds the cap is dropped wholesale.
             let content_type = relayd::limits::ContentType::from_mime(mime);
@@ -238,7 +245,14 @@ pub async fn handle_inbound_connection(
             entry.chunks.insert(*seq, data.clone());
             let complete = entry.chunks.len() as u32 >= entry.total_chunks;
             if let WireMsg::File { sender, .. } = &msg {
-                state.lock().note_inbound_chunk(sender, msg_id, file_name, *file_size, data.len(), complete);
+                state.lock().note_inbound_chunk(
+                    sender,
+                    msg_id,
+                    file_name,
+                    *file_size,
+                    data.len(),
+                    complete,
+                );
             }
 
             if complete {
@@ -246,7 +260,9 @@ pub async fn handle_inbound_connection(
                     if let Some(path) = write_inbound_file(&f) {
                         tracing::info!(
                             "[transport] received file '{}' ({} bytes) → {}",
-                            f.name, f.size, path.display()
+                            f.name,
+                            f.size,
+                            path.display()
                         );
                     }
                 }
@@ -259,7 +275,11 @@ pub async fn handle_inbound_connection(
                 .cap_for(relayd::limits::ContentType::Message)
                 .unwrap_or(u64::MAX);
             if text.len() as u64 > cap {
-                tracing::warn!("[transport] rejecting inbound text ({} > cap {})", text.len(), cap);
+                tracing::warn!(
+                    "[transport] rejecting inbound text ({} > cap {})",
+                    text.len(),
+                    cap
+                );
                 continue;
             }
         }
@@ -269,10 +289,9 @@ pub async fn handle_inbound_connection(
         let blocked = {
             let s = state.lock();
             match &msg {
-                WireMsg::Text { sender, .. } | WireMsg::File { sender, .. } => s
-                    .contacts
-                    .iter()
-                    .any(|c| c.id == *sender && c.blocked),
+                WireMsg::Text { sender, .. } | WireMsg::File { sender, .. } => {
+                    s.contacts.iter().any(|c| c.id == *sender && c.blocked)
+                }
                 _ => false,
             }
         };
@@ -348,9 +367,11 @@ pub async fn send_read_receipt(
     session_id: SessionId,
     gsn: u64,
 ) -> io::Result<()> {
-    let payload = WireMsg::Read { msg_id: msg_id.to_string() }.encode().map_err(|e| {
-        io::Error::new(io::ErrorKind::InvalidData, e.to_string())
-    })?;
+    let payload = WireMsg::Read {
+        msg_id: msg_id.to_string(),
+    }
+    .encode()
+    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
     lane.send(transferd_core::transport::Chunk {
         gsn: Gsn(gsn),
         session_id,

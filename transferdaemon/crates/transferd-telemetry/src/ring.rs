@@ -9,7 +9,10 @@ pub struct RingBuffer {
 
 impl RingBuffer {
     pub fn new(cap: usize) -> Self {
-        Self { inner: VecDeque::with_capacity(cap), cap }
+        Self {
+            inner: VecDeque::with_capacity(cap),
+            cap,
+        }
     }
 
     pub fn push(&mut self, event: TelemetryEvent) {

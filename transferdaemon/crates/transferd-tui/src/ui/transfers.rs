@@ -12,7 +12,10 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
     if app.transfers.is_empty() {
         let p = Paragraph::new(vec![
             Line::from(""),
-            Line::from(Span::styled("  No active transfers.", Style::default().fg(Color::Gray))),
+            Line::from(Span::styled(
+                "  No active transfers.",
+                Style::default().fg(Color::Gray),
+            )),
         ])
         .block(Block::default().borders(Borders::ALL).title(" Transfers "));
         f.render_widget(p, area);
@@ -22,26 +25,44 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
     // Each transfer takes ~4 rows: name+direction, progress bar, stats, blank.
     let item_height = 4u16;
     let visible = ((area.height.saturating_sub(2)) / item_height) as usize;
-    let scroll = app.transfers_selected.saturating_sub(visible.saturating_sub(1));
+    let scroll = app
+        .transfers_selected
+        .saturating_sub(visible.saturating_sub(1));
 
-    let outer = Block::default().borders(Borders::ALL).title(" Transfers  [C] cancel  [↑↓] select ");
+    let outer = Block::default()
+        .borders(Borders::ALL)
+        .title(" Transfers  [C] cancel  [↑↓] select ");
     let inner = outer.inner(area);
     f.render_widget(outer, area);
 
-    let rows: Vec<Constraint> = app.transfers.iter().skip(scroll)
-        .map(|_| Constraint::Length(item_height)).collect();
-    if rows.is_empty() { return; }
+    let rows: Vec<Constraint> = app
+        .transfers
+        .iter()
+        .skip(scroll)
+        .map(|_| Constraint::Length(item_height))
+        .collect();
+    if rows.is_empty() {
+        return;
+    }
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints(rows)
         .split(inner);
 
-    for (i, (t, chunk)) in app.transfers.iter().skip(scroll).zip(chunks.iter()).enumerate() {
+    for (i, (t, chunk)) in app
+        .transfers
+        .iter()
+        .skip(scroll)
+        .zip(chunks.iter())
+        .enumerate()
+    {
         let real_idx = i + scroll;
         let selected = real_idx == app.transfers_selected;
         let sel_style = if selected {
-            Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(Color::White)
         };
@@ -77,7 +98,11 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
         } else {
             format!("{} %", pct)
         };
-        let gauge_color = if pct >= 100 { Color::Green } else { Color::Cyan };
+        let gauge_color = if pct >= 100 {
+            Color::Green
+        } else {
+            Color::Cyan
+        };
         let gauge = Gauge::default()
             .ratio(progress)
             .label(label)
@@ -85,11 +110,32 @@ pub fn render(f: &mut Frame, app: &App, area: Rect) {
         f.render_widget(gauge, sub[1]);
 
         // Row 2: stats
-        let eta = t.eta_secs().map(|s| format!("  ETA {}s", s)).unwrap_or_default();
-        let bps_label = if t.bps > 0 { format!("  {}/s", fmt_bytes(t.bps)) } else { String::new() };
-        let lanes_label = if t.lanes_active > 0 { format!("  {} lane{}", t.lanes_active, if t.lanes_active == 1 { "" } else { "s" }) } else { String::new() };
-        let stats = format!("  {} / {}{}{}{}",
-            fmt_bytes(t.transferred_bytes), fmt_bytes(t.size_bytes), bps_label, lanes_label, eta);
+        let eta = t
+            .eta_secs()
+            .map(|s| format!("  ETA {}s", s))
+            .unwrap_or_default();
+        let bps_label = if t.bps > 0 {
+            format!("  {}/s", fmt_bytes(t.bps))
+        } else {
+            String::new()
+        };
+        let lanes_label = if t.lanes_active > 0 {
+            format!(
+                "  {} lane{}",
+                t.lanes_active,
+                if t.lanes_active == 1 { "" } else { "s" }
+            )
+        } else {
+            String::new()
+        };
+        let stats = format!(
+            "  {} / {}{}{}{}",
+            fmt_bytes(t.transferred_bytes),
+            fmt_bytes(t.size_bytes),
+            bps_label,
+            lanes_label,
+            eta
+        );
         f.render_widget(
             Paragraph::new(Span::styled(stats, Style::default().fg(Color::Gray))),
             sub[2],

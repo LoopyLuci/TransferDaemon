@@ -14,8 +14,8 @@ use tokio_stream::{wrappers::BroadcastStream, StreamExt};
 use tonic::{transport::Server, Request, Response, Status};
 use transferd_api::{
     CallAcceptRequest, CallAcceptResponse, CallEndRequest, CallEvent, CallRejectRequest,
-    CallService, CallServiceClient, CallServiceServer, CallStartRequest, CallStartResponse,
-    Empty, IceCandidateMsg,
+    CallService, CallServiceClient, CallServiceServer, CallStartRequest, CallStartResponse, Empty,
+    IceCandidateMsg,
 };
 
 fn now_nanos() -> u64 {
@@ -31,10 +31,10 @@ fn now_nanos() -> u64 {
 
 #[derive(Debug)]
 struct CallRecord {
-    conv_id:   String,
-    video:     bool,
+    conv_id: String,
+    video: bool,
     local_sdp: String,
-    state:     String, // "calling" | "active" | "rejected" | "ended"
+    state: String, // "calling" | "active" | "rejected" | "ended"
 }
 
 struct TestCallService {
@@ -66,7 +66,8 @@ impl CallService for TestCallService {
     type StreamCallEventsStream = BoxStream<CallEvent>;
 
     async fn start_call(
-        &self, req: Request<CallStartRequest>,
+        &self,
+        req: Request<CallStartRequest>,
     ) -> Result<Response<CallStartResponse>, Status> {
         let r = req.into_inner();
         if r.conv_id.is_empty() {
@@ -76,24 +77,25 @@ impl CallService for TestCallService {
         self.calls.lock().unwrap().insert(
             call_id.clone(),
             CallRecord {
-                conv_id:   r.conv_id.clone(),
-                video:     r.video,
+                conv_id: r.conv_id.clone(),
+                video: r.video,
                 local_sdp: r.local_sdp.clone(),
-                state:     "calling".into(),
+                state: "calling".into(),
             },
         );
         let _ = self.events.send(CallEvent {
-            call_id:    call_id.clone(),
+            call_id: call_id.clone(),
             event_type: "invite".into(),
-            payload:    r.local_sdp,
-            conv_id:    r.conv_id,
-            video:      r.video,
+            payload: r.local_sdp,
+            conv_id: r.conv_id,
+            video: r.video,
         });
         Ok(Response::new(CallStartResponse { call_id }))
     }
 
     async fn accept_call(
-        &self, req: Request<CallAcceptRequest>,
+        &self,
+        req: Request<CallAcceptRequest>,
     ) -> Result<Response<CallAcceptResponse>, Status> {
         let r = req.into_inner();
         let mut calls = self.calls.lock().unwrap();
@@ -102,21 +104,25 @@ impl CallService for TestCallService {
                 let remote_sdp = rec.local_sdp.clone();
                 rec.state = "active".into();
                 let _ = self.events.send(CallEvent {
-                    call_id:    r.call_id.clone(),
+                    call_id: r.call_id.clone(),
                     event_type: "accepted".into(),
-                    payload:    r.answer_sdp,
-                    conv_id:    rec.conv_id.clone(),
-                    video:      rec.video,
+                    payload: r.answer_sdp,
+                    conv_id: rec.conv_id.clone(),
+                    video: rec.video,
                 });
-                Ok(Response::new(CallAcceptResponse { accepted: true, remote_sdp }))
+                Ok(Response::new(CallAcceptResponse {
+                    accepted: true,
+                    remote_sdp,
+                }))
             }
             Some(_) => Err(Status::failed_precondition("call not in calling state")),
-            None    => Err(Status::not_found("call not found")),
+            None => Err(Status::not_found("call not found")),
         }
     }
 
     async fn reject_call(
-        &self, req: Request<CallRejectRequest>,
+        &self,
+        req: Request<CallRejectRequest>,
     ) -> Result<Response<Empty>, Status> {
         let r = req.into_inner();
         let mut calls = self.calls.lock().unwrap();
@@ -124,11 +130,11 @@ impl CallService for TestCallService {
             Some(rec) => {
                 rec.state = "rejected".into();
                 let _ = self.events.send(CallEvent {
-                    call_id:    r.call_id,
+                    call_id: r.call_id,
                     event_type: "rejected".into(),
-                    payload:    String::new(),
-                    conv_id:    rec.conv_id.clone(),
-                    video:      false,
+                    payload: String::new(),
+                    conv_id: rec.conv_id.clone(),
+                    video: false,
                 });
                 Ok(Response::new(Empty {}))
             }
@@ -136,20 +142,18 @@ impl CallService for TestCallService {
         }
     }
 
-    async fn end_call(
-        &self, req: Request<CallEndRequest>,
-    ) -> Result<Response<Empty>, Status> {
+    async fn end_call(&self, req: Request<CallEndRequest>) -> Result<Response<Empty>, Status> {
         let r = req.into_inner();
         let mut calls = self.calls.lock().unwrap();
         match calls.get_mut(&r.call_id) {
             Some(rec) => {
                 rec.state = "ended".into();
                 let _ = self.events.send(CallEvent {
-                    call_id:    r.call_id,
+                    call_id: r.call_id,
                     event_type: "ended".into(),
-                    payload:    String::new(),
-                    conv_id:    rec.conv_id.clone(),
-                    video:      false,
+                    payload: String::new(),
+                    conv_id: rec.conv_id.clone(),
+                    video: false,
                 });
                 Ok(Response::new(Empty {}))
             }
@@ -158,7 +162,8 @@ impl CallService for TestCallService {
     }
 
     async fn send_ice_candidate(
-        &self, req: Request<IceCandidateMsg>,
+        &self,
+        req: Request<IceCandidateMsg>,
     ) -> Result<Response<Empty>, Status> {
         let r = req.into_inner();
         let calls = self.calls.lock().unwrap();
@@ -166,21 +171,22 @@ impl CallService for TestCallService {
             return Err(Status::not_found("call not found"));
         }
         let _ = self.events.send(CallEvent {
-            call_id:    r.call_id,
+            call_id: r.call_id,
             event_type: "ice_candidate".into(),
-            payload:    r.candidate_json,
-            conv_id:    String::new(),
-            video:      false,
+            payload: r.candidate_json,
+            conv_id: String::new(),
+            video: false,
         });
         Ok(Response::new(Empty {}))
     }
 
     async fn stream_call_events(
-        &self, _: Request<Empty>,
+        &self,
+        _: Request<Empty>,
     ) -> Result<Response<Self::StreamCallEventsStream>, Status> {
         let rx = self.events.subscribe();
         let stream = BroadcastStream::new(rx).filter_map(|r| match r {
-            Ok(e)  => Some(Ok(e)),
+            Ok(e) => Some(Ok(e)),
             Err(_) => None,
         });
         Ok(Response::new(Box::pin(stream)))
@@ -199,9 +205,7 @@ async fn start_call_server() -> (SocketAddr, tokio::sync::broadcast::Receiver<Ca
     tokio::spawn(async move {
         Server::builder()
             .add_service(CallServiceServer::new(svc))
-            .serve_with_incoming(
-                tokio_stream::wrappers::TcpListenerStream::new(listener),
-            )
+            .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener))
             .await
             .unwrap();
     });
@@ -224,11 +228,15 @@ async fn test_start_call_returns_call_id() {
     let (addr, _rx) = start_call_server().await;
     let mut c = call_client(addr).await;
 
-    let resp = c.start_call(CallStartRequest {
-        conv_id:   "conv-1".into(),
-        video:     false,
-        local_sdp: "v=0\r\ns=offer\r\n".into(),
-    }).await.unwrap().into_inner();
+    let resp = c
+        .start_call(CallStartRequest {
+            conv_id: "conv-1".into(),
+            video: false,
+            local_sdp: "v=0\r\ns=offer\r\n".into(),
+        })
+        .await
+        .unwrap()
+        .into_inner();
 
     assert!(!resp.call_id.is_empty());
 }
@@ -238,9 +246,13 @@ async fn test_start_call_empty_conv_id_rejected() {
     let (addr, _rx) = start_call_server().await;
     let mut c = call_client(addr).await;
 
-    let err = c.start_call(CallStartRequest {
-        conv_id: "".into(), video: false, local_sdp: "".into(),
-    }).await;
+    let err = c
+        .start_call(CallStartRequest {
+            conv_id: "".into(),
+            video: false,
+            local_sdp: "".into(),
+        })
+        .await;
     assert!(err.is_err());
     assert_eq!(err.unwrap_err().code(), tonic::Code::InvalidArgument);
 }
@@ -251,17 +263,31 @@ async fn test_accept_call_returns_remote_sdp() {
     let mut c = call_client(addr).await;
 
     let offer_sdp = "v=0\r\ns=offer\r\n";
-    let call_id = c.start_call(CallStartRequest {
-        conv_id: "conv-1".into(), video: false, local_sdp: offer_sdp.into(),
-    }).await.unwrap().into_inner().call_id;
+    let call_id = c
+        .start_call(CallStartRequest {
+            conv_id: "conv-1".into(),
+            video: false,
+            local_sdp: offer_sdp.into(),
+        })
+        .await
+        .unwrap()
+        .into_inner()
+        .call_id;
 
-    let accept = c.accept_call(CallAcceptRequest {
-        call_id:    call_id.clone(),
-        answer_sdp: "v=0\r\ns=answer\r\n".into(),
-    }).await.unwrap().into_inner();
+    let accept = c
+        .accept_call(CallAcceptRequest {
+            call_id: call_id.clone(),
+            answer_sdp: "v=0\r\ns=answer\r\n".into(),
+        })
+        .await
+        .unwrap()
+        .into_inner();
 
     assert!(accept.accepted);
-    assert_eq!(accept.remote_sdp, offer_sdp, "remote SDP should be the original offer");
+    assert_eq!(
+        accept.remote_sdp, offer_sdp,
+        "remote SDP should be the original offer"
+    );
 }
 
 #[tokio::test]
@@ -269,9 +295,12 @@ async fn test_accept_unknown_call_rejected() {
     let (addr, _rx) = start_call_server().await;
     let mut c = call_client(addr).await;
 
-    let err = c.accept_call(CallAcceptRequest {
-        call_id: "nonexistent".into(), answer_sdp: "".into(),
-    }).await;
+    let err = c
+        .accept_call(CallAcceptRequest {
+            call_id: "nonexistent".into(),
+            answer_sdp: "".into(),
+        })
+        .await;
     assert_eq!(err.unwrap_err().code(), tonic::Code::NotFound);
 }
 
@@ -280,18 +309,31 @@ async fn test_reject_call() {
     let (addr, _rx) = start_call_server().await;
     let mut c = call_client(addr).await;
 
-    let call_id = c.start_call(CallStartRequest {
-        conv_id: "conv-2".into(), video: true, local_sdp: "v=0\r\n".into(),
-    }).await.unwrap().into_inner().call_id;
+    let call_id = c
+        .start_call(CallStartRequest {
+            conv_id: "conv-2".into(),
+            video: true,
+            local_sdp: "v=0\r\n".into(),
+        })
+        .await
+        .unwrap()
+        .into_inner()
+        .call_id;
 
     // Rejecting must succeed.
-    c.reject_call(CallRejectRequest { call_id: call_id.clone() })
-        .await.unwrap();
+    c.reject_call(CallRejectRequest {
+        call_id: call_id.clone(),
+    })
+    .await
+    .unwrap();
 
     // Accepting after rejection must fail.
-    let err = c.accept_call(CallAcceptRequest {
-        call_id, answer_sdp: "v=0\r\n".into(),
-    }).await;
+    let err = c
+        .accept_call(CallAcceptRequest {
+            call_id,
+            answer_sdp: "v=0\r\n".into(),
+        })
+        .await;
     assert_eq!(err.unwrap_err().code(), tonic::Code::FailedPrecondition);
 }
 
@@ -300,7 +342,11 @@ async fn test_end_call_unknown_returns_not_found() {
     let (addr, _rx) = start_call_server().await;
     let mut c = call_client(addr).await;
 
-    let err = c.end_call(CallEndRequest { call_id: "ghost".into() }).await;
+    let err = c
+        .end_call(CallEndRequest {
+            call_id: "ghost".into(),
+        })
+        .await;
     assert_eq!(err.unwrap_err().code(), tonic::Code::NotFound);
 }
 
@@ -309,22 +355,32 @@ async fn test_ice_candidate_forwarded_as_event() {
     let (addr, mut rx) = start_call_server().await;
     let mut c = call_client(addr).await;
 
-    let call_id = c.start_call(CallStartRequest {
-        conv_id: "conv-3".into(), video: false, local_sdp: "v=0\r\n".into(),
-    }).await.unwrap().into_inner().call_id;
+    let call_id = c
+        .start_call(CallStartRequest {
+            conv_id: "conv-3".into(),
+            video: false,
+            local_sdp: "v=0\r\n".into(),
+        })
+        .await
+        .unwrap()
+        .into_inner()
+        .call_id;
 
     // Drain the "invite" event.
     let _ = rx.recv().await.unwrap();
 
     let ice_json = r#"{"candidate":"candidate:1 1 udp 2 127.0.0.1 49152 typ host","sdp_mid":"0","sdp_mline_index":0}"#;
     c.send_ice_candidate(IceCandidateMsg {
-        call_id:        call_id.clone(),
+        call_id: call_id.clone(),
         candidate_json: ice_json.into(),
-    }).await.unwrap();
+    })
+    .await
+    .unwrap();
 
-    let event = tokio::time::timeout(
-        std::time::Duration::from_millis(200), rx.recv(),
-    ).await.expect("timed out").unwrap();
+    let event = tokio::time::timeout(std::time::Duration::from_millis(200), rx.recv())
+        .await
+        .expect("timed out")
+        .unwrap();
 
     assert_eq!(event.event_type, "ice_candidate");
     assert_eq!(event.call_id, call_id);
@@ -337,8 +393,8 @@ async fn test_stream_call_events_receives_invite() {
     let url = format!("http://{addr}");
 
     // Connect two clients: one to stream events, one to start a call.
-    let mut stream_client  = CallServiceClient::connect(url.clone()).await.unwrap();
-    let mut caller_client  = CallServiceClient::connect(url).await.unwrap();
+    let mut stream_client = CallServiceClient::connect(url.clone()).await.unwrap();
+    let mut caller_client = CallServiceClient::connect(url).await.unwrap();
 
     // Subscribe to events before starting the call.
     let mut event_stream = stream_client
@@ -348,17 +404,23 @@ async fn test_stream_call_events_receives_invite() {
         .into_inner();
 
     // Start a call.
-    let call_id = caller_client.start_call(CallStartRequest {
-        conv_id: "conv-4".into(), video: true, local_sdp: "v=0\r\ns=offer\r\n".into(),
-    }).await.unwrap().into_inner().call_id;
+    let call_id = caller_client
+        .start_call(CallStartRequest {
+            conv_id: "conv-4".into(),
+            video: true,
+            local_sdp: "v=0\r\ns=offer\r\n".into(),
+        })
+        .await
+        .unwrap()
+        .into_inner()
+        .call_id;
 
     // The event stream should deliver the "invite" event.
-    let event = tokio::time::timeout(
-        std::time::Duration::from_millis(500),
-        event_stream.next(),
-    ).await.expect("timed out waiting for event")
-     .expect("stream ended")
-     .unwrap();
+    let event = tokio::time::timeout(std::time::Duration::from_millis(500), event_stream.next())
+        .await
+        .expect("timed out waiting for event")
+        .expect("stream ended")
+        .unwrap();
 
     assert_eq!(event.event_type, "invite");
     assert_eq!(event.call_id, call_id);

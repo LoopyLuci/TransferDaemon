@@ -16,9 +16,9 @@ use tokio_stream::wrappers::TcpListenerStream;
 use tonic::transport::Server;
 
 use transferd_api::{
-    AccountServiceClient, CreateIdentityRequest, MessageServiceClient, SendFileRequest,
-    SendTextRequest, TransferServiceClient, Empty, FriendServiceClient, SafetyNumberRequest,
-    SendTypingRequest, ReactionRequest, SettingsServiceClient, GetSettingRequest,
+    AccountServiceClient, CreateIdentityRequest, Empty, FriendServiceClient, GetSettingRequest,
+    MessageServiceClient, ReactionRequest, SafetyNumberRequest, SendFileRequest, SendTextRequest,
+    SendTypingRequest, SettingsServiceClient, TransferServiceClient,
 };
 use transferd_lib::state::{Contact, DaemonState};
 use transferd_lib::transport::spawn_inbound_listener;
@@ -84,16 +84,19 @@ async fn text_message_delivers_end_to_end() {
         "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
         "Bob",
     );
-    let recv_addr = spawn_inbound_listener(
-        recv_state.clone(),
-        "127.0.0.1:0".parse().unwrap(),
-    )
-    .await
-    .unwrap();
+    let recv_addr = spawn_inbound_listener(recv_state.clone(), "127.0.0.1:0".parse().unwrap())
+        .await
+        .unwrap();
 
-// Sender: state whose contact points at the receiver's transport address.
+    // Sender: state whose contact points at the receiver's transport address.
     let send_state = new_state();
-    let peer_pk = recv_state.lock().identity.as_ref().unwrap().public_key.clone();
+    let peer_pk = recv_state
+        .lock()
+        .identity
+        .as_ref()
+        .unwrap()
+        .public_key
+        .clone();
     {
         let mut s = send_state.lock();
         s.contacts.push(Contact {
@@ -111,9 +114,11 @@ async fn text_message_delivers_end_to_end() {
 
     let url = format!("http://{sender_addr}");
     let mut acct = AccountServiceClient::connect(url.clone()).await.unwrap();
-    acct.create_identity(CreateIdentityRequest { display_name: "Alice".into() })
-        .await
-        .unwrap();
+    acct.create_identity(CreateIdentityRequest {
+        display_name: "Alice".into(),
+    })
+    .await
+    .unwrap();
 
     let mut msg = MessageServiceClient::connect(url.clone()).await.unwrap();
     let reply = msg
@@ -131,7 +136,10 @@ async fn text_message_delivers_end_to_end() {
     // Pump until the receiver has the message and the sender has the ack.
     pump_until(&send_state, || {
         let s = recv_state.lock();
-        s.messages.values().flatten().any(|m| m.text == "hello over the wire")
+        s.messages
+            .values()
+            .flatten()
+            .any(|m| m.text == "hello over the wire")
     })
     .await;
     pump_until(&send_state, || {
@@ -167,7 +175,10 @@ async fn text_message_delivers_end_to_end() {
             .flatten()
             .find(|m| m.id == msg_id)
             .expect("sender keeps its outbound message");
-        assert_eq!(sent.status, "delivered", "ack must flip outbound status to delivered");
+        assert_eq!(
+            sent.status, "delivered",
+            "ack must flip outbound status to delivered"
+        );
     }
 }
 
@@ -190,16 +201,19 @@ async fn file_delivers_end_to_end() {
         "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
         "Bob",
     );
-    let recv_addr = spawn_inbound_listener(
-        recv_state.clone(),
-        "127.0.0.1:0".parse().unwrap(),
-    )
-    .await
-    .unwrap();
+    let recv_addr = spawn_inbound_listener(recv_state.clone(), "127.0.0.1:0".parse().unwrap())
+        .await
+        .unwrap();
 
-// Sender: state whose contact points at the receiver.
+    // Sender: state whose contact points at the receiver.
     let send_state = new_state();
-    let peer_pk = recv_state.lock().identity.as_ref().unwrap().public_key.clone();
+    let peer_pk = recv_state
+        .lock()
+        .identity
+        .as_ref()
+        .unwrap()
+        .public_key
+        .clone();
     {
         let mut s = send_state.lock();
         s.contacts.push(Contact {
@@ -217,9 +231,11 @@ async fn file_delivers_end_to_end() {
 
     let url = format!("http://{sender_addr}");
     let mut acct = AccountServiceClient::connect(url.clone()).await.unwrap();
-    acct.create_identity(CreateIdentityRequest { display_name: "Alice".into() })
-        .await
-        .unwrap();
+    acct.create_identity(CreateIdentityRequest {
+        display_name: "Alice".into(),
+    })
+    .await
+    .unwrap();
 
     let mut tr = TransferServiceClient::connect(url.clone()).await.unwrap();
     tr.send_file(SendFileRequest {
@@ -278,15 +294,18 @@ async fn blocked_contact_messages_are_dropped() {
         "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
         "Bob",
     );
-    let recv_addr = spawn_inbound_listener(
-        recv_state.clone(),
-        "127.0.0.1:0".parse().unwrap(),
-    )
-    .await
-    .unwrap();
+    let recv_addr = spawn_inbound_listener(recv_state.clone(), "127.0.0.1:0".parse().unwrap())
+        .await
+        .unwrap();
 
     let send_state = new_state();
-    let peer_pk = recv_state.lock().identity.as_ref().unwrap().public_key.clone();
+    let peer_pk = recv_state
+        .lock()
+        .identity
+        .as_ref()
+        .unwrap()
+        .public_key
+        .clone();
     {
         let mut s = send_state.lock();
         s.contacts.push(Contact {
@@ -304,10 +323,17 @@ async fn blocked_contact_messages_are_dropped() {
 
     let url = format!("http://{sender_addr}");
     let mut acct = AccountServiceClient::connect(url.clone()).await.unwrap();
-    acct.create_identity(CreateIdentityRequest { display_name: "Alice".into() })
+    acct.create_identity(CreateIdentityRequest {
+        display_name: "Alice".into(),
+    })
+    .await
+    .unwrap();
+    let sender_pk = acct
+        .get_public_key_hex(Empty {})
         .await
-        .unwrap();
-    let sender_pk = acct.get_public_key_hex(Empty {}).await.unwrap().into_inner().hex;
+        .unwrap()
+        .into_inner()
+        .hex;
     assert_eq!(sender_pk.len(), 64);
 
     // Receiver blocks the sender.
@@ -320,7 +346,7 @@ async fn blocked_contact_messages_are_dropped() {
             online: false,
             blocked: true,
             address: None,
-			 hybrid_public_key: None,
+            hybrid_public_key: None,
             limits: None,
         });
     }
@@ -329,8 +355,8 @@ async fn blocked_contact_messages_are_dropped() {
     msg.send_text(SendTextRequest {
         contact_id: peer_pk.clone(),
         text: "should be dropped".into(),
-            reply_to: String::new(),
-        })
+        reply_to: String::new(),
+    })
     .await
     .unwrap();
 
@@ -361,12 +387,9 @@ async fn safety_numbers_match_on_both_sides() {
         "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
         "Bob",
     );
-    let recv_addr = spawn_inbound_listener(
-        recv_state.clone(),
-        "127.0.0.1:0".parse().unwrap(),
-    )
-    .await
-    .unwrap();
+    let recv_addr = spawn_inbound_listener(recv_state.clone(), "127.0.0.1:0".parse().unwrap())
+        .await
+        .unwrap();
     let recv_grpc = start_grpc(recv_state.clone()).await;
     let recv_url = format!("http://{recv_grpc}");
 
@@ -374,9 +397,13 @@ async fn safety_numbers_match_on_both_sides() {
     let send_state = new_state();
     let sender_grpc = start_grpc(send_state.clone()).await;
     let send_url = format!("http://{sender_grpc}");
-    let mut send_acct = AccountServiceClient::connect(send_url.clone()).await.unwrap();
+    let mut send_acct = AccountServiceClient::connect(send_url.clone())
+        .await
+        .unwrap();
     send_acct
-        .create_identity(CreateIdentityRequest { display_name: "Alice".into() })
+        .create_identity(CreateIdentityRequest {
+            display_name: "Alice".into(),
+        })
         .await
         .unwrap();
     let alice_pk = send_acct
@@ -387,7 +414,13 @@ async fn safety_numbers_match_on_both_sides() {
         .hex;
 
     // Both sides know each other as contacts (direct TCP).
-    let bob_pk = recv_state.lock().identity.as_ref().unwrap().public_key.clone();
+    let bob_pk = recv_state
+        .lock()
+        .identity
+        .as_ref()
+        .unwrap()
+        .public_key
+        .clone();
     {
         let mut s = send_state.lock();
         s.contacts.push(Contact {
@@ -416,12 +449,14 @@ async fn safety_numbers_match_on_both_sides() {
     }
 
     // Force session establishment + fingerprint recording on BOTH sides.
-    let mut msg = MessageServiceClient::connect(send_url.clone()).await.unwrap();
+    let mut msg = MessageServiceClient::connect(send_url.clone())
+        .await
+        .unwrap();
     msg.send_text(SendTextRequest {
         contact_id: bob_pk.clone(),
         text: "hi for safety numbers".into(),
-            reply_to: String::new(),
-        })
+        reply_to: String::new(),
+    })
     .await
     .unwrap();
     pump_until(&send_state, || {
@@ -441,17 +476,25 @@ async fn safety_numbers_match_on_both_sides() {
         .await
         .unwrap()
         .into_inner();
-    assert!(send_num.verified, "sender must have recorded the peer fingerprint");
+    assert!(
+        send_num.verified,
+        "sender must have recorded the peer fingerprint"
+    );
     assert!(!send_num.safety_number.is_empty());
     assert_eq!(send_num.safety_number.split(' ').count(), 12);
 
     let mut recv_friend = FriendServiceClient::connect(recv_url).await.unwrap();
     let recv_num = recv_friend
-        .get_safety_number(SafetyNumberRequest { contact_id: alice_pk })
+        .get_safety_number(SafetyNumberRequest {
+            contact_id: alice_pk,
+        })
         .await
         .unwrap()
         .into_inner();
-    assert!(recv_num.verified, "receiver must have recorded the initiator fingerprint");
+    assert!(
+        recv_num.verified,
+        "receiver must have recorded the initiator fingerprint"
+    );
     assert_eq!(
         send_num.safety_number, recv_num.safety_number,
         "both peers must derive the identical safety number"
@@ -476,13 +519,23 @@ async fn typing_and_reactions_flow_over_the_wire() {
     let send_state = new_state();
     let sender_grpc = start_grpc(send_state.clone()).await;
     let send_url = format!("http://{sender_grpc}");
-    let mut send_acct = AccountServiceClient::connect(send_url.clone()).await.unwrap();
+    let mut send_acct = AccountServiceClient::connect(send_url.clone())
+        .await
+        .unwrap();
     send_acct
-        .create_identity(CreateIdentityRequest { display_name: "Alice".into() })
+        .create_identity(CreateIdentityRequest {
+            display_name: "Alice".into(),
+        })
         .await
         .unwrap();
 
-    let bob_pk = recv_state.lock().identity.as_ref().unwrap().public_key.clone();
+    let bob_pk = recv_state
+        .lock()
+        .identity
+        .as_ref()
+        .unwrap()
+        .public_key
+        .clone();
     {
         let mut s = send_state.lock();
         s.contacts.push(Contact {
@@ -500,20 +553,34 @@ async fn typing_and_reactions_flow_over_the_wire() {
     // Send a text, then a typing indicator, then a reaction to the text.
     let mut mc = MessageServiceClient::connect(send_url).await.unwrap();
     let sent = mc
-        .send_text(SendTextRequest { contact_id: bob_pk.clone(), text: "reaction target".into(), reply_to: String::new() })
+        .send_text(SendTextRequest {
+            contact_id: bob_pk.clone(),
+            text: "reaction target".into(),
+            reply_to: String::new(),
+        })
         .await
         .unwrap()
         .into_inner();
     pump_until(&send_state, || {
-        recv_state.lock().messages.values().flatten().any(|m| m.text == "reaction target")
+        recv_state
+            .lock()
+            .messages
+            .values()
+            .flatten()
+            .any(|m| m.text == "reaction target")
     })
     .await;
 
-    mc.send_typing(SendTypingRequest { contact_id: bob_pk.clone(), is_typing: true })
-        .await
-        .unwrap();
-    pump_until(&send_state, || recv_state.lock().is_typing(&send_acct_pk(&send_state)))
-        .await;
+    mc.send_typing(SendTypingRequest {
+        contact_id: bob_pk.clone(),
+        is_typing: true,
+    })
+    .await
+    .unwrap();
+    pump_until(&send_state, || {
+        recv_state.lock().is_typing(&send_acct_pk(&send_state))
+    })
+    .await;
 
     mc.toggle_reaction(ReactionRequest {
         contact_id: bob_pk.clone(),
@@ -523,13 +590,26 @@ async fn typing_and_reactions_flow_over_the_wire() {
     .await
     .unwrap();
     pump_until(&send_state, || {
-        recv_state.lock().messages.values().flatten().any(|m| !m.reactions.is_empty())
+        recv_state
+            .lock()
+            .messages
+            .values()
+            .flatten()
+            .any(|m| !m.reactions.is_empty())
     })
     .await;
 
     let s = recv_state.lock();
-    let target = s.messages.values().flatten().find(|m| m.text == "reaction target").unwrap();
-    assert!(!target.reactions.is_empty(), "reaction must reach the recipient");
+    let target = s
+        .messages
+        .values()
+        .flatten()
+        .find(|m| m.text == "reaction target")
+        .unwrap();
+    assert!(
+        !target.reactions.is_empty(),
+        "reaction must reach the recipient"
+    );
     assert_eq!(target.reactions[0].0, "❤️");
 }
 
@@ -558,13 +638,23 @@ async fn ratchet_advances_over_the_wire() {
     let send_state = new_state();
     let sender_grpc = start_grpc(send_state.clone()).await;
     let send_url = format!("http://{sender_grpc}");
-    let mut send_acct = AccountServiceClient::connect(send_url.clone()).await.unwrap();
+    let mut send_acct = AccountServiceClient::connect(send_url.clone())
+        .await
+        .unwrap();
     send_acct
-        .create_identity(CreateIdentityRequest { display_name: "Alice".into() })
+        .create_identity(CreateIdentityRequest {
+            display_name: "Alice".into(),
+        })
         .await
         .unwrap();
 
-    let bob_pk = recv_state.lock().identity.as_ref().unwrap().public_key.clone();
+    let bob_pk = recv_state
+        .lock()
+        .identity
+        .as_ref()
+        .unwrap()
+        .public_key
+        .clone();
     {
         let mut s = send_state.lock();
         s.contacts.push(Contact {
@@ -595,13 +685,26 @@ async fn ratchet_advances_over_the_wire() {
     // All messages must arrive (the ratchet advances > once over 25 sends).
     pump_until(&send_state, || {
         let s = recv_state.lock();
-        (0..N).all(|i| s.messages.values().flatten().any(|m| m.text == format!("ratchet-message-{i}")))
+        (0..N).all(|i| {
+            s.messages
+                .values()
+                .flatten()
+                .any(|m| m.text == format!("ratchet-message-{i}"))
+        })
     })
     .await;
 
     let s = recv_state.lock();
-    let count = s.messages.values().flatten().filter(|m| m.text.starts_with("ratchet-message-")).count();
-    assert_eq!(count, N, "all ratcheted messages must be delivered in order");
+    let count = s
+        .messages
+        .values()
+        .flatten()
+        .filter(|m| m.text.starts_with("ratchet-message-"))
+        .count();
+    assert_eq!(
+        count, N,
+        "all ratcheted messages must be delivered in order"
+    );
 }
 
 /// The sender refuses a transfer when the peer's advertised limits are smaller
@@ -614,12 +717,20 @@ async fn send_refused_when_peer_advertised_cap_is_smaller() {
         "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
         "Bob",
     );
-    let recv_addr = spawn_inbound_listener(recv_state.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+    let recv_addr = spawn_inbound_listener(recv_state.clone(), "127.0.0.1:0".parse().unwrap())
+        .await
+        .unwrap();
 
     // Sender with a contact whose advertised limits cap text at 8 bytes and
     // photos at 1 KiB.
     let send_state = new_state();
-    let peer_pk = recv_state.lock().identity.as_ref().unwrap().public_key.clone();
+    let peer_pk = recv_state
+        .lock()
+        .identity
+        .as_ref()
+        .unwrap()
+        .public_key
+        .clone();
     {
         let mut s = send_state.lock();
         s.contacts.push(Contact {
@@ -644,20 +755,33 @@ async fn send_refused_when_peer_advertised_cap_is_smaller() {
     // Over the text cap → refused before anything is queued.
     let long = "x".repeat(64);
     let err = msg
-        .send_text(SendTextRequest { contact_id: peer_pk.clone(), text: long, reply_to: String::new() })
+        .send_text(SendTextRequest {
+            contact_id: peer_pk.clone(),
+            text: long,
+            reply_to: String::new(),
+        })
         .await
         .unwrap_err();
-    assert!(err.message().contains("exceeds"), "expected a cap refusal, got: {err}");
+    assert!(
+        err.message().contains("exceeds"),
+        "expected a cap refusal, got: {err}"
+    );
 
     // Within the text cap → accepted.
-    msg.send_text(SendTextRequest { contact_id: peer_pk.clone(), text: "short".into(), reply_to: String::new() })
-        .await
-        .expect("within-cap text must send");
+    msg.send_text(SendTextRequest {
+        contact_id: peer_pk.clone(),
+        text: "short".into(),
+        reply_to: String::new(),
+    })
+    .await
+    .expect("within-cap text must send");
 
-// Over the photo cap → refused.
+    // Over the photo cap → refused.
     let big = std::env::temp_dir().join("harbor-over-cap.png");
     std::fs::write(&big, vec![0u8; 4096]).unwrap();
-    let mut tr = TransferServiceClient::connect(format!("http://{sender_addr}")).await.unwrap();
+    let mut tr = TransferServiceClient::connect(format!("http://{sender_addr}"))
+        .await
+        .unwrap();
     let err = tr
         .send_file(SendFileRequest {
             contact_id: peer_pk.clone(),
@@ -668,7 +792,10 @@ async fn send_refused_when_peer_advertised_cap_is_smaller() {
         })
         .await
         .unwrap_err();
-    assert!(err.message().contains("exceeds"), "expected a photo cap refusal, got: {err}");
+    assert!(
+        err.message().contains("exceeds"),
+        "expected a photo cap refusal, got: {err}"
+    );
     let _ = std::fs::remove_file(&big);
 }
 
@@ -681,10 +808,18 @@ async fn limits_set_via_settings_are_enforced() {
         "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
         "Bob",
     );
-    let recv_addr = spawn_inbound_listener(recv_state.clone(), "127.0.0.1:0".parse().unwrap()).await.unwrap();
+    let recv_addr = spawn_inbound_listener(recv_state.clone(), "127.0.0.1:0".parse().unwrap())
+        .await
+        .unwrap();
 
     let send_state = new_state();
-    let peer_pk = recv_state.lock().identity.as_ref().unwrap().public_key.clone();
+    let peer_pk = recv_state
+        .lock()
+        .identity
+        .as_ref()
+        .unwrap()
+        .public_key
+        .clone();
     {
         let mut s = send_state.lock();
         s.contacts.push(Contact {
@@ -705,13 +840,31 @@ async fn limits_set_via_settings_are_enforced() {
     let mut msg = MessageServiceClient::connect(url).await.unwrap();
 
     // Read the effective limit back (synthesized by the SettingsService).
-    let mut settings = SettingsServiceClient::connect(format!("http://{sender_addr}")).await.unwrap();
-    let reply = settings.get_setting(GetSettingRequest { key: "limits.message_bytes".into() }).await.unwrap().into_inner();
-    assert!(reply.found && reply.value.contains("8"), "effective cap should reflect the setting: {reply:?}");
+    let mut settings = SettingsServiceClient::connect(format!("http://{sender_addr}"))
+        .await
+        .unwrap();
+    let reply = settings
+        .get_setting(GetSettingRequest {
+            key: "limits.message_bytes".into(),
+        })
+        .await
+        .unwrap()
+        .into_inner();
+    assert!(
+        reply.found && reply.value.contains("8"),
+        "effective cap should reflect the setting: {reply:?}"
+    );
 
     let err = msg
-        .send_text(SendTextRequest { contact_id: peer_pk.clone(), text: "x".repeat(64), reply_to: String::new() })
+        .send_text(SendTextRequest {
+            contact_id: peer_pk.clone(),
+            text: "x".repeat(64),
+            reply_to: String::new(),
+        })
         .await
         .unwrap_err();
-    assert!(err.message().contains("exceeds"), "expected a cap refusal, got: {err}");
+    assert!(
+        err.message().contains("exceeds"),
+        "expected a cap refusal, got: {err}"
+    );
 }

@@ -773,23 +773,19 @@ impl SettingsPage {
                 } else {
                     tokens.palette.text_primary
                 };
-                let btn = egui::Button::new(
-                    RichText::new(*label)
-                        .size(11.0)
-                        .strong()
-                        .color(text_color),
-                )
-                .fill(bg)
-                .stroke(egui::Stroke::new(
-                    1.0_f32,
-                    if is_active {
-                        tokens.palette.accent
-                    } else {
-                        tokens.palette.border_subtle
-                    },
-                ))
-                .rounding(8.0)
-                .min_size(egui::vec2(0.0, 30.0));
+                let btn =
+                    egui::Button::new(RichText::new(*label).size(11.0).strong().color(text_color))
+                        .fill(bg)
+                        .stroke(egui::Stroke::new(
+                            1.0_f32,
+                            if is_active {
+                                tokens.palette.accent
+                            } else {
+                                tokens.palette.border_subtle
+                            },
+                        ))
+                        .rounding(8.0)
+                        .min_size(egui::vec2(0.0, 30.0));
                 if ui
                     .add_sized([72.0, 30.0], btn)
                     .on_hover_text(format!("{title}: {v:.2}\u{00d7}"))

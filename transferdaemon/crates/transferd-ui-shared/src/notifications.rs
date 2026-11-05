@@ -20,9 +20,7 @@ pub fn send_notification(title: &str, body: &str, _level: NotificationLevel) {
     use notify_rust::Notification;
 
     let mut n = Notification::new();
-    n.summary(title)
-     .body(body)
-     .appname("TransferDaemon");
+    n.summary(title).body(body).appname("TransferDaemon");
 
     // urgency/timeout are Linux (D-Bus) specific in notify-rust; macOS uses
     // the default notification style.

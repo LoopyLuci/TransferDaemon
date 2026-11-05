@@ -5,7 +5,6 @@ pub mod settings;
 pub mod token_bucket;
 
 pub use announce::RelayAnnounce;
-pub use dht::{DhtAnnouncer, DhtNode, derive_node_id};
+pub use dht::{derive_node_id, DhtAnnouncer, DhtNode};
 pub use engine::{RelayEngine, RelayStatus};
 pub use settings::{AuthPolicy, RelaySettings};
-

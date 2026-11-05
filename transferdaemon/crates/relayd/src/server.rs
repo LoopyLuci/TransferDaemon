@@ -2,8 +2,8 @@
 //! `relayd` (src/main.rs) runs it; tests and embedders run the same loop on their own socket.
 
 use crate::protocol::{
-    AckMsg, ChallengeMsg, DeliveredMsg, ErrorMsg, ForwardMsg, GhostRegisterMsg, KeepaliveMsg, LocateMsg, RegisterMsg, Tag,
-    encode, split, MAX_PAYLOAD,
+    encode, split, AckMsg, ChallengeMsg, DeliveredMsg, ErrorMsg, ForwardMsg, GhostRegisterMsg,
+    KeepaliveMsg, LocateMsg, RegisterMsg, Tag, MAX_PAYLOAD,
 };
 use crate::relay::Relay;
 use std::net::SocketAddr;
@@ -21,8 +21,15 @@ pub async fn serve(socket: Arc<UdpSocket>, relay: Arc<Mutex<Relay>>) {
             let c = r.current_challenge();
             (c.bytes, c.expires_at, c.difficulty)
         };
-        let frame = encode(Tag::Challenge, &ChallengeMsg { challenge, expires_at, difficulty })
-            .unwrap_or_default();
+        let frame = encode(
+            Tag::Challenge,
+            &ChallengeMsg {
+                challenge,
+                expires_at,
+                difficulty,
+            },
+        )
+        .unwrap_or_default();
         let _ = socket.send_to(&frame, src).await;
     }
 
@@ -69,11 +76,15 @@ pub async fn serve(socket: Arc<UdpSocket>, relay: Arc<Mutex<Relay>>) {
                             send_challenge(&relay, &socket, src).await;
                         }
                         Err(e) => {
-                            let frame = encode(Tag::Error, &ErrorMsg {
-                                code: e.code(),
-                                seq,
-                                detail: e.to_string(),
-                            }).unwrap_or_default();
+                            let frame = encode(
+                                Tag::Error,
+                                &ErrorMsg {
+                                    code: e.code(),
+                                    seq,
+                                    detail: e.to_string(),
+                                },
+                            )
+                            .unwrap_or_default();
                             let _ = socket.send_to(&frame, src).await;
                         }
                     }
@@ -87,8 +98,15 @@ pub async fn serve(socket: Arc<UdpSocket>, relay: Arc<Mutex<Relay>>) {
                     match result {
                         Ok(()) => send_challenge(&relay, &socket, src).await,
                         Err(e) => {
-                            let frame = encode(Tag::Error, &ErrorMsg { code: e.code(), seq, detail: e.to_string() })
-                                .unwrap_or_default();
+                            let frame = encode(
+                                Tag::Error,
+                                &ErrorMsg {
+                                    code: e.code(),
+                                    seq,
+                                    detail: e.to_string(),
+                                },
+                            )
+                            .unwrap_or_default();
                             let _ = socket.send_to(&frame, src).await;
                         }
                     }
@@ -103,21 +121,29 @@ pub async fn serve(socket: Arc<UdpSocket>, relay: Arc<Mutex<Relay>>) {
                     match result {
                         Ok(dst) => {
                             // Blind forward: deliver ciphertext wrapped in DeliveredMsg (no src IP).
-                            let delivered = encode(Tag::Ack, &DeliveredMsg {
-                                sender_seq,
-                                ciphertext,
-                            }).unwrap_or_default();
+                            let delivered = encode(
+                                Tag::Ack,
+                                &DeliveredMsg {
+                                    sender_seq,
+                                    ciphertext,
+                                },
+                            )
+                            .unwrap_or_default();
                             let _ = socket.send_to(&delivered, dst).await;
                             // Ack to sender.
                             let ack = encode(Tag::Ack, &AckMsg { sender_seq }).unwrap_or_default();
                             let _ = socket.send_to(&ack, src).await;
                         }
                         Err(e) => {
-                            let frame = encode(Tag::Error, &ErrorMsg {
-                                code: e.code(),
-                                seq: sender_seq as u32,
-                                detail: e.to_string(),
-                            }).unwrap_or_default();
+                            let frame = encode(
+                                Tag::Error,
+                                &ErrorMsg {
+                                    code: e.code(),
+                                    seq: sender_seq as u32,
+                                    detail: e.to_string(),
+                                },
+                            )
+                            .unwrap_or_default();
                             let _ = socket.send_to(&frame, src).await;
                         }
                     }
@@ -137,7 +163,14 @@ pub async fn serve(socket: Arc<UdpSocket>, relay: Arc<Mutex<Relay>>) {
                     let answer = relay.lock().await.locate_answer(&msg, src);
                     let reply = match answer {
                         Ok(a) => encode(Tag::Locate, &a),
-                        Err(e) => encode(Tag::Error, &ErrorMsg { code: e.code(), seq: msg.seq, detail: e.to_string() }),
+                        Err(e) => encode(
+                            Tag::Error,
+                            &ErrorMsg {
+                                code: e.code(),
+                                seq: msg.seq,
+                                detail: e.to_string(),
+                            },
+                        ),
                     };
                     if let Ok(frame) = reply {
                         let _ = socket.send_to(&frame, src).await;

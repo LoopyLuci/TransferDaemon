@@ -1,49 +1,78 @@
 //! gRPC service implementations for all six TransferDaemon services.
 
+use parking_lot::Mutex;
 use std::pin::Pin;
 use std::sync::Arc;
-use parking_lot::Mutex;
-use tonic::{Request, Response, Status};
 use tokio::sync::broadcast;
 use tokio_stream::wrappers::BroadcastStream;
 use tokio_stream::StreamExt as _;
+use tonic::{Request, Response, Status};
 
 use transferd_api::{
     // Account
     AccountService,
-    CreateIdentityRequest, RestoreIdentityRequest, IdentityReply,
-    RecoveryPhraseReply, PublicKeyReply, Empty,
-    // Friends
-    FriendService,
-    AddContactRequest, ContactReply, ContactList,
-    RenameContactRequest, RemoveContactRequest, BlockContactRequest,
-    SafetyNumberRequest, SetContactAddressRequest, SafetyNumberReply,
-    UpdateService, UpdateServiceServer, UpdateReply,
-    // Messages
-    MessageService,
-    GetMessagesRequest, MessageReply, MessageList, SendTextRequest, SearchMessagesRequest,
-    SendTypingRequest, ReactionRequest, Reaction,
-    // Transfers
-    TransferService,
-    CancelTransferRequest, TransferReply, TransferList, SendFileRequest,
-    // Settings
-    SettingsService,
-    GetSettingRequest, SetSettingRequest, SettingReply,
+    AddContactRequest,
+    AteLaneMsg,
+    BlockContactRequest,
+    CallAcceptRequest,
+    CallAcceptResponse,
+    CallEndRequest,
+    CallEvent,
+    CallRejectRequest,
     // Calls
     CallService,
-    CallStartRequest, CallStartResponse,
-    CallAcceptRequest, CallAcceptResponse,
-    CallRejectRequest, CallEndRequest,
-    IceCandidateMsg, CallEvent,
+    CallStartRequest,
+    CallStartResponse,
+    CancelTransferRequest,
+    ContactList,
+    ContactReply,
+    CreateIdentityRequest,
+    Empty,
+    // Friends
+    FriendService,
+    GetMessagesRequest,
+    GetSettingRequest,
     // Groups
     GroupService,
+    IceCandidateMsg,
+    IdentityReply,
+    MessageList,
+    MessageReply,
+    // Messages
+    MessageService,
+    PublicKeyReply,
+    Reaction,
+    ReactionRequest,
+    RecoveryPhraseReply,
+    RemoveContactRequest,
+    RenameContactRequest,
+    RestoreIdentityRequest,
+    SafetyNumberReply,
+    SafetyNumberRequest,
+    SearchMessagesRequest,
+    SendFileRequest,
+    SendTextRequest,
+    SendTypingRequest,
+    SetContactAddressRequest,
+    SetSettingRequest,
+    SettingReply,
+    // Settings
+    SettingsService,
+    SystemHealthMsg,
+    TelemetryEventMsg,
     // Telemetry
     TelemetryService,
-    TelemetryEventMsg, TelemetrySnapshot,
-    SystemHealthMsg, AteLaneMsg,
+    TelemetrySnapshot,
+    TransferList,
+    TransferReply,
+    // Transfers
+    TransferService,
+    UpdateReply,
+    UpdateService,
+    UpdateServiceServer,
 };
 
-use crate::state::{DaemonState, Contact, CallRecord, StoredMessage, now_secs};
+use crate::state::{now_secs, CallRecord, Contact, DaemonState, StoredMessage};
 use rand::rngs::OsRng;
 use rand::RngCore;
 use transferd_crypto::identity::HybridSigningKey;
@@ -60,7 +89,11 @@ type BoxStream<T> = Pin<Box<dyn futures::Stream<Item = Result<T, Status>> + Send
 ///   `<host>:<port>` → direct TCP session
 ///
 /// Returns `true` if a session exists (or was just established).
-pub async fn ensure_contact_session(state: &State, contact_id: &str, address: Option<&str>) -> bool {
+pub async fn ensure_contact_session(
+    state: &State,
+    contact_id: &str,
+    address: Option<&str>,
+) -> bool {
     let transport = state.lock().transport.clone();
     if transport.lock().await.has_session(contact_id) {
         return true;
@@ -69,38 +102,53 @@ pub async fn ensure_contact_session(state: &State, contact_id: &str, address: Op
     // Resolve the endpoint address(es): explicit, or DHT-discovered by public
     // key (which may return MULTIPLE relays the peer is reachable through).
     // (The parking_lot guard is dropped before any await so the future stays Send.)
-    let (resolved, _discovered_limits): (Vec<String>, Option<relayd::limits::TransferLimits>) = match address {
-        Some(addr) => (vec![addr.to_owned()], None),
-        None => {
-            let dht = { let s = state.lock(); s.dht.clone() };
-            match dht {
-                Some(dht) => {
-                    match crate::peer_discovery::resolve_peer(&dht, contact_id).await {
-                        Some((addrs, limits)) => {
-                            tracing::info!("[grpc] discovered {} relay endpoint(s) for {contact_id}", addrs.len());
-                            // Cache the peer's advertised limits on the contact
-                            // so the send path can enforce them.
-                            if let Some(l) = limits.clone() {
-                                let mut s = state.lock();
-                                if let Some(c) = s.contacts.iter_mut().find(|c| c.id == contact_id) {
-                                    c.limits = Some(l);
+    let (resolved, _discovered_limits): (Vec<String>, Option<relayd::limits::TransferLimits>) =
+        match address {
+            Some(addr) => (vec![addr.to_owned()], None),
+            None => {
+                let dht = {
+                    let s = state.lock();
+                    s.dht.clone()
+                };
+                match dht {
+                    Some(dht) => {
+                        match crate::peer_discovery::resolve_peer(&dht, contact_id).await {
+                            Some((addrs, limits)) => {
+                                tracing::info!(
+                                    "[grpc] discovered {} relay endpoint(s) for {contact_id}",
+                                    addrs.len()
+                                );
+                                // Cache the peer's advertised limits on the contact
+                                // so the send path can enforce them.
+                                if let Some(l) = limits.clone() {
+                                    let mut s = state.lock();
+                                    if let Some(c) =
+                                        s.contacts.iter_mut().find(|c| c.id == contact_id)
+                                    {
+                                        c.limits = Some(l);
+                                    }
                                 }
+                                (addrs, limits)
                             }
-                            (addrs, limits)
+                            None => (Vec::new(), None),
                         }
-                        None => (Vec::new(), None),
                     }
+                    None => (Vec::new(), None),
                 }
-                None => (Vec::new(), None),
             }
-        }
-    };
+        };
     if resolved.is_empty() {
         return false;
     }
 
     // Policy steers which transports may be used.
-    let policy = { let s = state.lock(); s.settings.get("conn.policy").cloned().unwrap_or_else(|| "auto".into()) };
+    let policy = {
+        let s = state.lock();
+        s.settings
+            .get("conn.policy")
+            .cloned()
+            .unwrap_or_else(|| "auto".into())
+    };
 
     // Prefer a direct address when discovered — `tcp://host:port` (LAN /
     // Tailscale P2P) or a scheme-less `host:port` (legacy Contact.address) —
@@ -134,7 +182,10 @@ pub async fn ensure_contact_session(state: &State, contact_id: &str, address: Op
         }
         // Keep only relays this daemon is ALSO registered on (a relay lane is
         // only useful when both sides can reach the same relay).
-        let hub = { let s = state.lock(); s.relay_hub.clone() };
+        let hub = {
+            let s = state.lock();
+            s.relay_hub.clone()
+        };
         let mut shared: Vec<std::net::SocketAddr> = Vec::new();
         let mut token = String::new();
         for r in &relays {
@@ -146,7 +197,11 @@ pub async fn ensure_contact_session(state: &State, contact_id: &str, address: Op
                 .strip_prefix("relay://")
                 .or_else(|| r.strip_prefix("wsrelay://"));
             if let Some((a, t)) = rest.and_then(|r| r.split_once('/')) {
-                if hub.as_ref().map(|h| h.has_relay_authority(a)).unwrap_or(false) {
+                if hub
+                    .as_ref()
+                    .map(|h| h.has_relay_authority(a))
+                    .unwrap_or(false)
+                {
                     if let Some(addr) = crate::relay_hub::resolve_addr(a) {
                         shared.push(addr);
                         token = t.to_string();
@@ -204,17 +259,21 @@ impl AccountService for AccountServiceImpl {
         let s = self.0.lock();
         Ok(Response::new(match &s.identity {
             Some(id) => IdentityReply {
-                has_identity:      true,
-                public_key:        id.public_key.clone(),
+                has_identity: true,
+                public_key: id.public_key.clone(),
                 hybrid_public_key: id.hybrid_public_key.clone(),
-                display_name:      id.display_name.clone(),
+                display_name: id.display_name.clone(),
             },
-            None => IdentityReply { has_identity: false, ..Default::default() },
+            None => IdentityReply {
+                has_identity: false,
+                ..Default::default()
+            },
         }))
     }
 
     async fn create_identity(
-        &self, req: Request<CreateIdentityRequest>,
+        &self,
+        req: Request<CreateIdentityRequest>,
     ) -> Result<Response<RecoveryPhraseReply>, Status> {
         let name = req.into_inner().display_name;
         if name.trim().is_empty() {
@@ -230,7 +289,8 @@ impl AccountService for AccountServiceImpl {
 
         // Derive hybrid Ed25519 + ML-DSA-87 key pair from the 64-byte BIP-39 seed.
         let seed = mnemonic.to_seed("");
-        let seed_arr: &[u8; 64] = seed[..64].try_into()
+        let seed_arr: &[u8; 64] = seed[..64]
+            .try_into()
             .map_err(|_| Status::internal("seed too short"))?;
         let hybrid_sk = HybridSigningKey::from_bip39_seed(seed_arr);
         let hybrid_vk = hybrid_sk.verifying_key();
@@ -240,10 +300,10 @@ impl AccountService for AccountServiceImpl {
 
         let mut s = self.0.lock();
         s.identity = Some(crate::state::Identity {
-            public_key:        pk_hex,
+            public_key: pk_hex,
             hybrid_public_key: hybrid_pk_hex,
-            display_name:      name,
-            phrase:            phrase.clone(),
+            display_name: name,
+            phrase: phrase.clone(),
         });
         s.set_phrase(&phrase);
         s.try_save();
@@ -251,7 +311,9 @@ impl AccountService for AccountServiceImpl {
         // If a relay is configured, register our inbound token (token depends on
         // the just-created public key).
         if crate::relay_hub::relay_enabled() {
-            tokio::spawn(crate::relay_hub::spawn_inbound_relay_listener(self.0.clone()));
+            tokio::spawn(crate::relay_hub::spawn_inbound_relay_listener(
+                self.0.clone(),
+            ));
         }
         // Start DHT discovery (if configured) and publish our endpoint.
         tokio::spawn(crate::peer_discovery::ensure_dht(self.0.clone()));
@@ -260,17 +322,21 @@ impl AccountService for AccountServiceImpl {
     }
 
     async fn restore_identity(
-        &self, req: Request<RestoreIdentityRequest>,
+        &self,
+        req: Request<RestoreIdentityRequest>,
     ) -> Result<Response<IdentityReply>, Status> {
         let phrase_str = req.into_inner().phrase;
 
         // Parse and validate the BIP-39 phrase (also rejects unknown words).
-        let mnemonic = phrase_str.trim().parse::<bip39::Mnemonic>()
+        let mnemonic = phrase_str
+            .trim()
+            .parse::<bip39::Mnemonic>()
             .map_err(|e| Status::invalid_argument(format!("invalid recovery phrase: {e}")))?;
 
         // Re-derive the hybrid Ed25519 + ML-DSA-87 key pair from the phrase.
         let seed = mnemonic.to_seed("");
-        let seed_arr: &[u8; 64] = seed[..64].try_into()
+        let seed_arr: &[u8; 64] = seed[..64]
+            .try_into()
             .map_err(|_| Status::internal("seed too short"))?;
         let hybrid_sk = HybridSigningKey::from_bip39_seed(seed_arr);
         let hybrid_vk = hybrid_sk.verifying_key();
@@ -287,15 +353,17 @@ impl AccountService for AccountServiceImpl {
             // No store file (or wrong phrase) — reconstruct the key only.
             // Preserve in-memory display name if we happen to have it, otherwise
             // leave blank so the UI can prompt the user to set one.
-            let display_name = s.identity.as_ref()
+            let display_name = s
+                .identity
+                .as_ref()
                 .map(|i| i.display_name.clone())
                 .filter(|n| !n.is_empty())
                 .unwrap_or_default();
             s.identity = Some(crate::state::Identity {
-                public_key:        pk_hex.clone(),
+                public_key: pk_hex.clone(),
                 hybrid_public_key: hybrid_pk_hex.clone(),
-                display_name:      display_name.clone(),
-                phrase:            phrase_str.clone(),
+                display_name: display_name.clone(),
+                phrase: phrase_str.clone(),
             });
             s.set_phrase(&phrase_str);
             s.try_save(); // create the store file for future restores
@@ -308,30 +376,45 @@ impl AccountService for AccountServiceImpl {
         }
 
         let (pk, hpk, name) = {
-            let id = s.identity.as_ref()
+            let id = s
+                .identity
+                .as_ref()
                 .ok_or_else(|| Status::internal("identity not initialised after restore"))?;
-            (id.public_key.clone(), id.hybrid_public_key.clone(), id.display_name.clone())
+            (
+                id.public_key.clone(),
+                id.hybrid_public_key.clone(),
+                id.display_name.clone(),
+            )
         };
 
         // If a relay is configured, register our inbound token for this identity.
         if crate::relay_hub::relay_enabled() {
-            tokio::spawn(crate::relay_hub::spawn_inbound_relay_listener(self.0.clone()));
+            tokio::spawn(crate::relay_hub::spawn_inbound_relay_listener(
+                self.0.clone(),
+            ));
         }
         // Start DHT discovery (if configured) and publish our endpoint.
         tokio::spawn(crate::peer_discovery::ensure_dht(self.0.clone()));
 
         Ok(Response::new(IdentityReply {
-            has_identity:      true,
-            public_key:        pk,
+            has_identity: true,
+            public_key: pk,
             hybrid_public_key: hpk,
-            display_name:      name,
+            display_name: name,
         }))
     }
 
-    async fn get_public_key_hex(&self, _: Request<Empty>) -> Result<Response<PublicKeyReply>, Status> {
+    async fn get_public_key_hex(
+        &self,
+        _: Request<Empty>,
+    ) -> Result<Response<PublicKeyReply>, Status> {
         let s = self.0.lock();
         Ok(Response::new(PublicKeyReply {
-            hex: s.identity.as_ref().map(|i| i.public_key.clone()).unwrap_or_default(),
+            hex: s
+                .identity
+                .as_ref()
+                .map(|i| i.public_key.clone())
+                .unwrap_or_default(),
         }))
     }
 }
@@ -346,20 +429,25 @@ pub struct FriendServiceImpl(pub State);
 impl FriendService for FriendServiceImpl {
     async fn get_contacts(&self, _: Request<Empty>) -> Result<Response<ContactList>, Status> {
         let s = self.0.lock();
-        let contacts = s.contacts.iter().map(|c| ContactReply {
-            id:           c.id.clone(),
-            name:         c.name.clone(),
-            last_seen_ts: c.last_seen_ts,
-            online:       c.online,
-            blocked:      c.blocked,
-            typing:       s.is_typing(&c.id),
-            address:      c.address.clone().unwrap_or_default(),
-        }).collect();
+        let contacts = s
+            .contacts
+            .iter()
+            .map(|c| ContactReply {
+                id: c.id.clone(),
+                name: c.name.clone(),
+                last_seen_ts: c.last_seen_ts,
+                online: c.online,
+                blocked: c.blocked,
+                typing: s.is_typing(&c.id),
+                address: c.address.clone().unwrap_or_default(),
+            })
+            .collect();
         Ok(Response::new(ContactList { contacts }))
     }
 
     async fn add_contact(
-        &self, req: Request<AddContactRequest>,
+        &self,
+        req: Request<AddContactRequest>,
     ) -> Result<Response<ContactReply>, Status> {
         let r = req.into_inner();
         if r.public_key.len() != 64 {
@@ -370,14 +458,14 @@ impl FriendService for FriendServiceImpl {
         }
         let address = normalize_address(&r.address)?;
         let contact = Contact {
-            id:           r.public_key.clone(),
-            name:         r.name.clone(),
+            id: r.public_key.clone(),
+            name: r.name.clone(),
             last_seen_ts: 0,
-            online:       false,
-            blocked:      false,
-            address:      address.clone(),
+            online: false,
+            blocked: false,
+            address: address.clone(),
             hybrid_public_key: None,
-            limits:      None,
+            limits: None,
         };
         let mut s = self.0.lock();
         // Prevent duplicates.
@@ -387,18 +475,19 @@ impl FriendService for FriendServiceImpl {
         s.contacts.push(contact);
         s.try_save();
         Ok(Response::new(ContactReply {
-            id:           r.public_key,
-            name:         r.name,
+            id: r.public_key,
+            name: r.name,
             last_seen_ts: 0,
-            online:       false,
-            blocked:      false,
-            typing:       false,
-            address:      address.unwrap_or_default(),
+            online: false,
+            blocked: false,
+            typing: false,
+            address: address.unwrap_or_default(),
         }))
     }
 
     async fn set_contact_address(
-        &self, req: Request<SetContactAddressRequest>,
+        &self,
+        req: Request<SetContactAddressRequest>,
     ) -> Result<Response<ContactReply>, Status> {
         let r = req.into_inner();
         let address = normalize_address(&r.address)?;
@@ -409,44 +498,49 @@ impl FriendService for FriendServiceImpl {
         };
         c.address = address;
         let reply = ContactReply {
-            id:           c.id.clone(),
-            name:         c.name.clone(),
+            id: c.id.clone(),
+            name: c.name.clone(),
             last_seen_ts: c.last_seen_ts,
-            online:       c.online,
-            blocked:      c.blocked,
+            online: c.online,
+            blocked: c.blocked,
             typing,
-            address:      c.address.clone().unwrap_or_default(),
+            address: c.address.clone().unwrap_or_default(),
         };
         s.try_save();
         Ok(Response::new(reply))
     }
 
     async fn rename_contact(
-        &self, req: Request<RenameContactRequest>,
+        &self,
+        req: Request<RenameContactRequest>,
     ) -> Result<Response<ContactReply>, Status> {
         let r = req.into_inner();
         if r.name.trim().is_empty() {
             return Err(Status::invalid_argument("name required"));
         }
         let mut s = self.0.lock();
-        let contact = s.contacts.iter_mut().find(|c| c.id == r.contact_id)
+        let contact = s
+            .contacts
+            .iter_mut()
+            .find(|c| c.id == r.contact_id)
             .ok_or_else(|| Status::not_found("contact not found"))?;
         contact.name = r.name.clone();
         let reply = ContactReply {
-            id:           contact.id.clone(),
-            name:         contact.name.clone(),
+            id: contact.id.clone(),
+            name: contact.name.clone(),
             last_seen_ts: contact.last_seen_ts,
-            online:       contact.online,
-            blocked:      contact.blocked,
-            typing:       false,
-            address:      Default::default(),
+            online: contact.online,
+            blocked: contact.blocked,
+            typing: false,
+            address: Default::default(),
         };
         s.try_save();
         Ok(Response::new(reply))
     }
 
     async fn remove_contact(
-        &self, req: Request<RemoveContactRequest>,
+        &self,
+        req: Request<RemoveContactRequest>,
     ) -> Result<Response<Empty>, Status> {
         let contact_id = req.into_inner().contact_id;
         let mut s = self.0.lock();
@@ -463,25 +557,35 @@ impl FriendService for FriendServiceImpl {
     }
 
     async fn block_contact(
-        &self, req: Request<BlockContactRequest>,
+        &self,
+        req: Request<BlockContactRequest>,
     ) -> Result<Response<ContactReply>, Status> {
         self.set_blocked(req.into_inner().contact_id, true)
     }
 
     async fn unblock_contact(
-        &self, req: Request<BlockContactRequest>,
+        &self,
+        req: Request<BlockContactRequest>,
     ) -> Result<Response<ContactReply>, Status> {
         self.set_blocked(req.into_inner().contact_id, false)
     }
 
     async fn get_safety_number(
-        &self, req: Request<SafetyNumberRequest>,
+        &self,
+        req: Request<SafetyNumberRequest>,
     ) -> Result<Response<SafetyNumberReply>, Status> {
         let contact_id = req.into_inner().contact_id;
         let (our_pk, peer_pk) = {
             let s = self.0.lock();
-            let our = s.identity.as_ref().map(|i| i.hybrid_public_key.clone()).unwrap_or_default();
-            let peer = s.contacts.iter().find(|c| c.id == contact_id)
+            let our = s
+                .identity
+                .as_ref()
+                .map(|i| i.hybrid_public_key.clone())
+                .unwrap_or_default();
+            let peer = s
+                .contacts
+                .iter()
+                .find(|c| c.id == contact_id)
                 .and_then(|c| c.hybrid_public_key.clone())
                 .unwrap_or_default();
             (our, peer)
@@ -504,19 +608,26 @@ impl FriendService for FriendServiceImpl {
 impl FriendServiceImpl {
     /// Set or clear the blocked flag on a contact and persist.
     #[allow(clippy::result_large_err)]
-    fn set_blocked(&self, contact_id: String, blocked: bool) -> Result<Response<ContactReply>, Status> {
+    fn set_blocked(
+        &self,
+        contact_id: String,
+        blocked: bool,
+    ) -> Result<Response<ContactReply>, Status> {
         let mut s = self.0.lock();
-        let contact = s.contacts.iter_mut().find(|c| c.id == contact_id)
+        let contact = s
+            .contacts
+            .iter_mut()
+            .find(|c| c.id == contact_id)
             .ok_or_else(|| Status::not_found("contact not found"))?;
         contact.blocked = blocked;
         let reply = ContactReply {
-            id:           contact.id.clone(),
-            name:         contact.name.clone(),
+            id: contact.id.clone(),
+            name: contact.name.clone(),
             last_seen_ts: contact.last_seen_ts,
-            online:       contact.online,
-            blocked:      contact.blocked,
-            typing:       false,
-            address:      Default::default(),
+            online: contact.online,
+            blocked: contact.blocked,
+            typing: false,
+            address: Default::default(),
         };
         s.try_save();
         Ok(Response::new(reply))
@@ -531,56 +642,69 @@ pub struct MessageServiceImpl(pub State);
 
 fn stored_to_reply(m: &StoredMessage) -> MessageReply {
     MessageReply {
-        id:               m.id.clone(),
-        contact_id:       m.contact_id.clone(),
-        outbound:         m.outbound,
-        content_type:     m.content_type.clone(),
-        text:             m.text.clone(),
-        file_name:        m.file_name.clone(),
-        file_size_bytes:  m.file_size,
+        id: m.id.clone(),
+        contact_id: m.contact_id.clone(),
+        outbound: m.outbound,
+        content_type: m.content_type.clone(),
+        text: m.text.clone(),
+        file_name: m.file_name.clone(),
+        file_size_bytes: m.file_size,
         file_transferred: m.file_xferd,
-        file_mime:        m.file_mime.clone(),
-        timestamp_ts:     m.timestamp_ts,
-        status:           m.status.clone(),
-        group_id:         m.group_id.clone().unwrap_or_default(),
-        sender_pk:        m.sender_pk.clone(),
-        reply_to:         m.reply_to.clone().unwrap_or_default(),
-        reactions:        m.reactions.iter().map(|(e, s)| Reaction {
-            emoji:  e.clone(),
-            sender: s.clone(),
-        }).collect(),
+        file_mime: m.file_mime.clone(),
+        timestamp_ts: m.timestamp_ts,
+        status: m.status.clone(),
+        group_id: m.group_id.clone().unwrap_or_default(),
+        sender_pk: m.sender_pk.clone(),
+        reply_to: m.reply_to.clone().unwrap_or_default(),
+        reactions: m
+            .reactions
+            .iter()
+            .map(|(e, s)| Reaction {
+                emoji: e.clone(),
+                sender: s.clone(),
+            })
+            .collect(),
     }
 }
 
 #[tonic::async_trait]
 impl MessageService for MessageServiceImpl {
     async fn get_messages(
-        &self, req: Request<GetMessagesRequest>,
+        &self,
+        req: Request<GetMessagesRequest>,
     ) -> Result<Response<MessageList>, Status> {
         let cid = req.into_inner().contact_id;
         let s = self.0.lock();
-        let messages = s.messages.get(&cid)
+        let messages = s
+            .messages
+            .get(&cid)
             .map(|v| v.iter().map(stored_to_reply).collect())
             .unwrap_or_default();
         Ok(Response::new(MessageList { messages }))
     }
     async fn search_messages(
-         &self, req: Request<SearchMessagesRequest>,
-     ) -> Result<Response<MessageList>, Status> {
-         let r = req.into_inner();
-         let q = r.query.to_lowercase();
-         let s = self.0.lock();
-         let messages = s.messages.get(&r.contact_id)
-             .map(|v| v.iter()
-                 .filter(|m| m.content_preview().to_lowercase().contains(&q))
-                 .map(stored_to_reply)
-                 .collect())
-             .unwrap_or_default();
-         Ok(Response::new(MessageList { messages }))
-     }
+        &self,
+        req: Request<SearchMessagesRequest>,
+    ) -> Result<Response<MessageList>, Status> {
+        let r = req.into_inner();
+        let q = r.query.to_lowercase();
+        let s = self.0.lock();
+        let messages = s
+            .messages
+            .get(&r.contact_id)
+            .map(|v| {
+                v.iter()
+                    .filter(|m| m.content_preview().to_lowercase().contains(&q))
+                    .map(stored_to_reply)
+                    .collect()
+            })
+            .unwrap_or_default();
+        Ok(Response::new(MessageList { messages }))
+    }
 
     async fn send_text(
-        &self, req: Request<SendTextRequest>,
+        &self,
+        req: Request<SendTextRequest>,
     ) -> Result<Response<MessageReply>, Status> {
         let r = req.into_inner();
         if r.text.trim().is_empty() {
@@ -588,17 +712,29 @@ impl MessageService for MessageServiceImpl {
         }
 
         let contact_id = r.contact_id.clone();
-        let reply_to = if r.reply_to.is_empty() { None } else { Some(r.reply_to.clone()) };
+        let reply_to = if r.reply_to.is_empty() {
+            None
+        } else {
+            Some(r.reply_to.clone())
+        };
 
         // 0. Outbound limit check: our own message cap applies to what we send;
         //    a peer's advertised cap (if known) is the tighter bound.
         let outbound = crate::limits::daemon_limits_with(&self.0.lock().settings.clone());
         let peer_limits = {
             let s = self.0.lock();
-            s.contacts.iter().find(|c| c.id == contact_id).and_then(|c| c.limits.clone())
+            s.contacts
+                .iter()
+                .find(|c| c.id == contact_id)
+                .and_then(|c| c.limits.clone())
         };
-        let cap = crate::limits::peer_cap(peer_limits.as_ref(), relayd::limits::ContentType::Message)
-            .unwrap_or_else(|| outbound.cap_for(relayd::limits::ContentType::Message).unwrap_or(u64::MAX));
+        let cap =
+            crate::limits::peer_cap(peer_limits.as_ref(), relayd::limits::ContentType::Message)
+                .unwrap_or_else(|| {
+                    outbound
+                        .cap_for(relayd::limits::ContentType::Message)
+                        .unwrap_or(u64::MAX)
+                });
         if (r.text.len() as u64) > cap {
             return Err(Status::failed_precondition(crate::limits::refusal_reason(
                 relayd::limits::ContentType::Message,
@@ -610,7 +746,9 @@ impl MessageService for MessageServiceImpl {
         // 1. Resolve the contact's direct address (short state lock).
         let address = {
             let s = self.0.lock();
-            s.contacts.iter().find(|c| c.id == contact_id)
+            s.contacts
+                .iter()
+                .find(|c| c.id == contact_id)
                 .and_then(|c| c.address.clone())
         };
 
@@ -627,13 +765,18 @@ impl MessageService for MessageServiceImpl {
         {
             let mut s = self.0.lock();
             let id = s.next_id();
-            let mut msg = StoredMessage::new_text(id.clone(), contact_id.clone(), true, r.text.clone());
+            let mut msg =
+                StoredMessage::new_text(id.clone(), contact_id.clone(), true, r.text.clone());
             msg.status = "pending".into();
             msg.reply_to = reply_to.clone();
             reply = stored_to_reply(&msg);
             s.messages.entry(contact_id.clone()).or_default().push(msg);
             s.try_save();
-            let sender_pk = s.identity.as_ref().map(|i| i.public_key.clone()).unwrap_or_default();
+            let sender_pk = s
+                .identity
+                .as_ref()
+                .map(|i| i.public_key.clone())
+                .unwrap_or_default();
             msg_id = id;
             payload = crate::wire::WireMsg::Text {
                 sender: sender_pk,
@@ -653,7 +796,9 @@ impl MessageService for MessageServiceImpl {
             if pm.has_session(&contact_id) {
                 let _ = pm.send_message(&contact_id, msg_id, bytes::Bytes::from(payload));
             } else {
-                tracing::debug!("[grpc] send_text: queued locally only (no session) for {contact_id}");
+                tracing::debug!(
+                    "[grpc] send_text: queued locally only (no session) for {contact_id}"
+                );
             }
         }
 
@@ -662,22 +807,34 @@ impl MessageService for MessageServiceImpl {
     }
 
     async fn send_typing(
-        &self, req: Request<SendTypingRequest>,
+        &self,
+        req: Request<SendTypingRequest>,
     ) -> Result<Response<Empty>, Status> {
         let r = req.into_inner();
         let contact_id = r.contact_id.clone();
         let address = {
             let s = self.0.lock();
-            s.contacts.iter().find(|c| c.id == contact_id)
+            s.contacts
+                .iter()
+                .find(|c| c.id == contact_id)
                 .and_then(|c| c.address.clone())
         };
         let transport = self.0.lock().transport.clone();
         ensure_contact_session(&self.0, &contact_id, address.as_deref()).await;
 
-        let sender_pk = self.0.lock().identity.as_ref().map(|i| i.public_key.clone()).unwrap_or_default();
-        let payload = crate::wire::WireMsg::Typing { sender: sender_pk, is_typing: r.is_typing }
-            .encode()
-            .map_err(|_| Status::internal("failed to encode typing"))?;
+        let sender_pk = self
+            .0
+            .lock()
+            .identity
+            .as_ref()
+            .map(|i| i.public_key.clone())
+            .unwrap_or_default();
+        let payload = crate::wire::WireMsg::Typing {
+            sender: sender_pk,
+            is_typing: r.is_typing,
+        }
+        .encode()
+        .map_err(|_| Status::internal("failed to encode typing"))?;
         let mut pm = transport.lock().await;
         if pm.has_session(&contact_id) {
             let _ = pm.send_message(&contact_id, String::new(), bytes::Bytes::from(payload));
@@ -686,19 +843,28 @@ impl MessageService for MessageServiceImpl {
     }
 
     async fn toggle_reaction(
-        &self, req: Request<ReactionRequest>,
+        &self,
+        req: Request<ReactionRequest>,
     ) -> Result<Response<Empty>, Status> {
         let r = req.into_inner();
         let contact_id = r.contact_id.clone();
         let address = {
             let s = self.0.lock();
-            s.contacts.iter().find(|c| c.id == contact_id)
+            s.contacts
+                .iter()
+                .find(|c| c.id == contact_id)
                 .and_then(|c| c.address.clone())
         };
         let transport = self.0.lock().transport.clone();
         ensure_contact_session(&self.0, &contact_id, address.as_deref()).await;
 
-        let sender_pk = self.0.lock().identity.as_ref().map(|i| i.public_key.clone()).unwrap_or_default();
+        let sender_pk = self
+            .0
+            .lock()
+            .identity
+            .as_ref()
+            .map(|i| i.public_key.clone())
+            .unwrap_or_default();
         // Apply locally (toggle), then notify the peer.
         {
             let mut s = self.0.lock();
@@ -727,9 +893,7 @@ pub struct UpdateServiceImpl;
 
 #[tonic::async_trait]
 impl UpdateService for UpdateServiceImpl {
-    async fn check_for_updates(
-        &self, _: Request<Empty>,
-    ) -> Result<Response<UpdateReply>, Status> {
+    async fn check_for_updates(&self, _: Request<Empty>) -> Result<Response<UpdateReply>, Status> {
         use crate::update::{UpdateCheckResult, CURRENT_VERSION};
         match crate::update::check_for_updates().await {
             UpdateCheckResult::UpToDate => Ok(Response::new(UpdateReply {
@@ -759,9 +923,7 @@ impl UpdateService for UpdateServiceImpl {
         }
     }
 
-    async fn apply_update(
-        &self, _: Request<Empty>,
-    ) -> Result<Response<Empty>, Status> {
+    async fn apply_update(&self, _: Request<Empty>) -> Result<Response<Empty>, Status> {
         match crate::update::check_for_updates().await {
             crate::update::UpdateCheckResult::UpdateAvailable(info) => {
                 let path = crate::update::download_update(&info)
@@ -789,21 +951,26 @@ pub struct TransferServiceImpl(pub State);
 impl TransferService for TransferServiceImpl {
     async fn get_transfers(&self, _: Request<Empty>) -> Result<Response<TransferList>, Status> {
         let s = self.0.lock();
-        let transfers = s.transfers.iter().map(|t| TransferReply {
-            id:               t.id.clone(),
-            contact_name:     t.contact_name.clone(),
-            file_name:        t.file_name.clone(),
-            size_bytes:       t.size_bytes,
-            transferred_bytes: t.xferd_bytes,
-            outbound:         t.outbound,
-            lanes_active:     t.lanes_active,
-            bps:              t.bps,
-        }).collect();
+        let transfers = s
+            .transfers
+            .iter()
+            .map(|t| TransferReply {
+                id: t.id.clone(),
+                contact_name: t.contact_name.clone(),
+                file_name: t.file_name.clone(),
+                size_bytes: t.size_bytes,
+                transferred_bytes: t.xferd_bytes,
+                outbound: t.outbound,
+                lanes_active: t.lanes_active,
+                bps: t.bps,
+            })
+            .collect();
         Ok(Response::new(TransferList { transfers }))
     }
 
     async fn send_file(
-        &self, req: Request<SendFileRequest>,
+        &self,
+        req: Request<SendFileRequest>,
     ) -> Result<Response<MessageReply>, Status> {
         let r = req.into_inner();
         if r.contact_id.is_empty() {
@@ -827,7 +994,10 @@ impl TransferService for TransferServiceImpl {
         let outbound = crate::limits::daemon_limits_with(&self.0.lock().settings.clone());
         let peer_limits = {
             let s = self.0.lock();
-            s.contacts.iter().find(|c| c.id == r.contact_id).and_then(|c| c.limits.clone())
+            s.contacts
+                .iter()
+                .find(|c| c.id == r.contact_id)
+                .and_then(|c| c.limits.clone())
         };
         let cap = crate::limits::peer_cap(peer_limits.as_ref(), content_type)
             .unwrap_or_else(|| outbound.cap_for(content_type).unwrap_or(u64::MAX));
@@ -846,7 +1016,9 @@ impl TransferService for TransferServiceImpl {
         // 1. Resolve the contact's direct address (short state lock).
         let address = {
             let s = self.0.lock();
-            s.contacts.iter().find(|c| c.id == contact_id)
+            s.contacts
+                .iter()
+                .find(|c| c.id == contact_id)
                 .and_then(|c| c.address.clone())
         };
 
@@ -885,7 +1057,12 @@ impl TransferService for TransferServiceImpl {
             // find it; the source path stays in the outbox until then, so a send while the peer is away still
             // happens later (outbox::flush), even after a restart.
             let tid = id.clone();
-            let name = s.contacts.iter().find(|c| c.id == contact_id).map(|c| c.name.clone()).unwrap_or_else(|| contact_id.clone());
+            let name = s
+                .contacts
+                .iter()
+                .find(|c| c.id == contact_id)
+                .map(|c| c.name.clone())
+                .unwrap_or_else(|| contact_id.clone());
             let full_path = std::fs::canonicalize(&r.file_path)
                 .map(|p| p.to_string_lossy().trim_start_matches(r"\\?\").to_string())
                 .unwrap_or_else(|_| r.file_path.clone());
@@ -901,32 +1078,48 @@ impl TransferService for TransferServiceImpl {
                 bps: 0,
             });
             s.try_save();
-            sender_pk = s.identity.as_ref().map(|i| i.public_key.clone()).unwrap_or_default();
+            sender_pk = s
+                .identity
+                .as_ref()
+                .map(|i| i.public_key.clone())
+                .unwrap_or_default();
             msg_id = id;
         }
 
         // 4. Split into wire chunks and enqueue for lane delivery.
-        let chunks = crate::outbox::file_chunks(&sender_pk, &msg_id, &file_name, &mime, now_secs(), &data);
+        let chunks =
+            crate::outbox::file_chunks(&sender_pk, &msg_id, &file_name, &mime, now_secs(), &data);
         let total = chunks.len();
         {
             let mut pm = transport.lock().await;
             if pm.has_session(&contact_id) {
                 for wire in chunks {
                     match wire.encode() {
-                        Ok(payload) => { let _ = pm.send_message(&contact_id, msg_id.clone(), bytes::Bytes::from(payload)); }
+                        Ok(payload) => {
+                            let _ = pm.send_message(
+                                &contact_id,
+                                msg_id.clone(),
+                                bytes::Bytes::from(payload),
+                            );
+                        }
                         Err(_) => break,
                     }
                 }
                 tracing::info!("[grpc] send_file to {contact_id}: {file_name} ({size_bytes} B, {total} chunks) queued");
             } else {
-                tracing::debug!("[grpc] send_file: queued locally only (no session) for {contact_id}");
+                tracing::debug!(
+                    "[grpc] send_file: queued locally only (no session) for {contact_id}"
+                );
             }
         }
 
         Ok(Response::new(reply))
     }
 
-    async fn cancel_transfer(&self, req: Request<CancelTransferRequest>) -> Result<Response<Empty>, Status> {
+    async fn cancel_transfer(
+        &self,
+        req: Request<CancelTransferRequest>,
+    ) -> Result<Response<Empty>, Status> {
         let tid = req.into_inner().transfer_id;
         let mut s = self.0.lock();
         if !s.transfers.iter().any(|t| t.id == tid) {
@@ -936,7 +1129,11 @@ impl TransferService for TransferServiceImpl {
         // A file still waiting in the outbox is not sent any more; one already on the wire is marked failed here.
         s.settings.remove(&crate::outbox::file_key(&tid));
         s.settings.remove(&crate::outbox::paused_key(&tid));
-        let unfinished = s.messages.values().flatten().any(|m| m.id == tid && m.status != "delivered" && m.status != "read");
+        let unfinished = s
+            .messages
+            .values()
+            .flatten()
+            .any(|m| m.id == tid && m.status != "delivered" && m.status != "read");
         if unfinished {
             s.mark_status(&tid, "failed");
         }
@@ -945,7 +1142,10 @@ impl TransferService for TransferServiceImpl {
         Ok(Response::new(Empty {}))
     }
 
-    async fn pause_transfer(&self, req: Request<CancelTransferRequest>) -> Result<Response<Empty>, Status> {
+    async fn pause_transfer(
+        &self,
+        req: Request<CancelTransferRequest>,
+    ) -> Result<Response<Empty>, Status> {
         let tid = req.into_inner().transfer_id;
         let (outbound, pending, contact) = {
             let s = self.0.lock();
@@ -953,31 +1153,50 @@ impl TransferService for TransferServiceImpl {
                 return Err(Status::not_found("no such transfer"));
             };
             let msg = s.messages.values().flatten().find(|m| m.id == tid);
-            (t.outbound, msg.map(|m| m.status == "pending").unwrap_or(false), msg.map(|m| m.contact_id.clone()).unwrap_or_default())
+            (
+                t.outbound,
+                msg.map(|m| m.status == "pending").unwrap_or(false),
+                msg.map(|m| m.contact_id.clone()).unwrap_or_default(),
+            )
         };
         if !outbound {
-            return Err(Status::failed_precondition("only outgoing transfers can be paused here"));
+            return Err(Status::failed_precondition(
+                "only outgoing transfers can be paused here",
+            ));
         }
         let transport = self.0.lock().transport.clone();
-        let queued = transport.lock().await.queued_msg_ids(&contact).contains(&tid);
+        let queued = transport
+            .lock()
+            .await
+            .queued_msg_ids(&contact)
+            .contains(&tid);
         if !pending || queued {
             // Its chunks are already with the lanes: they cannot be pulled back one by one.
-            return Err(Status::failed_precondition("this transfer is already being sent; cancel it instead"));
+            return Err(Status::failed_precondition(
+                "this transfer is already being sent; cancel it instead",
+            ));
         }
         let mut s = self.0.lock();
-        s.settings.insert(crate::outbox::paused_key(&tid), "1".into());
+        s.settings
+            .insert(crate::outbox::paused_key(&tid), "1".into());
         s.try_save();
         tracing::info!("[grpc] paused transfer {tid}");
         Ok(Response::new(Empty {}))
     }
 
-    async fn resume_transfer(&self, req: Request<CancelTransferRequest>) -> Result<Response<Empty>, Status> {
+    async fn resume_transfer(
+        &self,
+        req: Request<CancelTransferRequest>,
+    ) -> Result<Response<Empty>, Status> {
         let tid = req.into_inner().transfer_id;
         let mut s = self.0.lock();
         if !s.transfers.iter().any(|t| t.id == tid) {
             return Err(Status::not_found("no such transfer"));
         }
-        if s.settings.remove(&crate::outbox::paused_key(&tid)).is_none() {
+        if s.settings
+            .remove(&crate::outbox::paused_key(&tid))
+            .is_none()
+        {
             return Err(Status::failed_precondition("this transfer is not paused"));
         }
         s.try_save();
@@ -995,7 +1214,8 @@ pub struct SettingsServiceImpl(pub State);
 #[tonic::async_trait]
 impl SettingsService for SettingsServiceImpl {
     async fn get_setting(
-        &self, req: Request<GetSettingRequest>,
+        &self,
+        req: Request<GetSettingRequest>,
     ) -> Result<Response<SettingReply>, Status> {
         let key = req.into_inner().key;
         let s = self.0.lock();
@@ -1027,19 +1247,31 @@ impl SettingsService for SettingsServiceImpl {
                 "limits.daily_mb" => format_mb(limits.daily_bytes.bytes()),
                 "limits.weekly_mb" => format_mb(limits.weekly_bytes.bytes()),
                 "limits.monthly_mb" => format_mb(limits.monthly_bytes.bytes()),
-                _ => return Ok(Response::new(SettingReply { value: String::new(), found: false })),
+                _ => {
+                    return Ok(Response::new(SettingReply {
+                        value: String::new(),
+                        found: false,
+                    }))
+                }
             };
             return Ok(Response::new(SettingReply { value, found: true }));
         }
 
         match s.settings.get(&key) {
-            Some(v) => Ok(Response::new(SettingReply { value: v.clone(), found: true })),
-            None    => Ok(Response::new(SettingReply { value: String::new(), found: false })),
+            Some(v) => Ok(Response::new(SettingReply {
+                value: v.clone(),
+                found: true,
+            })),
+            None => Ok(Response::new(SettingReply {
+                value: String::new(),
+                found: false,
+            })),
         }
     }
 
     async fn set_setting(
-        &self, req: Request<SetSettingRequest>,
+        &self,
+        req: Request<SetSettingRequest>,
     ) -> Result<Response<Empty>, Status> {
         let r = req.into_inner();
 
@@ -1087,13 +1319,19 @@ async fn apply_relay_enabled(state: State, enable: bool) {
         // Build settings from current stored values.
         let settings = {
             let s = state.lock();
-            let port = s.settings.get("relay.port")
+            let port = s
+                .settings
+                .get("relay.port")
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(7777u16);
-            let bandwidth_kbps = s.settings.get("relay.bandwidth_kbps")
+            let bandwidth_kbps = s
+                .settings
+                .get("relay.bandwidth_kbps")
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(10_000u64);
-            let difficulty = s.settings.get("relay.difficulty")
+            let difficulty = s
+                .settings
+                .get("relay.difficulty")
                 .and_then(|v| v.parse().ok())
                 .unwrap_or(14u32);
             transferd_relay::RelaySettings {
@@ -1125,7 +1363,7 @@ async fn apply_relay_enabled(state: State, enable: bool) {
 // ---------------------------------------------------------------------------
 
 pub struct CallServiceImpl {
-    pub state:  State,
+    pub state: State,
     pub events: broadcast::Sender<CallEvent>,
 }
 
@@ -1141,7 +1379,8 @@ impl CallService for CallServiceImpl {
     type StreamCallEventsStream = BoxStream<CallEvent>;
 
     async fn start_call(
-        &self, req: Request<CallStartRequest>,
+        &self,
+        req: Request<CallStartRequest>,
     ) -> Result<Response<CallStartResponse>, Status> {
         let r = req.into_inner();
         if r.conv_id.is_empty() {
@@ -1150,26 +1389,30 @@ impl CallService for CallServiceImpl {
         let call_id = {
             let mut s = self.state.lock();
             let id = s.next_id();
-            s.calls.insert(id.clone(), CallRecord {
-                conv_id:   r.conv_id.clone(),
-                video:     r.video,
-                local_sdp: r.local_sdp.clone(),
-                state:     "calling".into(),
-            });
+            s.calls.insert(
+                id.clone(),
+                CallRecord {
+                    conv_id: r.conv_id.clone(),
+                    video: r.video,
+                    local_sdp: r.local_sdp.clone(),
+                    state: "calling".into(),
+                },
+            );
             id
         };
         let _ = self.events.send(CallEvent {
-            call_id:    call_id.clone(),
+            call_id: call_id.clone(),
             event_type: "invite".into(),
-            payload:    r.local_sdp,
-            conv_id:    r.conv_id,
-            video:      r.video,
+            payload: r.local_sdp,
+            conv_id: r.conv_id,
+            video: r.video,
         });
         Ok(Response::new(CallStartResponse { call_id }))
     }
 
     async fn accept_call(
-        &self, req: Request<CallAcceptRequest>,
+        &self,
+        req: Request<CallAcceptRequest>,
     ) -> Result<Response<CallAcceptResponse>, Status> {
         let r = req.into_inner();
         let mut s = self.state.lock();
@@ -1180,21 +1423,25 @@ impl CallService for CallServiceImpl {
                 let video = rec.video;
                 rec.state = "active".into();
                 let _ = self.events.send(CallEvent {
-                    call_id:    r.call_id,
+                    call_id: r.call_id,
                     event_type: "accepted".into(),
-                    payload:    r.answer_sdp,
+                    payload: r.answer_sdp,
                     conv_id,
                     video,
                 });
-                Ok(Response::new(CallAcceptResponse { accepted: true, remote_sdp }))
+                Ok(Response::new(CallAcceptResponse {
+                    accepted: true,
+                    remote_sdp,
+                }))
             }
             Some(_) => Err(Status::failed_precondition("call not in calling state")),
-            None    => Err(Status::not_found("call not found")),
+            None => Err(Status::not_found("call not found")),
         }
     }
 
     async fn reject_call(
-        &self, req: Request<CallRejectRequest>,
+        &self,
+        req: Request<CallRejectRequest>,
     ) -> Result<Response<Empty>, Status> {
         let r = req.into_inner();
         let mut s = self.state.lock();
@@ -1203,8 +1450,11 @@ impl CallService for CallServiceImpl {
                 let conv_id = rec.conv_id.clone();
                 rec.state = "rejected".into();
                 let _ = self.events.send(CallEvent {
-                    call_id: r.call_id, event_type: "rejected".into(),
-                    payload: String::new(), conv_id, video: false,
+                    call_id: r.call_id,
+                    event_type: "rejected".into(),
+                    payload: String::new(),
+                    conv_id,
+                    video: false,
                 });
                 Ok(Response::new(Empty {}))
             }
@@ -1212,9 +1462,7 @@ impl CallService for CallServiceImpl {
         }
     }
 
-    async fn end_call(
-        &self, req: Request<CallEndRequest>,
-    ) -> Result<Response<Empty>, Status> {
+    async fn end_call(&self, req: Request<CallEndRequest>) -> Result<Response<Empty>, Status> {
         let r = req.into_inner();
         let mut s = self.state.lock();
         match s.calls.get_mut(&r.call_id) {
@@ -1222,8 +1470,11 @@ impl CallService for CallServiceImpl {
                 let conv_id = rec.conv_id.clone();
                 rec.state = "ended".into();
                 let _ = self.events.send(CallEvent {
-                    call_id: r.call_id, event_type: "ended".into(),
-                    payload: String::new(), conv_id, video: false,
+                    call_id: r.call_id,
+                    event_type: "ended".into(),
+                    payload: String::new(),
+                    conv_id,
+                    video: false,
                 });
                 Ok(Response::new(Empty {}))
             }
@@ -1232,7 +1483,8 @@ impl CallService for CallServiceImpl {
     }
 
     async fn send_ice_candidate(
-        &self, req: Request<IceCandidateMsg>,
+        &self,
+        req: Request<IceCandidateMsg>,
     ) -> Result<Response<Empty>, Status> {
         let r = req.into_inner();
         let s = self.state.lock();
@@ -1240,21 +1492,22 @@ impl CallService for CallServiceImpl {
             return Err(Status::not_found("call not found"));
         }
         let _ = self.events.send(CallEvent {
-            call_id:    r.call_id,
+            call_id: r.call_id,
             event_type: "ice_candidate".into(),
-            payload:    r.candidate_json,
-            conv_id:    String::new(),
-            video:      false,
+            payload: r.candidate_json,
+            conv_id: String::new(),
+            video: false,
         });
         Ok(Response::new(Empty {}))
     }
 
     async fn stream_call_events(
-        &self, _: Request<Empty>,
+        &self,
+        _: Request<Empty>,
     ) -> Result<Response<Self::StreamCallEventsStream>, Status> {
         let rx = self.events.subscribe();
         let stream = BroadcastStream::new(rx).filter_map(|r| match r {
-            Ok(e)  => Some(Ok(e)),
+            Ok(e) => Some(Ok(e)),
             Err(_) => None,
         });
         Ok(Response::new(Box::pin(stream)))
@@ -1268,26 +1521,26 @@ impl CallService for CallServiceImpl {
 pub struct TelemetryServiceImpl(pub State);
 
 fn event_to_msg(event: &transferd_telemetry::TelemetryEvent) -> TelemetryEventMsg {
-    use transferd_telemetry::TelemetryEvent;
     use transferd_api::proto::telemetry_event_msg::Event;
+    use transferd_telemetry::TelemetryEvent;
     TelemetryEventMsg {
         event: Some(match event {
             TelemetryEvent::SystemHealth(e) => Event::SystemHealth(SystemHealthMsg {
-                ts:              e.ts,
-                cpu_pct:         e.cpu_pct,
-                mem_rss_kb:      e.mem_rss_kb,
-                uptime_secs:     e.uptime_secs,
+                ts: e.ts,
+                cpu_pct: e.cpu_pct,
+                mem_rss_kb: e.mem_rss_kb,
+                uptime_secs: e.uptime_secs,
                 active_sessions: e.active_sessions,
             }),
             TelemetryEvent::AteLane(e) => Event::AteLane(AteLaneMsg {
-                ts:            e.ts,
-                session_hash:  e.session_id_hash.to_vec(),
-                gsn:           e.gsn,
+                ts: e.ts,
+                session_hash: e.session_id_hash.to_vec(),
+                gsn: e.gsn,
                 selected_lane: e.selected_lane,
-                rtt_ms:        e.rtt_ms,
+                rtt_ms: e.rtt_ms,
                 bandwidth_bps: e.bandwidth_bps,
                 active_chunks: e.active_chunks,
-                total_lanes:   e.total_lanes,
+                total_lanes: e.total_lanes,
             }),
         }),
     }
@@ -1298,7 +1551,8 @@ impl TelemetryService for TelemetryServiceImpl {
     type StreamTelemetryStream = BoxStream<TelemetryEventMsg>;
 
     async fn stream_telemetry(
-        &self, _: Request<Empty>,
+        &self,
+        _: Request<Empty>,
     ) -> Result<Response<Self::StreamTelemetryStream>, Status> {
         let telemetry = {
             let s = self.0.lock();
@@ -1315,9 +1569,7 @@ impl TelemetryService for TelemetryServiceImpl {
         Ok(Response::new(Box::pin(stream)))
     }
 
-    async fn get_snapshot(
-        &self, _: Request<Empty>,
-    ) -> Result<Response<TelemetrySnapshot>, Status> {
+    async fn get_snapshot(&self, _: Request<Empty>) -> Result<Response<TelemetrySnapshot>, Status> {
         let telemetry = {
             let s = self.0.lock();
             s.telemetry.clone()
@@ -1340,8 +1592,8 @@ mod tests {
     use std::collections::HashSet;
 
     fn fresh_account_svc() -> AccountServiceImpl {
-        use std::sync::Arc;
         use parking_lot::Mutex;
+        use std::sync::Arc;
         AccountServiceImpl(Arc::new(Mutex::new(crate::state::DaemonState::default())))
     }
 
@@ -1359,19 +1611,27 @@ mod tests {
 
             // Phrase must be exactly 12 BIP-39 words.
             assert_eq!(
-                resp.phrase.split_whitespace().count(), 12,
-                "Expected 12 words, got: {}", resp.phrase
+                resp.phrase.split_whitespace().count(),
+                12,
+                "Expected 12 words, got: {}",
+                resp.phrase
             );
 
             // Each phrase must be unique.
             assert!(
                 phrases.insert(resp.phrase.clone()),
-                "Duplicate recovery phrase on iteration {i}: {}", resp.phrase
+                "Duplicate recovery phrase on iteration {i}: {}",
+                resp.phrase
             );
 
             // Public key stored must be 64 hex chars.
             let pk = svc.0.lock().identity.as_ref().unwrap().public_key.clone();
-            assert_eq!(pk.len(), 64, "Public key must be 64 hex chars, got {}", pk.len());
+            assert_eq!(
+                pk.len(),
+                64,
+                "Public key must be 64 hex chars, got {}",
+                pk.len()
+            );
 
             // Each public key must be unique.
             assert!(
@@ -1453,13 +1713,17 @@ fn group_role_to_proto(role: u8) -> transferd_api::GroupRole {
 
 fn group_to_reply(g: &crate::state::Group) -> transferd_api::GroupReply {
     transferd_api::GroupReply {
-        group_id:   g.id.clone(),
-        name:       g.name.clone(),
-        owner:      g.owner.clone(),
-        members: g.members.iter().map(|m| transferd_api::GroupMember {
-            public_key: m.public_key.clone(),
-            role: group_role_to_proto(m.role).into(),
-        }).collect(),
+        group_id: g.id.clone(),
+        name: g.name.clone(),
+        owner: g.owner.clone(),
+        members: g
+            .members
+            .iter()
+            .map(|m| transferd_api::GroupMember {
+                public_key: m.public_key.clone(),
+                role: group_role_to_proto(m.role).into(),
+            })
+            .collect(),
         created_at: g.created_at,
     }
 }
@@ -1467,14 +1731,18 @@ fn group_to_reply(g: &crate::state::Group) -> transferd_api::GroupReply {
 #[tonic::async_trait]
 impl GroupService for GroupServiceImpl {
     async fn create_group(
-        &self, req: Request<transferd_api::CreateGroupRequest>,
+        &self,
+        req: Request<transferd_api::CreateGroupRequest>,
     ) -> Result<Response<transferd_api::GroupReply>, Status> {
         let r = req.into_inner();
         if r.name.trim().is_empty() {
             return Err(Status::invalid_argument("group name required"));
         }
         let mut s = self.0.lock();
-        let my_pk = s.identity.as_ref().map(|i| i.public_key.clone())
+        let my_pk = s
+            .identity
+            .as_ref()
+            .map(|i| i.public_key.clone())
             .ok_or_else(|| Status::failed_precondition("no identity"))?;
         let gid = s.next_id();
         let mut members = vec![crate::state::GroupMember {
@@ -1482,7 +1750,9 @@ impl GroupService for GroupServiceImpl {
             role: crate::state::group_role::OWNER,
         }];
         for mid in &r.member_ids {
-            if mid == &my_pk { continue; }
+            if mid == &my_pk {
+                continue;
+            }
             if !members.iter().any(|m| &m.public_key == mid) {
                 members.push(crate::state::GroupMember {
                     public_key: mid.clone(),
@@ -1502,7 +1772,10 @@ impl GroupService for GroupServiceImpl {
         Ok(Response::new(group_to_reply(&group)))
     }
 
-    async fn get_groups(&self, _: Request<Empty>) -> Result<Response<transferd_api::GroupList>, Status> {
+    async fn get_groups(
+        &self,
+        _: Request<Empty>,
+    ) -> Result<Response<transferd_api::GroupList>, Status> {
         let s = self.0.lock();
         Ok(Response::new(transferd_api::GroupList {
             groups: s.groups.values().map(group_to_reply).collect(),
@@ -1510,16 +1783,21 @@ impl GroupService for GroupServiceImpl {
     }
 
     async fn get_group(
-        &self, req: Request<transferd_api::GetGroupRequest>,
+        &self,
+        req: Request<transferd_api::GetGroupRequest>,
     ) -> Result<Response<transferd_api::GroupReply>, Status> {
         let gid = req.into_inner().group_id;
         let s = self.0.lock();
-        let g = s.groups.get(&gid).ok_or_else(|| Status::not_found("group not found"))?;
+        let g = s
+            .groups
+            .get(&gid)
+            .ok_or_else(|| Status::not_found("group not found"))?;
         Ok(Response::new(group_to_reply(g)))
     }
 
     async fn rename_group(
-        &self, req: Request<transferd_api::RenameGroupRequest>,
+        &self,
+        req: Request<transferd_api::RenameGroupRequest>,
     ) -> Result<Response<transferd_api::GroupReply>, Status> {
         let r = req.into_inner();
         if r.name.trim().is_empty() {
@@ -1527,7 +1805,9 @@ impl GroupService for GroupServiceImpl {
         }
         let mut s = self.0.lock();
         let reply = {
-            let g = s.groups.get_mut(&r.group_id)
+            let g = s
+                .groups
+                .get_mut(&r.group_id)
                 .ok_or_else(|| Status::not_found("group not found"))?;
             g.name = r.name;
             group_to_reply(g)
@@ -1537,12 +1817,15 @@ impl GroupService for GroupServiceImpl {
     }
 
     async fn add_members(
-        &self, req: Request<transferd_api::GroupMembersRequest>,
+        &self,
+        req: Request<transferd_api::GroupMembersRequest>,
     ) -> Result<Response<transferd_api::GroupReply>, Status> {
         let r = req.into_inner();
         let mut s = self.0.lock();
         let reply = {
-            let g = s.groups.get_mut(&r.group_id)
+            let g = s
+                .groups
+                .get_mut(&r.group_id)
                 .ok_or_else(|| Status::not_found("group not found"))?;
             for mid in r.member_ids {
                 if !g.members.iter().any(|m| m.public_key == mid) {
@@ -1559,12 +1842,15 @@ impl GroupService for GroupServiceImpl {
     }
 
     async fn remove_members(
-        &self, req: Request<transferd_api::GroupMembersRequest>,
+        &self,
+        req: Request<transferd_api::GroupMembersRequest>,
     ) -> Result<Response<transferd_api::GroupReply>, Status> {
         let r = req.into_inner();
         let mut s = self.0.lock();
         let reply = {
-            let g = s.groups.get_mut(&r.group_id)
+            let g = s
+                .groups
+                .get_mut(&r.group_id)
                 .ok_or_else(|| Status::not_found("group not found"))?;
             g.members.retain(|m| !r.member_ids.contains(&m.public_key));
             group_to_reply(g)
@@ -1574,14 +1860,20 @@ impl GroupService for GroupServiceImpl {
     }
 
     async fn set_member_role(
-        &self, req: Request<transferd_api::SetMemberRoleRequest>,
+        &self,
+        req: Request<transferd_api::SetMemberRoleRequest>,
     ) -> Result<Response<transferd_api::GroupReply>, Status> {
         let r = req.into_inner();
         let mut s = self.0.lock();
         let reply = {
-            let g = s.groups.get_mut(&r.group_id)
+            let g = s
+                .groups
+                .get_mut(&r.group_id)
                 .ok_or_else(|| Status::not_found("group not found"))?;
-            let member = g.members.iter_mut().find(|m| m.public_key == r.member_id)
+            let member = g
+                .members
+                .iter_mut()
+                .find(|m| m.public_key == r.member_id)
                 .ok_or_else(|| Status::not_found("member not in group"))?;
             member.role = match r.role {
                 x if x == transferd_api::GroupRole::Owner as i32 => crate::state::group_role::OWNER,
@@ -1595,14 +1887,20 @@ impl GroupService for GroupServiceImpl {
     }
 
     async fn leave_group(
-        &self, req: Request<transferd_api::GetGroupRequest>,
+        &self,
+        req: Request<transferd_api::GetGroupRequest>,
     ) -> Result<Response<Empty>, Status> {
         let gid = req.into_inner().group_id;
         let mut s = self.0.lock();
-        let my_pk = s.identity.as_ref().map(|i| i.public_key.clone())
+        let my_pk = s
+            .identity
+            .as_ref()
+            .map(|i| i.public_key.clone())
             .ok_or_else(|| Status::failed_precondition("no identity"))?;
         {
-            let g = s.groups.get_mut(&gid)
+            let g = s
+                .groups
+                .get_mut(&gid)
                 .ok_or_else(|| Status::not_found("group not found"))?;
             g.members.retain(|m| m.public_key != my_pk);
         }
@@ -1611,17 +1909,26 @@ impl GroupService for GroupServiceImpl {
     }
 
     async fn delete_group(
-        &self, req: Request<transferd_api::GetGroupRequest>,
+        &self,
+        req: Request<transferd_api::GetGroupRequest>,
     ) -> Result<Response<Empty>, Status> {
         let gid = req.into_inner().group_id;
         let mut s = self.0.lock();
-        let my_pk = s.identity.as_ref().map(|i| i.public_key.clone())
+        let my_pk = s
+            .identity
+            .as_ref()
+            .map(|i| i.public_key.clone())
             .ok_or_else(|| Status::failed_precondition("no identity"))?;
         // Only the owner can delete a group.
-        let owner = s.groups.get(&gid).map(|g| g.owner.clone())
+        let owner = s
+            .groups
+            .get(&gid)
+            .map(|g| g.owner.clone())
             .ok_or_else(|| Status::not_found("group not found"))?;
         if owner != my_pk {
-            return Err(Status::permission_denied("only the owner can delete the group"));
+            return Err(Status::permission_denied(
+                "only the owner can delete the group",
+            ));
         }
         s.groups.remove(&gid);
         s.messages.remove(&gid);
@@ -1630,7 +1937,8 @@ impl GroupService for GroupServiceImpl {
     }
 
     async fn send_group_text(
-        &self, req: Request<transferd_api::SendGroupTextRequest>,
+        &self,
+        req: Request<transferd_api::SendGroupTextRequest>,
     ) -> Result<Response<MessageReply>, Status> {
         let r = req.into_inner();
         if r.text.trim().is_empty() {
@@ -1640,17 +1948,25 @@ impl GroupService for GroupServiceImpl {
         // Store locally under the group id and capture member list.
         let (reply, my_pk, members, payload, local_msg_id) = {
             let mut s = self.0.lock();
-            let my_pk = s.identity.as_ref().map(|i| i.public_key.clone())
+            let my_pk = s
+                .identity
+                .as_ref()
+                .map(|i| i.public_key.clone())
                 .ok_or_else(|| Status::failed_precondition("no identity"))?;
-            let g = s.groups.get(&r.group_id)
+            let g = s
+                .groups
+                .get(&r.group_id)
                 .ok_or_else(|| Status::not_found("group not found"))?;
-            let members = g.members.iter().map(|m| m.public_key.clone()).collect::<Vec<_>>();
+            let members = g
+                .members
+                .iter()
+                .map(|m| m.public_key.clone())
+                .collect::<Vec<_>>();
 
             let id = s.next_id();
             let local_msg_id = id.clone();
-            let mut msg = crate::state::StoredMessage::new_text(
-                id, r.group_id.clone(), true, r.text.clone(),
-            );
+            let mut msg =
+                crate::state::StoredMessage::new_text(id, r.group_id.clone(), true, r.text.clone());
             msg.status = "pending".into();
             msg.group_id = Some(r.group_id.clone());
             msg.sender_pk = my_pk.clone();
@@ -1675,15 +1991,24 @@ impl GroupService for GroupServiceImpl {
         // Fan out to each other member (best-effort; explicit address or DHT discovery).
         let transport = self.0.lock().transport.clone();
         for member in members {
-            if member == my_pk { continue; }
+            if member == my_pk {
+                continue;
+            }
             let addr = {
                 let s = self.0.lock();
-                s.contacts.iter().find(|c| c.id == member).and_then(|c| c.address.clone())
+                s.contacts
+                    .iter()
+                    .find(|c| c.id == member)
+                    .and_then(|c| c.address.clone())
             };
             ensure_contact_session(&self.0, &member, addr.as_deref()).await;
             let mut pm = transport.lock().await;
             if pm.has_session(&member) {
-                let _ = pm.send_message(&member, local_msg_id.clone(), bytes::Bytes::from(payload.clone()));
+                let _ = pm.send_message(
+                    &member,
+                    local_msg_id.clone(),
+                    bytes::Bytes::from(payload.clone()),
+                );
             }
         }
 
@@ -1691,11 +2016,14 @@ impl GroupService for GroupServiceImpl {
     }
 
     async fn get_group_messages(
-        &self, req: Request<transferd_api::GetGroupRequest>,
+        &self,
+        req: Request<transferd_api::GetGroupRequest>,
     ) -> Result<Response<MessageList>, Status> {
         let gid = req.into_inner().group_id;
         let s = self.0.lock();
-        let messages = s.messages.get(&gid)
+        let messages = s
+            .messages
+            .get(&gid)
             .map(|v| v.iter().map(stored_to_reply).collect())
             .unwrap_or_default();
         Ok(Response::new(MessageList { messages }))
@@ -1711,9 +2039,9 @@ pub fn add_all_services(
     state: State,
 ) -> tonic::transport::server::Router {
     use transferd_api::{
-        AccountServiceServer, FriendServiceServer, MessageServiceServer,
-        TransferServiceServer, SettingsServiceServer, CallServiceServer,
-        TelemetryServiceServer, GroupServiceServer, ConnectionServiceServer,
+        AccountServiceServer, CallServiceServer, ConnectionServiceServer, FriendServiceServer,
+        GroupServiceServer, MessageServiceServer, SettingsServiceServer, TelemetryServiceServer,
+        TransferServiceServer,
     };
 
     // Build a cloneable interceptor that validates the bearer token.
@@ -1735,31 +2063,54 @@ pub fn add_all_services(
         if authorized {
             Ok(request)
         } else {
-            Err(tonic::Status::unauthenticated("missing or invalid auth token"))
+            Err(tonic::Status::unauthenticated(
+                "missing or invalid auth token",
+            ))
         }
     };
 
     let call_svc = CallServiceImpl::new(state.clone());
     builder
         .add_service(AccountServiceServer::with_interceptor(
-            AccountServiceImpl(state.clone()), interceptor.clone()))
+            AccountServiceImpl(state.clone()),
+            interceptor.clone(),
+        ))
         .add_service(FriendServiceServer::with_interceptor(
-            FriendServiceImpl(state.clone()), interceptor.clone()))
+            FriendServiceImpl(state.clone()),
+            interceptor.clone(),
+        ))
         .add_service(MessageServiceServer::with_interceptor(
-            MessageServiceImpl(state.clone()), interceptor.clone()))
+            MessageServiceImpl(state.clone()),
+            interceptor.clone(),
+        ))
         .add_service(TransferServiceServer::with_interceptor(
-            TransferServiceImpl(state.clone()), interceptor.clone()))
+            TransferServiceImpl(state.clone()),
+            interceptor.clone(),
+        ))
         .add_service(SettingsServiceServer::with_interceptor(
-            SettingsServiceImpl(state.clone()), interceptor.clone()))
-        .add_service(CallServiceServer::with_interceptor(call_svc, interceptor.clone()))
+            SettingsServiceImpl(state.clone()),
+            interceptor.clone(),
+        ))
+        .add_service(CallServiceServer::with_interceptor(
+            call_svc,
+            interceptor.clone(),
+        ))
         .add_service(GroupServiceServer::with_interceptor(
-            GroupServiceImpl(state.clone()), interceptor.clone()))
+            GroupServiceImpl(state.clone()),
+            interceptor.clone(),
+        ))
         .add_service(ConnectionServiceServer::with_interceptor(
-            crate::connections::ConnectionServiceImpl(state.clone()), interceptor.clone()))
+            crate::connections::ConnectionServiceImpl(state.clone()),
+            interceptor.clone(),
+        ))
         .add_service(UpdateServiceServer::with_interceptor(
-            UpdateServiceImpl, interceptor.clone()))
+            UpdateServiceImpl,
+            interceptor.clone(),
+        ))
         .add_service(TelemetryServiceServer::with_interceptor(
-            TelemetryServiceImpl(state), interceptor))
+            TelemetryServiceImpl(state),
+            interceptor,
+        ))
 }
 
 /// A contact address as the user typed it, checked: `host:port`, `tcp://host:port`, `ws://...` or `wss://...`.
@@ -1770,15 +2121,24 @@ fn normalize_address(raw: &str) -> Result<Option<String>, Status> {
     if a.is_empty() {
         return Ok(None);
     }
-    let rest = a.strip_prefix("tcp://").or_else(|| a.strip_prefix("ws://")).or_else(|| a.strip_prefix("wss://")).unwrap_or(a);
+    let rest = a
+        .strip_prefix("tcp://")
+        .or_else(|| a.strip_prefix("ws://"))
+        .or_else(|| a.strip_prefix("wss://"))
+        .unwrap_or(a);
     let hostport = rest.split('/').next().unwrap_or(rest);
     let ok = if a.starts_with("wss://") || a.starts_with("ws://") {
         !hostport.is_empty()
     } else {
-        hostport.rsplit_once(':').map(|(h, p)| !h.is_empty() && p.parse::<u16>().map(|p| p > 0).unwrap_or(false)).unwrap_or(false)
+        hostport
+            .rsplit_once(':')
+            .map(|(h, p)| !h.is_empty() && p.parse::<u16>().map(|p| p > 0).unwrap_or(false))
+            .unwrap_or(false)
     };
     if !ok || a.len() > 255 || a.chars().any(char::is_whitespace) {
-        return Err(Status::invalid_argument(format!("not an address: {a:?} (host:port, tcp://host:port or ws(s)://host)")));
+        return Err(Status::invalid_argument(format!(
+            "not an address: {a:?} (host:port, tcp://host:port or ws(s)://host)"
+        )));
     }
     Ok(Some(a.to_string()))
 }

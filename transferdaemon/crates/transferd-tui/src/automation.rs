@@ -20,12 +20,27 @@ pub struct Job {
 /// Attach to the hub; commands arrive on the returned channel.
 pub fn start(headless: bool) -> tokio::sync::mpsc::Receiver<Job> {
     let (tx, rx) = tokio::sync::mpsc::channel::<Job>(16);
-    transferd_control::attach("tui", json!({"app": "transferd-tui", "headless": headless, "version": env!("CARGO_PKG_VERSION")}), move |cmd| {
-        let (rtx, rrx) = mpsc::channel();
-        let timeout = cmd.args.get("timeout_s").and_then(Value::as_f64).unwrap_or(60.0).clamp(1.0, 600.0);
-        tx.blocking_send(Job { action: cmd.action, args: cmd.args, reply: rtx }).map_err(|_| "the terminal UI is closing".to_string())?;
-        rrx.recv_timeout(Duration::from_secs_f64(timeout)).map_err(|_| format!("the terminal UI did not answer in {timeout}s"))?
-    });
+    transferd_control::attach(
+        "tui",
+        json!({"app": "transferd-tui", "headless": headless, "version": env!("CARGO_PKG_VERSION")}),
+        move |cmd| {
+            let (rtx, rrx) = mpsc::channel();
+            let timeout = cmd
+                .args
+                .get("timeout_s")
+                .and_then(Value::as_f64)
+                .unwrap_or(60.0)
+                .clamp(1.0, 600.0);
+            tx.blocking_send(Job {
+                action: cmd.action,
+                args: cmd.args,
+                reply: rtx,
+            })
+            .map_err(|_| "the terminal UI is closing".to_string())?;
+            rrx.recv_timeout(Duration::from_secs_f64(timeout))
+                .map_err(|_| format!("the terminal UI did not answer in {timeout}s"))?
+        },
+    );
     rx
 }
 
@@ -38,7 +53,10 @@ pub const TABS: &[(&str, Tab)] = &[
 ];
 
 fn tab_name(t: Tab) -> &'static str {
-    TABS.iter().find(|(_, x)| *x == t).map(|(n, _)| *n).unwrap_or("chats")
+    TABS.iter()
+        .find(|(_, x)| *x == t)
+        .map(|(n, _)| *n)
+        .unwrap_or("chats")
 }
 
 /// The screen as text: one line per row, trailing spaces trimmed.
@@ -59,17 +77,22 @@ pub fn buffer_text(buf: &ratatui::buffer::Buffer) -> String {
 pub fn state(app: &App, size: (u16, u16), headless: bool) -> Value {
     let screen = match &app.screen {
         Screen::Main => json!("main"),
-        Screen::Onboarding(step) => json!(format!("onboarding: {}", match step {
-            crate::app::OnboardingStep::Welcome => "welcome",
-            crate::app::OnboardingStep::EnterName => "enter name",
-            crate::app::OnboardingStep::ShowPhrase { .. } => "show phrase",
-            crate::app::OnboardingStep::ConfirmPhrase { .. } => "confirm phrase",
-            crate::app::OnboardingStep::EnterPhrase => "enter phrase",
-        })),
+        Screen::Onboarding(step) => json!(format!(
+            "onboarding: {}",
+            match step {
+                crate::app::OnboardingStep::Welcome => "welcome",
+                crate::app::OnboardingStep::EnterName => "enter name",
+                crate::app::OnboardingStep::ShowPhrase { .. } => "show phrase",
+                crate::app::OnboardingStep::ConfirmPhrase { .. } => "confirm phrase",
+                crate::app::OnboardingStep::EnterPhrase => "enter phrase",
+            }
+        )),
     };
     // Never the recovery phrase: modals that hold it are named, not shown.
     let modal = app.modal.as_ref().map(|m| match m {
-        Modal::AddContact { name_input, field, .. } => json!({"kind": "add contact", "field": field, "name": name_input}),
+        Modal::AddContact {
+            name_input, field, ..
+        } => json!({"kind": "add contact", "field": field, "name": name_input}),
         Modal::SendFile { path_input } => json!({"kind": "send file", "path": path_input}),
         Modal::ConfirmDelete { label, .. } => json!({"kind": "confirm delete", "label": label}),
         Modal::ShowQr { .. } => json!({"kind": "qr code"}),
@@ -117,7 +140,9 @@ fn key_code(name: &str) -> Result<KeyCode, String> {
         "pageup" => KeyCode::PageUp,
         "pagedown" => KeyCode::PageDown,
         "space" => KeyCode::Char(' '),
-        f if f.len() >= 2 && f.starts_with('f') && f[1..].parse::<u8>().is_ok() => KeyCode::F(f[1..].parse().unwrap_or(1)),
+        f if f.len() >= 2 && f.starts_with('f') && f[1..].parse::<u8>().is_ok() => {
+            KeyCode::F(f[1..].parse().unwrap_or(1))
+        }
         _ => {
             let mut chars = name.chars();
             match (chars.next(), chars.next()) {
@@ -140,7 +165,12 @@ pub fn key_events(keys: &str) -> Result<Vec<KeyEvent>, String> {
                 other => return Err(format!("unknown modifier {other:?}")),
             }
         }
-        out.push(KeyEvent { code: key_code(&key)?, modifiers: m, kind: KeyEventKind::Press, state: KeyEventState::NONE });
+        out.push(KeyEvent {
+            code: key_code(&key)?,
+            modifiers: m,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        });
     }
     Ok(out)
 }
@@ -148,7 +178,11 @@ pub fn key_events(keys: &str) -> Result<Vec<KeyEvent>, String> {
 pub fn text_events(text: &str) -> Vec<KeyEvent> {
     text.chars()
         .map(|c| KeyEvent {
-            code: if c == '\n' { KeyCode::Enter } else { KeyCode::Char(c) },
+            code: if c == '\n' {
+                KeyCode::Enter
+            } else {
+                KeyCode::Char(c)
+            },
             modifiers: KeyModifiers::NONE,
             kind: KeyEventKind::Press,
             state: KeyEventState::NONE,

@@ -1,7 +1,7 @@
 use ring_channel::{Consumer, Doorbell, MappedRegion, Producer};
-use transferd_crypto::{DmiDecryptor, DmiEncryptor};
 use std::sync::atomic::AtomicU64;
 use std::sync::Arc;
+use transferd_crypto::{DmiDecryptor, DmiEncryptor};
 
 /// End-to-end test: encrypt into a MappedRegion via Producer, read back via Consumer,
 /// decrypt with DmiDecryptor, and assert the plaintext matches the original.
@@ -10,21 +10,24 @@ async fn test_aes256gcm_encrypt_decrypt_roundtrip() {
     let descriptor_count = 64usize;
     let data_size = 512 * 1024; // 512 KiB
 
-    let region = Arc::new(
-        MappedRegion::new_mirrored(descriptor_count, data_size).expect("MappedRegion"),
-    );
+    let region =
+        Arc::new(MappedRegion::new_mirrored(descriptor_count, data_size).expect("MappedRegion"));
     let doorbell = Arc::new(Doorbell::new().expect("Doorbell"));
     let prod_idx = Arc::new(AtomicU64::new(0));
     let cons_idx = Arc::new(AtomicU64::new(0));
 
     let mut producer = Producer::new(
-        region.clone(), doorbell.clone(),
-        prod_idx.clone(), cons_idx.clone(),
+        region.clone(),
+        doorbell.clone(),
+        prod_idx.clone(),
+        cons_idx.clone(),
         descriptor_count,
     );
     let mut consumer = Consumer::new(
-        region.clone(), doorbell.clone(),
-        prod_idx.clone(), cons_idx.clone(),
+        region.clone(),
+        doorbell.clone(),
+        prod_idx.clone(),
+        cons_idx.clone(),
         descriptor_count,
     );
 
@@ -43,7 +46,10 @@ async fn test_aes256gcm_encrypt_decrypt_roundtrip() {
     aad[8..16].copy_from_slice(&(gsn + plaintext.len() as u64).to_le_bytes());
 
     // --- Producer: encrypt directly into the grant buffer. ---
-    let mut grant = producer.reserve_grant(plaintext.len()).await.expect("reserve_grant");
+    let mut grant = producer
+        .reserve_grant(plaintext.len())
+        .await
+        .expect("reserve_grant");
     let dst = unsafe { grant.as_slice_mut() };
     let result = unsafe { encryptor.encrypt_fused(plaintext, dst, gsn, epoch, &aad) };
 
@@ -76,7 +82,11 @@ async fn test_aes256gcm_encrypt_decrypt_roundtrip() {
         .decrypt_verify(&mut ct, &nonce, &tag, &aad)
         .expect("decrypt_verify");
 
-    assert_eq!(&ct, plaintext.as_ref(), "decrypted plaintext must match original");
+    assert_eq!(
+        &ct,
+        plaintext.as_ref(),
+        "decrypted plaintext must match original"
+    );
 
     // BLAKE3 of recovered plaintext must match the hash stored in the descriptor.
     assert_eq!(recovered_hash, result.blake3_hash, "BLAKE3 hash mismatch");

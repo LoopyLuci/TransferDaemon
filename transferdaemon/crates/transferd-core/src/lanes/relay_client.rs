@@ -2,18 +2,16 @@
 //! keepalive, and raw forwarding. Shared by `RelayLane` and the daemon's
 //! inbound relay handler.
 
-use relayd::protocol::{
-    ChallengeMsg, ForwardMsg, KeepaliveMsg, RegisterMsg, Tag, encode,
-};
 use relayd::ghost::ghost_register;
 use relayd::pow::PowChallenge;
-use transferd_crypto::ghostkey::{GhostCertificate, GhostKey};
+use relayd::protocol::{encode, ChallengeMsg, ForwardMsg, KeepaliveMsg, RegisterMsg, Tag};
 use std::io;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tokio::sync::Mutex;
+use transferd_crypto::ghostkey::{GhostCertificate, GhostKey};
 
 /// Marker prefix for handshake payloads carried through the relay.
 pub const PREFIX_HANDSHAKE: u8 = 0x01;
@@ -45,12 +43,25 @@ pub struct RelayClient {
 /// line).
 pub fn read_ghost_file(path: &std::path::Path) -> io::Result<(GhostCertificate, [u8; 32])> {
     let text = std::fs::read_to_string(path)?;
-    let bad = |m: &str| io::Error::new(io::ErrorKind::InvalidData, format!("{}: {m}", path.display()));
-    let cert_line = text.lines().find(|l| l.starts_with("transferd-ghostcert-v1:")).ok_or_else(|| bad("no certificate"))?;
+    let bad = |m: &str| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("{}: {m}", path.display()),
+        )
+    };
+    let cert_line = text
+        .lines()
+        .find(|l| l.starts_with("transferd-ghostcert-v1:"))
+        .ok_or_else(|| bad("no certificate"))?;
     let cert = GhostCertificate::from_text(cert_line).map_err(|e| bad(&e.to_string()))?;
-    let secret_hex = text.lines().find_map(|l| l.strip_prefix("transferd-ghostsecret-v1:")).ok_or_else(|| bad("no ghost key secret"))?;
+    let secret_hex = text
+        .lines()
+        .find_map(|l| l.strip_prefix("transferd-ghostsecret-v1:"))
+        .ok_or_else(|| bad("no ghost key secret"))?;
     let bytes = hex::decode(secret_hex.trim()).map_err(|e| bad(&e.to_string()))?;
-    let secret: [u8; 32] = bytes.try_into().map_err(|_| bad("a ghost key secret is 32 bytes"))?;
+    let secret: [u8; 32] = bytes
+        .try_into()
+        .map_err(|_| bad("a ghost key secret is 32 bytes"))?;
     if GhostKey::from_secret(secret).public() != cert.ghost_public {
         return Err(bad("the secret is not the certified ghost key"));
     }
@@ -103,11 +114,14 @@ impl RelayClient {
     /// that owns `self.socket`.
     pub async fn fetch_challenge(&self) -> io::Result<PowChallenge> {
         let temp = UdpSocket::bind("0.0.0.0:0").await?;
-        let req = encode(Tag::Challenge, &ChallengeMsg {
-            challenge: [0u8; 16],
-            expires_at: 0,
-            difficulty: 0,
-        })
+        let req = encode(
+            Tag::Challenge,
+            &ChallengeMsg {
+                challenge: [0u8; 16],
+                expires_at: 0,
+                difficulty: 0,
+            },
+        )
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
         let mut buf = [0u8; 512];
         let len = ask(&temp, &req, self.relay_addr, &mut buf)
@@ -115,7 +129,10 @@ impl RelayClient {
             .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "challenge request timed out"))?;
 
         let Some((tag, body)) = relayd::protocol::split(&buf[..len]) else {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "bad challenge frame"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "bad challenge frame",
+            ));
         };
         if tag != Tag::Challenge {
             return Err(io::Error::new(
@@ -183,7 +200,10 @@ impl RelayClient {
         };
         let ghost = self.ghost.lock().ok().and_then(|g| g.clone());
         match ghost {
-            Some((cert, secret)) => encode(Tag::RegisterGhost, &ghost_register(msg, &cert, &GhostKey::from_secret(secret))),
+            Some((cert, secret)) => encode(
+                Tag::RegisterGhost,
+                &ghost_register(msg, &cert, &GhostKey::from_secret(secret)),
+            ),
             None => encode(Tag::Register, &msg),
         }
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))
@@ -200,8 +220,11 @@ impl RelayClient {
         for _ in 0..5 {
             let frame = self.register_frame(token).await?;
             self.socket.send_to(&frame, self.relay_addr).await?;
-            if let Ok(Ok((len, from))) =
-                tokio::time::timeout(std::time::Duration::from_secs(1), self.socket.recv_from(&mut buf)).await
+            if let Ok(Ok((len, from))) = tokio::time::timeout(
+                std::time::Duration::from_secs(1),
+                self.socket.recv_from(&mut buf),
+            )
+            .await
             {
                 if from == self.relay_addr {
                     answered = Some(len);
@@ -209,10 +232,14 @@ impl RelayClient {
                 }
             }
         }
-        let len = answered.ok_or_else(|| io::Error::new(io::ErrorKind::TimedOut, "register timed out"))?;
+        let len = answered
+            .ok_or_else(|| io::Error::new(io::ErrorKind::TimedOut, "register timed out"))?;
         let frame = &buf[..len];
         let Some((tag, body)) = relayd::protocol::split(frame) else {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "bad register reply"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "bad register reply",
+            ));
         };
         match tag {
             Tag::Challenge => {
@@ -301,7 +328,12 @@ pub fn widen_buffers(socket: &UdpSocket) {
 
 /// Send `request` and wait for one datagram back, sending again every second for up to five:
 /// a UDP request or its answer can be lost, and both of the ones made here are safe to repeat.
-async fn ask(socket: &UdpSocket, request: &[u8], to: SocketAddr, buf: &mut [u8]) -> io::Result<usize> {
+async fn ask(
+    socket: &UdpSocket,
+    request: &[u8],
+    to: SocketAddr,
+    buf: &mut [u8],
+) -> io::Result<usize> {
     for _ in 0..5 {
         socket.send_to(request, to).await?;
         match tokio::time::timeout(std::time::Duration::from_secs(1), socket.recv_from(buf)).await {
@@ -342,8 +374,6 @@ impl RelayForward for RelayClient {
     }
 }
 
-
-
 #[cfg(test)]
 mod ghost_tests {
     use super::*;
@@ -363,22 +393,40 @@ mod ghost_tests {
         tokio::spawn(async move {
             let mut buf = vec![0u8; 8192];
             while let Ok((n, src)) = sock.recv_from(&mut buf).await {
-                let Some((tag, body)) = split(&buf[..n]) else { continue };
+                let Some((tag, body)) = split(&buf[..n]) else {
+                    continue;
+                };
                 let mut r = state.lock().await;
                 let outcome = match tag {
                     Tag::Challenge => Ok(()),
-                    Tag::Register => bincode::deserialize::<RegisterMsg>(body).map_err(|e| e.to_string())
+                    Tag::Register => bincode::deserialize::<RegisterMsg>(body)
+                        .map_err(|e| e.to_string())
                         .and_then(|m| r.register(&m, src).map_err(|e| e.to_string())),
-                    Tag::RegisterGhost => bincode::deserialize::<GhostRegisterMsg>(body).map_err(|e| e.to_string())
+                    Tag::RegisterGhost => bincode::deserialize::<GhostRegisterMsg>(body)
+                        .map_err(|e| e.to_string())
                         .and_then(|m| r.register_ghost(&m, src).map_err(|e| e.to_string())),
                     _ => continue,
                 };
                 let reply = match outcome {
                     Ok(()) => {
                         let c = r.current_challenge();
-                        encode(Tag::Challenge, &ChallengeMsg { challenge: c.bytes, expires_at: c.expires_at, difficulty: c.difficulty })
+                        encode(
+                            Tag::Challenge,
+                            &ChallengeMsg {
+                                challenge: c.bytes,
+                                expires_at: c.expires_at,
+                                difficulty: c.difficulty,
+                            },
+                        )
                     }
-                    Err(detail) => encode(Tag::Error, &ErrorMsg { code: relayd::protocol::ErrorCode::GhostRejected, seq: 0, detail }),
+                    Err(detail) => encode(
+                        Tag::Error,
+                        &ErrorMsg {
+                            code: relayd::protocol::ErrorCode::GhostRejected,
+                            seq: 0,
+                            detail,
+                        },
+                    ),
                 }
                 .expect("encode");
                 let _ = sock.send_to(&reply, src).await;
@@ -392,33 +440,68 @@ mod ghost_tests {
         let issuer = Issuer::generate("test relay", "member", 2048).expect("issuer");
         let me = GhostKey::generate();
         let (blinded, state) = me.blind_request(&issuer.public).expect("blind");
-        let cert = me.finish(&issuer.public, state, &issuer.sign_blinded(&blinded).expect("sign")).expect("finish");
-        let policy = GhostPolicy { issuers: vec![issuer.public.clone()], required: true, max_sessions_per_key: 8 };
+        let cert = me
+            .finish(
+                &issuer.public,
+                state,
+                &issuer.sign_blinded(&blinded).expect("sign"),
+            )
+            .expect("finish");
+        let policy = GhostPolicy {
+            issuers: vec![issuer.public.clone()],
+            required: true,
+            max_sessions_per_key: 8,
+        };
         let (addr, relay) = relay_with(policy).await;
 
         let plain = RelayClient::bind(addr).await.expect("client");
-        let refused = plain.register([7; 32]).await.expect_err("a plain registration is refused");
+        let refused = plain
+            .register([7; 32])
+            .await
+            .expect_err("a plain registration is refused");
         assert!(refused.to_string().contains("ghost"), "{refused}");
 
         let vouched = RelayClient::bind(addr).await.expect("client");
         vouched.set_ghost(Some((cert.clone(), me.secret())));
-        vouched.register([8; 32]).await.expect("a ghost registration is admitted");
+        vouched
+            .register([8; 32])
+            .await
+            .expect("a ghost registration is admitted");
         assert_eq!(relay.lock().await.active_count(), 1);
 
         // the credential file `transferd-cli ghostkey finish` writes
         let dir = std::env::temp_dir().join(format!("tdghost-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("dir");
         let f = dir.join("me.ghost");
-        std::fs::write(&f, format!("{}
+        std::fs::write(
+            &f,
+            format!(
+                "{}
 transferd-ghostsecret-v1:{}
-", cert.to_text(), hex::encode(me.secret()))).expect("write");
+",
+                cert.to_text(),
+                hex::encode(me.secret())
+            ),
+        )
+        .expect("write");
         let (c2, s2) = read_ghost_file(&f).expect("read");
         assert_eq!(c2, cert);
         assert_eq!(s2, me.secret());
-        std::fs::write(&f, format!("{}
+        std::fs::write(
+            &f,
+            format!(
+                "{}
 transferd-ghostsecret-v1:{}
-", cert.to_text(), hex::encode(GhostKey::generate().secret()))).expect("write");
-        assert!(read_ghost_file(&f).is_err(), "a secret that isn't the certified key");
+",
+                cert.to_text(),
+                hex::encode(GhostKey::generate().secret())
+            ),
+        )
+        .expect("write");
+        assert!(
+            read_ghost_file(&f).is_err(),
+            "a secret that isn't the certified key"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

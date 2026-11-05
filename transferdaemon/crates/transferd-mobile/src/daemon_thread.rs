@@ -32,7 +32,9 @@ fn apply_config(config_dir: &Option<std::path::PathBuf>) {
     }
     candidates.push(std::path::PathBuf::from("/data/local/tmp/daemon.config"));
     for path in &candidates {
-        let Ok(content) = std::fs::read_to_string(path) else { continue };
+        let Ok(content) = std::fs::read_to_string(path) else {
+            continue;
+        };
         for line in content.lines() {
             let line = line.trim();
             if line.is_empty() || line.starts_with('#') {

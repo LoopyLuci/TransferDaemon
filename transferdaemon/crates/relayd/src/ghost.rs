@@ -31,13 +31,21 @@ pub struct GhostPolicy {
 
 impl Default for GhostPolicy {
     fn default() -> Self {
-        Self { issuers: Vec::new(), required: false, max_sessions_per_key: 8 }
+        Self {
+            issuers: Vec::new(),
+            required: false,
+            max_sessions_per_key: 8,
+        }
     }
 }
 
 impl GhostPolicy {
     /// Load issuer files (`transferd-ghostissuerpub-v1:...`).
-    pub fn from_files(paths: &[String], required: bool, max_sessions_per_key: usize) -> Result<Self, String> {
+    pub fn from_files(
+        paths: &[String],
+        required: bool,
+        max_sessions_per_key: usize,
+    ) -> Result<Self, String> {
         let mut issuers = Vec::new();
         for p in paths {
             let text = std::fs::read_to_string(p).map_err(|e| format!("{p}: {e}"))?;
@@ -46,7 +54,11 @@ impl GhostPolicy {
         if required && issuers.is_empty() {
             return Err("--require-ghost needs at least one --ghost-issuer".into());
         }
-        Ok(Self { issuers, required, max_sessions_per_key: max_sessions_per_key.max(1) })
+        Ok(Self {
+            issuers,
+            required,
+            max_sessions_per_key: max_sessions_per_key.max(1),
+        })
     }
 
     /// The ghost key a registration proves, if it does.
@@ -54,18 +66,42 @@ impl GhostPolicy {
         if self.issuers.is_empty() {
             return Err("this relay trusts no ghost key issuer".into());
         }
-        let cert: GhostCertificate = bincode::deserialize(&msg.certificate).map_err(|_| "not a ghost key certificate".to_string())?;
-        let issuer = self.issuers.iter().find(|i| i.id() == cert.issuer_id).ok_or("the certificate's issuer is not trusted here")?;
-        let sig: [u8; 64] = msg.signature.as_slice().try_into().map_err(|_| "a ghost key signature is 64 bytes".to_string())?;
-        cert.verify_signed(issuer, &binding(&msg.register.session_token, msg.register.seq), &sig).map_err(|e| e.to_string())?;
+        let cert: GhostCertificate = bincode::deserialize(&msg.certificate)
+            .map_err(|_| "not a ghost key certificate".to_string())?;
+        let issuer = self
+            .issuers
+            .iter()
+            .find(|i| i.id() == cert.issuer_id)
+            .ok_or("the certificate's issuer is not trusted here")?;
+        let sig: [u8; 64] = msg
+            .signature
+            .as_slice()
+            .try_into()
+            .map_err(|_| "a ghost key signature is 64 bytes".to_string())?;
+        cert.verify_signed(
+            issuer,
+            &binding(&msg.register.session_token, msg.register.seq),
+            &sig,
+        )
+        .map_err(|e| e.to_string())?;
         Ok(cert.ghost_public)
     }
 }
 
 /// The client side: wrap a registration with a ghost key certificate.
-pub fn ghost_register(register: crate::protocol::RegisterMsg, cert: &GhostCertificate, key: &GhostKey) -> GhostRegisterMsg {
-    let signature = key.sign(&binding(&register.session_token, register.seq)).to_vec();
-    GhostRegisterMsg { register, certificate: bincode::serialize(cert).expect("a certificate serialises"), signature }
+pub fn ghost_register(
+    register: crate::protocol::RegisterMsg,
+    cert: &GhostCertificate,
+    key: &GhostKey,
+) -> GhostRegisterMsg {
+    let signature = key
+        .sign(&binding(&register.session_token, register.seq))
+        .to_vec();
+    GhostRegisterMsg {
+        register,
+        certificate: bincode::serialize(cert).expect("a certificate serialises"),
+        signature,
+    }
 }
 
 #[cfg(test)]
@@ -84,13 +120,23 @@ mod tests {
     fn vouched() -> (GhostKey, GhostCertificate) {
         let me = GhostKey::generate();
         let (blinded, state) = me.blind_request(&issuer().public).unwrap();
-        let cert = me.finish(&issuer().public, state, &issuer().sign_blinded(&blinded).unwrap()).unwrap();
+        let cert = me
+            .finish(
+                &issuer().public,
+                state,
+                &issuer().sign_blinded(&blinded).unwrap(),
+            )
+            .unwrap();
         (me, cert)
     }
 
     fn relay(required: bool, cap: usize) -> Relay {
         let mut r = Relay::new(0, 60, 1024);
-        r.set_ghost_policy(GhostPolicy { issuers: vec![issuer().public.clone()], required, max_sessions_per_key: cap });
+        r.set_ghost_policy(GhostPolicy {
+            issuers: vec![issuer().public.clone()],
+            required,
+            max_sessions_per_key: cap,
+        });
         r
     }
 
@@ -99,14 +145,19 @@ mod tests {
     }
 
     fn reg(t: u8, seq: u32) -> RegisterMsg {
-        RegisterMsg { session_token: [t; 32], pow_nonce: 0, seq }
+        RegisterMsg {
+            session_token: [t; 32],
+            pow_nonce: 0,
+            seq,
+        }
     }
 
     #[test]
     fn a_vouched_key_registers_and_plain_ones_need_not_when_optional() {
         let (me, cert) = vouched();
         let mut r = relay(false, 8);
-        r.register_ghost(&ghost_register(reg(1, 1), &cert, &me), addr()).unwrap();
+        r.register_ghost(&ghost_register(reg(1, 1), &cert, &me), addr())
+            .unwrap();
         r.register(&reg(2, 1), addr()).unwrap();
     }
 
@@ -114,8 +165,12 @@ mod tests {
     fn required_means_plain_registrations_are_refused() {
         let (me, cert) = vouched();
         let mut r = relay(true, 8);
-        assert!(matches!(r.register(&reg(3, 1), addr()), Err(RelayError::GhostRequired)));
-        r.register_ghost(&ghost_register(reg(3, 1), &cert, &me), addr()).unwrap();
+        assert!(matches!(
+            r.register(&reg(3, 1), addr()),
+            Err(RelayError::GhostRequired)
+        ));
+        r.register_ghost(&ghost_register(reg(3, 1), &cert, &me), addr())
+            .unwrap();
     }
 
     #[test]
@@ -123,7 +178,9 @@ mod tests {
         let (_me, cert) = vouched();
         let thief = GhostKey::generate();
         let mut r = relay(true, 8);
-        let e = r.register_ghost(&ghost_register(reg(4, 1), &cert, &thief), addr()).unwrap_err();
+        let e = r
+            .register_ghost(&ghost_register(reg(4, 1), &cert, &thief), addr())
+            .unwrap_err();
         assert!(matches!(e, RelayError::GhostRejected(_)), "{e}");
         // and a signature for one token does not register another
         let (me, cert) = vouched();
@@ -137,19 +194,28 @@ mod tests {
         let other = Issuer::generate("elsewhere", "member", 2048).unwrap();
         let me = GhostKey::generate();
         let (blinded, state) = me.blind_request(&other.public).unwrap();
-        let cert = me.finish(&other.public, state, &other.sign_blinded(&blinded).unwrap()).unwrap();
+        let cert = me
+            .finish(&other.public, state, &other.sign_blinded(&blinded).unwrap())
+            .unwrap();
         let mut r = relay(true, 8);
-        assert!(r.register_ghost(&ghost_register(reg(7, 1), &cert, &me), addr()).is_err());
+        assert!(r
+            .register_ghost(&ghost_register(reg(7, 1), &cert, &me), addr())
+            .is_err());
     }
 
     #[test]
     fn one_ghost_key_holds_a_bounded_number_of_sessions() {
         let (me, cert) = vouched();
         let mut r = relay(true, 2);
-        r.register_ghost(&ghost_register(reg(10, 1), &cert, &me), addr()).unwrap();
-        r.register_ghost(&ghost_register(reg(11, 1), &cert, &me), addr()).unwrap();
-        assert!(r.register_ghost(&ghost_register(reg(12, 1), &cert, &me), addr()).is_err());
+        r.register_ghost(&ghost_register(reg(10, 1), &cert, &me), addr())
+            .unwrap();
+        r.register_ghost(&ghost_register(reg(11, 1), &cert, &me), addr())
+            .unwrap();
+        assert!(r
+            .register_ghost(&ghost_register(reg(12, 1), &cert, &me), addr())
+            .is_err());
         // refreshing a session it already holds is fine
-        r.register_ghost(&ghost_register(reg(10, 2), &cert, &me), addr()).unwrap();
+        r.register_ghost(&ghost_register(reg(10, 2), &cert, &me), addr())
+            .unwrap();
     }
 }

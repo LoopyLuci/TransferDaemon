@@ -11,9 +11,17 @@ use std::time::Duration;
 use transferd_cat::{dial, CatAddress, Listener};
 
 pub fn run(rest: &[String]) -> Result<serde_json::Value, String> {
-    let flag = |name: &str| rest.iter().position(|a| a == name).and_then(|i| rest.get(i + 1)).cloned();
+    let flag = |name: &str| {
+        rest.iter()
+            .position(|a| a == name)
+            .and_then(|i| rest.get(i + 1))
+            .cloned()
+    };
     let wait = Duration::from_secs(flag("--wait").and_then(|w| w.parse().ok()).unwrap_or(600));
-    let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build().map_err(|e| e.to_string())?;
+    let rt = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| e.to_string())?;
     rt.block_on(async move {
         let session = match rest.first().map(String::as_str) {
             Some("listen") => {

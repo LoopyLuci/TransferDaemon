@@ -52,12 +52,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     std::thread::spawn(move || {
         let rt = tokio::runtime::Runtime::new().expect("desktop rt");
         rt.block_on(async move {
-            let _ = transferd_lib::grpc::add_all_services(
-                tonic::transport::Server::builder(),
-                s,
-            )
-            .serve("127.0.0.1:55051".parse().unwrap())
-            .await;
+            let _ = transferd_lib::grpc::add_all_services(tonic::transport::Server::builder(), s)
+                .serve("127.0.0.1:55051".parse().unwrap())
+                .await;
         });
     });
     // Background transport tick: flush queued messages over the relay lane.
@@ -66,13 +63,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Desktop identity (spawns the desktop relay_hub + DHT).
     let mut acct = AccountServiceClient::connect("http://127.0.0.1:55051").await?;
-    acct.create_identity(CreateIdentityRequest { display_name: "Desktop".into() })
-        .await?;
+    acct.create_identity(CreateIdentityRequest {
+        display_name: "Desktop".into(),
+    })
+    .await?;
     let desktop_pk = acct.get_public_key_hex(Empty {}).await?.into_inner().hex;
 
     // Kindle identity via adb-forwarded gRPC (spawns the Kindle relay_hub + DHT).
     let mut kacct = AccountServiceClient::connect("http://127.0.0.1:50051").await?;
-    kacct.create_identity(CreateIdentityRequest { display_name: "Kindle".into() })
+    kacct
+        .create_identity(CreateIdentityRequest {
+            display_name: "Kindle".into(),
+        })
         .await?;
     let kindle_pk = kacct.get_public_key_hex(Empty {}).await?.into_inner().hex;
     println!("[relay] desktop={desktop_pk:?}… kindle={kindle_pk:?}…");
@@ -86,14 +88,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     let (pk, _) = {
         let s = state.lock();
-        (s.identity.as_ref().map(|i| i.public_key.clone()).unwrap_or_default(), s.contacts.len())
+        (
+            s.identity
+                .as_ref()
+                .map(|i| i.public_key.clone())
+                .unwrap_or_default(),
+            s.contacts.len(),
+        )
     };
     println!("[relay] desktop pk={pk}…");
 
     // Desktop adds the Kindle (no address → DHT discovery fills it in) + sends.
     let mut fc = FriendServiceClient::connect("http://127.0.0.1:55051").await?;
-    fc.add_contact(AddContactRequest { public_key: kindle_pk.clone(), name: "Kindle".into(), ..Default::default() })
-        .await?;
+    fc.add_contact(AddContactRequest {
+        public_key: kindle_pk.clone(),
+        name: "Kindle".into(),
+        ..Default::default()
+    })
+    .await?;
     let mut mc = MessageServiceClient::connect("http://127.0.0.1:55051").await?;
     mc.send_text(SendTextRequest {
         contact_id: kindle_pk.clone(),
@@ -107,10 +119,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     for i in 0..8 {
         tokio::time::sleep(Duration::from_secs(2)).await;
         let msgs = mc
-            .get_messages(GetMessagesRequest { contact_id: kindle_pk.clone() })
+            .get_messages(GetMessagesRequest {
+                contact_id: kindle_pk.clone(),
+            })
             .await?
             .into_inner();
-        let status = msgs.messages.iter().find(|m| m.text.contains("relay hello")).map(|m| m.status.clone()).unwrap_or_default();
+        let status = msgs
+            .messages
+            .iter()
+            .find(|m| m.text.contains("relay hello"))
+            .map(|m| m.status.clone())
+            .unwrap_or_default();
         println!("[relay] t={i}s msg_status={status}");
         if status == "delivered" {
             println!("[relay] DELIVERED to the Kindle over the relay (DHT-discovered)!");
@@ -126,8 +145,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // and send a reply. This exercises the mobile daemon's transport tick
     // (flush path) + the responder's outbound relay lane.
     let mut kfc = FriendServiceClient::connect("http://127.0.0.1:50051").await?;
-    kfc.add_contact(AddContactRequest { public_key: desktop_pk.clone(), name: "Desktop".into(), ..Default::default() })
-        .await?;
+    kfc.add_contact(AddContactRequest {
+        public_key: desktop_pk.clone(),
+        name: "Desktop".into(),
+        ..Default::default()
+    })
+    .await?;
     let mut kmc = MessageServiceClient::connect("http://127.0.0.1:50051").await?;
     kmc.send_text(SendTextRequest {
         contact_id: desktop_pk.clone(),
@@ -141,11 +164,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     for _ in 0..10 {
         tokio::time::sleep(Duration::from_secs(2)).await;
         let msgs = mc
-            .get_messages(GetMessagesRequest { contact_id: kindle_pk.clone() })
+            .get_messages(GetMessagesRequest {
+                contact_id: kindle_pk.clone(),
+            })
             .await?
             .into_inner();
-        if msgs.messages.iter().any(|m| m.text.contains("reply from the kindle")) {
-            println!("[relay] ROUND-TRIP COMPLETE: Kindle reply received on the desktop over the relay!");
+        if msgs
+            .messages
+            .iter()
+            .any(|m| m.text.contains("reply from the kindle"))
+        {
+            println!(
+                "[relay] ROUND-TRIP COMPLETE: Kindle reply received on the desktop over the relay!"
+            );
             return Ok(());
         }
     }

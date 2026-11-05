@@ -3,9 +3,9 @@
 //! Provides functionality to export and import identity, contacts,
 //! and message history in an encrypted format.
 
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
-use serde::{Deserialize, Serialize};
 
 /// Backup file format version.
 pub const BACKUP_VERSION: u32 = 1;
@@ -95,20 +95,15 @@ pub fn export_backup(
     output.extend_from_slice(&(encrypted.len() as u32).to_le_bytes());
     output.extend_from_slice(&encrypted);
 
-    std::fs::write(path, &output)
-        .map_err(|e| BackupError::IoError(e.to_string()))?;
+    std::fs::write(path, &output).map_err(|e| BackupError::IoError(e.to_string()))?;
 
     Ok(())
 }
 
 /// Import a backup from a file.
-pub fn import_backup(
-    path: &Path,
-    passphrase: &str,
-) -> Result<BackupData, BackupError> {
+pub fn import_backup(path: &Path, passphrase: &str) -> Result<BackupData, BackupError> {
     // Read file
-    let data = std::fs::read(path)
-        .map_err(|e| BackupError::IoError(e.to_string()))?;
+    let data = std::fs::read(path).map_err(|e| BackupError::IoError(e.to_string()))?;
 
     // Verify magic bytes
     if data.len() < 16 {
@@ -119,14 +114,21 @@ pub fn import_backup(
     }
 
     // Read version (length verified by the >= 16 check above)
-    let version = u32::from_le_bytes(data[8..12].try_into().expect("backup header is >= 16 bytes"));
+    let version = u32::from_le_bytes(
+        data[8..12]
+            .try_into()
+            .expect("backup header is >= 16 bytes"),
+    );
     if version != BACKUP_VERSION {
         return Err(BackupError::UnsupportedVersion(version));
     }
 
     // Read encrypted data length
-    let enc_len =
-        u32::from_le_bytes(data[12..16].try_into().expect("backup header is >= 16 bytes")) as usize;
+    let enc_len = u32::from_le_bytes(
+        data[12..16]
+            .try_into()
+            .expect("backup header is >= 16 bytes"),
+    ) as usize;
     if data.len() < 16 + enc_len {
         return Err(BackupError::InvalidFormat("Truncated data".into()));
     }
@@ -136,8 +138,8 @@ pub fn import_backup(
     let json_bytes = decrypt_backup(encrypted, passphrase)?;
 
     // Parse JSON
-    let json_str = String::from_utf8(json_bytes)
-        .map_err(|e| BackupError::InvalidFormat(e.to_string()))?;
+    let json_str =
+        String::from_utf8(json_bytes).map_err(|e| BackupError::InvalidFormat(e.to_string()))?;
 
     let backup: BackupData = serde_json::from_str(&json_str)
         .map_err(|e| BackupError::DeserializationError(e.to_string()))?;
@@ -210,9 +212,9 @@ fn decrypt_backup(data: &[u8], passphrase: &str) -> Result<Vec<u8>, BackupError>
     let cipher = Aes256Gcm::new_from_slice(&key)
         .map_err(|e| BackupError::DecryptionError(format!("Failed to create cipher: {e}")))?;
     let nonce = Nonce::from_slice(&nonce_bytes);
-    let plaintext = cipher
-        .decrypt(nonce, ciphertext)
-        .map_err(|e| BackupError::DecryptionError(format!("Decryption failed (wrong passphrase?): {e}")))?;
+    let plaintext = cipher.decrypt(nonce, ciphertext).map_err(|e| {
+        BackupError::DecryptionError(format!("Decryption failed (wrong passphrase?): {e}"))
+    })?;
 
     Ok(plaintext)
 }

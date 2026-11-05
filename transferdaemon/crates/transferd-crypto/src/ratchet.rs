@@ -42,8 +42,8 @@
 use aes_gcm::aead::{Aead, KeyInit, Nonce};
 use aes_gcm::Aes256Gcm;
 use ml_kem::{
-    B32, Decapsulate, Seed,
     ml_kem_768::{Ciphertext as MlCt768, DecapsulationKey as MlDk768, EncapsulationKey as MlEk768},
+    Decapsulate, Seed, B32,
 };
 use rand::RngCore;
 use serde::{Deserialize, Serialize};
@@ -232,8 +232,8 @@ impl DoubleRatchet {
 
     fn hex2(b: &[u8]) -> String {
         b.iter().map(|x| format!("{x:02x}")).collect()
-}
-fn derive_new_root(&mut self, dh_shared: &[u8; 32], kem_shared: Option<&[u8]>) {
+    }
+    fn derive_new_root(&mut self, dh_shared: &[u8; 32], kem_shared: Option<&[u8]>) {
         // Mix the DH (and, when present, the ML-KEM) output into the root via a
         // fresh KDF keyed by the old root. An attacker without the KEM shared
         // secret cannot reproduce the new root even with all classical secrets.
@@ -285,7 +285,9 @@ fn derive_new_root(&mut self, dh_shared: &[u8; 32], kem_shared: Option<&[u8]>) {
     /// arrive: mix `DH(my_secret, new_peer_pk)` and the KEM shared secret into
     /// the root and reset the recv chain.
     fn dh_step_recv(&mut self, new_peer_pk: [u8; 32], kem_ct: Option<&[u8]>) {
-        let shared = self.my_dh_secret.diffie_hellman(&X25519PublicKey::from(new_peer_pk));
+        let shared = self
+            .my_dh_secret
+            .diffie_hellman(&X25519PublicKey::from(new_peer_pk));
         let kem_ss = kem_ct
             .and_then(kem_ct_from_bytes)
             .and_then(|ct| self.my_kem_dk.as_ref().map(|dk| dk.decapsulate(&ct)))
@@ -337,7 +339,8 @@ fn derive_new_root(&mut self, dh_shared: &[u8; 32], kem_shared: Option<&[u8]>) {
         plaintext: &[u8],
         ratchet_pk: Option<[u8; 32]>,
     ) -> Result<RatchetMessage, String> {
-        let cipher = Aes256Gcm::new_from_slice(message_key).map_err(|e| format!("ratchet key: {e}"))?;
+        let cipher =
+            Aes256Gcm::new_from_slice(message_key).map_err(|e| format!("ratchet key: {e}"))?;
         let nonce = nonce_for(idx);
         let aead_nonce = Nonce::<Aes256Gcm>::from_slice(&nonce);
         let mut ct = cipher
@@ -378,7 +381,11 @@ fn derive_new_root(&mut self, dh_shared: &[u8; 32], kem_shared: Option<&[u8]>) {
         }
         // Advance the recv chain to the message's index (in-order transport).
         let mut mk = [0u8; 32];
-        for _ in 0..=msg.chain_index.saturating_sub(self.recv_chain.index).min(1_000_000) {
+        for _ in 0..=msg
+            .chain_index
+            .saturating_sub(self.recv_chain.index)
+            .min(1_000_000)
+        {
             let (k, i) = self.recv_chain.step();
             if i == msg.chain_index {
                 mk = k;
@@ -432,7 +439,10 @@ mod tests {
 
         // First message publishes Alice's initial ratchet key.
         let msg = alice.encrypt(b"hello ratchet").unwrap();
-        assert!(msg.ratchet_pk.is_some(), "first message publishes the ratchet key");
+        assert!(
+            msg.ratchet_pk.is_some(),
+            "first message publishes the ratchet key"
+        );
         let plain = bob.decrypt(&msg).unwrap();
         assert_eq!(plain, b"hello ratchet");
 
@@ -477,7 +487,11 @@ mod tests {
                 if msg.ratchet_pk.is_some() && alice.peer_dh_pk_known {
                     saw_dh_step = true;
                 }
-                assert_eq!(bob.decrypt(&msg).unwrap(), payload, "a-{n}-{i} must survive");
+                assert_eq!(
+                    bob.decrypt(&msg).unwrap(),
+                    payload,
+                    "a-{n}-{i} must survive"
+                );
             }
             // Bob replies (his first reply publishes his key, which lets
             // Alice's counter-based DH ratchet begin).
@@ -498,7 +512,10 @@ mod tests {
 
         let mut msg = alice.encrypt(b"secret").unwrap();
         msg.ciphertext[0] ^= 0xff;
-        assert!(bob.decrypt(&msg).is_err(), "tampered ciphertext must fail auth");
+        assert!(
+            bob.decrypt(&msg).is_err(),
+            "tampered ciphertext must fail auth"
+        );
     }
 
     #[test]
@@ -525,7 +542,10 @@ mod tests {
         // A fresh ratchet with the ORIGINAL root must fail to decrypt it.
         let mut attacker = DoubleRatchet::new(&root(), false);
         // It learns the published key but cannot reconstruct the DH-mixed root.
-        assert!(attacker.decrypt(&post).is_err(), "compromised root cannot decrypt post-ratchet traffic");
+        assert!(
+            attacker.decrypt(&post).is_err(),
+            "compromised root cannot decrypt post-ratchet traffic"
+        );
     }
 
     #[test]
@@ -570,7 +590,10 @@ mod tests {
             }
             assert_eq!(bob.decrypt(&m).unwrap(), format!("a{i}").as_bytes());
         }
-        assert!(saw_kem_ct, "a DH ratchet step must carry an ML-KEM ciphertext");
+        assert!(
+            saw_kem_ct,
+            "a DH ratchet step must carry an ML-KEM ciphertext"
+        );
     }
 
     #[test]
@@ -593,6 +616,9 @@ mod tests {
         classical.send_chain = RatchetChain::init(&classical.root_key, send_ctx);
         let (real_key, _) = real.send_chain.step();
         let (classical_key, _) = classical.send_chain.step();
-        assert_ne!(real_key, classical_key, "classical-only keys must differ from the KEM-mixed keys");
+        assert_ne!(
+            real_key, classical_key,
+            "classical-only keys must differ from the KEM-mixed keys"
+        );
     }
 }

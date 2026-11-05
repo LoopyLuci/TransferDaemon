@@ -68,8 +68,9 @@ pub trait Extension: Send + Sync + 'static {
 }
 
 /// What [`Extension::call`] returns: its answer, or `(code, message)`.
-pub type ExtensionCall<'a> =
-    std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value, (String, String)>> + Send + 'a>>;
+pub type ExtensionCall<'a> = std::pin::Pin<
+    Box<dyn std::future::Future<Output = Result<Value, (String, String)>> + Send + 'a>,
+>;
 
 struct LocalRelay {
     child: std::process::Child,
@@ -92,7 +93,10 @@ pub struct Hub {
 }
 
 fn now() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 fn new_token() -> String {
@@ -104,7 +108,11 @@ fn new_token() -> String {
 
 /// Constant-time comparison, so the token cannot be guessed byte by byte from timings.
 fn same(a: &str, b: &str) -> bool {
-    a.len() == b.len() && a.bytes().zip(b.bytes()).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+    a.len() == b.len()
+        && a.bytes()
+            .zip(b.bytes())
+            .fold(0u8, |acc, (x, y)| acc | (x ^ y))
+            == 0
 }
 
 #[derive(Debug)]
@@ -116,7 +124,11 @@ pub struct ApiError {
 
 impl ApiError {
     fn new(status: StatusCode, code: &str, message: impl Into<String>) -> Self {
-        Self { status, code: code.into(), message: message.into() }
+        Self {
+            status,
+            code: code.into(),
+            message: message.into(),
+        }
     }
 }
 
@@ -133,7 +145,11 @@ impl From<CallError> for ApiError {
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
-        (self.status, Json(json!({"error": {"code": self.code, "message": self.message}}))).into_response()
+        (
+            self.status,
+            Json(json!({"error": {"code": self.code, "message": self.message}})),
+        )
+            .into_response()
     }
 }
 
@@ -141,7 +157,10 @@ type Shared = Arc<Hub>;
 
 impl Hub {
     pub fn new(cfg: HubConfig) -> Arc<Self> {
-        let token = std::env::var("TRANSFERD_CONTROL_TOKEN").ok().filter(|t| t.len() >= 16).unwrap_or_else(new_token);
+        let token = std::env::var("TRANSFERD_CONTROL_TOKEN")
+            .ok()
+            .filter(|t| t.len() >= 16)
+            .unwrap_or_else(new_token);
         Arc::new(Self {
             cfg,
             token,
@@ -158,11 +177,17 @@ impl Hub {
 
     /// Plug in an extension: its operations become callable here and are listed with the rest.
     pub fn add_extension(&self, ext: Arc<dyn Extension>) {
-        self.extensions.write().unwrap_or_else(|e| e.into_inner()).push(ext);
+        self.extensions
+            .write()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(ext);
     }
 
     fn extensions(&self) -> Vec<Arc<dyn Extension>> {
-        self.extensions.read().unwrap_or_else(|e| e.into_inner()).clone()
+        self.extensions
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
 
     /// Every operation: the catalog plus whatever the extensions add, sorted by id.
@@ -176,11 +201,19 @@ impl Hub {
     }
 
     fn find(&self, id: &str) -> Option<Operation> {
-        catalog::find(id).or_else(|| self.extensions().iter().flat_map(|e| e.operations()).find(|o| o.id == id))
+        catalog::find(id).or_else(|| {
+            self.extensions()
+                .iter()
+                .flat_map(|e| e.operations())
+                .find(|o| o.id == id)
+        })
     }
 
     fn ops_json(&self) -> Vec<Value> {
-        self.operations().iter().map(|o| serde_json::to_value(o).unwrap_or_default()).collect()
+        self.operations()
+            .iter()
+            .map(|o| serde_json::to_value(o).unwrap_or_default())
+            .collect()
     }
 
     async fn channel(&self) -> Result<AuthChannel, CallError> {
@@ -205,7 +238,11 @@ impl Hub {
         let mut args = args.clone();
         redact(&mut args);
         let line = json!({"ts": now(), "operation": op, "args": args, "ok": ok, "error": error});
-        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(path)
+        {
             let _ = writeln!(f, "{line}");
         }
     }
@@ -213,11 +250,19 @@ impl Hub {
     /// Run one operation (what `/v1/call`, MCP and every client use).
     pub async fn call(self: &Arc<Self>, op_id: &str, args: Value) -> Result<Value, ApiError> {
         let op = self.find(op_id).ok_or_else(|| {
-            ApiError::new(StatusCode::NOT_FOUND, "unknown_operation", format!("no operation {op_id:?} (GET /v1/operations lists them)"))
+            ApiError::new(
+                StatusCode::NOT_FOUND,
+                "unknown_operation",
+                format!("no operation {op_id:?} (GET /v1/operations lists them)"),
+            )
         })?;
         let args = if args.is_null() { json!({}) } else { args };
         if !args.is_object() {
-            return Err(ApiError::new(StatusCode::BAD_REQUEST, "bad_arguments", "arguments must be a JSON object"));
+            return Err(ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "bad_arguments",
+                "arguments must be a JSON object",
+            ));
         }
         let result = self.run(&op, args.clone()).await;
         if op.mutating {
@@ -231,7 +276,11 @@ impl Hub {
 
     async fn run(self: &Arc<Self>, op: &Operation, args: Value) -> Result<Value, ApiError> {
         if let Some((service, rpc)) = op.rpc {
-            let args = if op.id == "transfers.send_file" { catalog::complete_send_file(args)? } else { args };
+            let args = if op.id == "transfers.send_file" {
+                catalog::complete_send_file(args)?
+            } else {
+                args
+            };
             let ch = self.channel().await?;
             return Ok(catalog::call_rpc(ch, service, rpc, args).await?);
         }
@@ -269,25 +318,42 @@ impl Hub {
             "relay.status" => Ok(self.relay_status()),
             "relay.start" => self.relay_start(&args),
             "relay.stop" => self.relay_stop(&args),
-            "relay.probe" => relay_probe(args.get("addr").and_then(Value::as_str).unwrap_or_default()).await,
+            "relay.probe" => {
+                relay_probe(args.get("addr").and_then(Value::as_str).unwrap_or_default()).await
+            }
             id if id.starts_with("gui.") || id.starts_with("tui.") => {
                 let (kind, action) = id.split_once('.').unwrap_or(("", ""));
-                let timeout = args.get("timeout_s").and_then(Value::as_f64).unwrap_or(60.0).clamp(1.0, 600.0) + 5.0;
-                let closing = (id == "gui.window" && args.get("action").and_then(Value::as_str) == Some("close")) || id == "tui.quit";
-                let r = self.forward(kind, action, args, Duration::from_secs_f64(timeout)).await;
+                let timeout = args
+                    .get("timeout_s")
+                    .and_then(Value::as_f64)
+                    .unwrap_or(60.0)
+                    .clamp(1.0, 600.0)
+                    + 5.0;
+                let closing = (id == "gui.window"
+                    && args.get("action").and_then(Value::as_str) == Some("close"))
+                    || id == "tui.quit";
+                let r = self
+                    .forward(kind, action, args, Duration::from_secs_f64(timeout))
+                    .await;
                 if closing && r.is_ok() {
                     // It is going away: the next launch must start a new one, not wait for this one to time out.
                     self.attached.lock().await.remove(kind);
                 }
                 r
             }
-            other => Err(ApiError::new(StatusCode::NOT_FOUND, "unknown_operation", format!("no handler for {other}"))),
+            other => Err(ApiError::new(
+                StatusCode::NOT_FOUND,
+                "unknown_operation",
+                format!("no handler for {other}"),
+            )),
         }
     }
 
     async fn status(self: &Arc<Self>) -> Value {
         let identity = match self.channel().await {
-            Ok(ch) => catalog::call_rpc(ch.clone(), "AccountService", "GetIdentity", json!({})).await.ok(),
+            Ok(ch) => catalog::call_rpc(ch.clone(), "AccountService", "GetIdentity", json!({}))
+                .await
+                .ok(),
             Err(_) => None,
         };
         let count = |svc: &'static str, rpc: &'static str, field: &'static str| {
@@ -295,7 +361,12 @@ impl Hub {
             async move {
                 let ch = me.channel().await.ok()?;
                 let v = catalog::call_rpc(ch, svc, rpc, json!({})).await.ok()?;
-                Some(v.get(field).and_then(Value::as_array).map(|a| a.len()).unwrap_or(0))
+                Some(
+                    v.get(field)
+                        .and_then(Value::as_array)
+                        .map(|a| a.len())
+                        .unwrap_or(0),
+                )
             }
         };
         let (contacts, transfers, groups) = tokio::join!(
@@ -305,9 +376,17 @@ impl Hub {
         );
         let attached = self.attached.lock().await;
         let ui = |k: &str| {
-            attached.get(k).filter(|a| a.last_seen.elapsed() < Duration::from_secs(60)).map(|a| json!({"pid": a.pid, "info": a.info}))
+            attached
+                .get(k)
+                .filter(|a| a.last_seen.elapsed() < Duration::from_secs(60))
+                .map(|a| json!({"pid": a.pid, "info": a.info}))
         };
-        let facts = self.cfg.facts.lock().map(|f| Value::Object(f.clone())).unwrap_or(json!({}));
+        let facts = self
+            .cfg
+            .facts
+            .lock()
+            .map(|f| Value::Object(f.clone()))
+            .unwrap_or(json!({}));
         json!({
             "version": self.cfg.version,
             "pid": std::process::id(),
@@ -327,34 +406,68 @@ impl Hub {
     }
 
     // ---- user interfaces ----------------------------------------------------------------------------------------
-    async fn forward(&self, kind: &str, action: &str, args: Value, timeout: Duration) -> Result<Value, ApiError> {
+    async fn forward(
+        &self,
+        kind: &str,
+        action: &str,
+        args: Value,
+        timeout: Duration,
+    ) -> Result<Value, ApiError> {
         let (id, rx) = {
             let mut map = self.attached.lock().await;
-            let a = map.get_mut(kind).filter(|a| a.last_seen.elapsed() < Duration::from_secs(60)).ok_or_else(|| {
-                ApiError::new(StatusCode::CONFLICT, "not_attached",
-                              format!("the {} is not open (start it with {kind}.launch)", if kind == "gui" { "window" } else { "terminal UI" }))
-            })?;
+            let a = map
+                .get_mut(kind)
+                .filter(|a| a.last_seen.elapsed() < Duration::from_secs(60))
+                .ok_or_else(|| {
+                    ApiError::new(
+                        StatusCode::CONFLICT,
+                        "not_attached",
+                        format!(
+                            "the {} is not open (start it with {kind}.launch)",
+                            if kind == "gui" {
+                                "window"
+                            } else {
+                                "terminal UI"
+                            }
+                        ),
+                    )
+                })?;
             let id = new_token()[..12].to_string();
             let (tx, rx) = oneshot::channel();
             a.pending.insert(id.clone(), tx);
-            let _ = a.queue_tx.send(json!({"id": id, "action": action, "args": args}));
+            let _ = a
+                .queue_tx
+                .send(json!({"id": id, "action": action, "args": args}));
             (id, rx)
         };
         match tokio::time::timeout(timeout, rx).await {
             Ok(Ok(Ok(v))) => Ok(v),
             Ok(Ok(Err(e))) => Err(ApiError::new(StatusCode::BAD_REQUEST, "ui_error", e)),
-            Ok(Err(_)) => Err(ApiError::new(StatusCode::BAD_GATEWAY, "ui_gone", format!("the {kind} closed before answering"))),
+            Ok(Err(_)) => Err(ApiError::new(
+                StatusCode::BAD_GATEWAY,
+                "ui_gone",
+                format!("the {kind} closed before answering"),
+            )),
             Err(_) => {
                 if let Some(a) = self.attached.lock().await.get_mut(kind) {
                     a.pending.remove(&id);
                 }
-                Err(ApiError::new(StatusCode::GATEWAY_TIMEOUT, "timeout", format!("the {kind} did not answer in {}s", timeout.as_secs())))
+                Err(ApiError::new(
+                    StatusCode::GATEWAY_TIMEOUT,
+                    "timeout",
+                    format!("the {kind} did not answer in {}s", timeout.as_secs()),
+                ))
             }
         }
     }
 
     async fn is_attached(&self, kind: &str) -> bool {
-        self.attached.lock().await.get(kind).map(|a| a.last_seen.elapsed() < Duration::from_secs(60)).unwrap_or(false)
+        self.attached
+            .lock()
+            .await
+            .get(kind)
+            .map(|a| a.last_seen.elapsed() < Duration::from_secs(60))
+            .unwrap_or(false)
     }
 
     async fn wait_attached(&self, kind: &str, wait: Duration) -> bool {
@@ -369,29 +482,74 @@ impl Hub {
     }
 
     async fn launch_gui(self: &Arc<Self>, args: &Value) -> Result<Value, ApiError> {
-        let wait = Duration::from_secs_f64(args.get("wait_s").and_then(Value::as_f64).unwrap_or(30.0).clamp(1.0, 300.0));
+        let wait = Duration::from_secs_f64(
+            args.get("wait_s")
+                .and_then(Value::as_f64)
+                .unwrap_or(30.0)
+                .clamp(1.0, 300.0),
+        );
         if self.is_attached("gui").await {
-            let _ = self.forward("gui", "window", json!({"action": "focus"}), Duration::from_secs(10)).await;
-            return Ok(json!({"already_open": true, "state": self.forward("gui", "state", json!({}), Duration::from_secs(10)).await.ok()}));
+            let _ = self
+                .forward(
+                    "gui",
+                    "window",
+                    json!({"action": "focus"}),
+                    Duration::from_secs(10),
+                )
+                .await;
+            return Ok(
+                json!({"already_open": true, "state": self.forward("gui", "state", json!({}), Duration::from_secs(10)).await.ok()}),
+            );
         }
         let exe = sibling("transferd-ui").ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "not_built", "transferd-ui is not next to transferd (build it: cargo build --release -p transferd-ui)"))?;
         let mut cmd = std::process::Command::new(&exe);
-        cmd.env("TRANSFERD_ADDR", &self.cfg.grpc_url).env("RUST_BACKTRACE", "1").stdin(std::process::Stdio::null());
+        cmd.env("TRANSFERD_ADDR", &self.cfg.grpc_url)
+            .env("RUST_BACKTRACE", "1")
+            .stdin(std::process::Stdio::null());
         log_to(&mut cmd, "transferd-ui.log");
-        let child = spawn_detached(&mut cmd, false).map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "launch_failed", e.to_string()))?;
+        let child = spawn_detached(&mut cmd, false).map_err(|e| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "launch_failed",
+                e.to_string(),
+            )
+        })?;
         if !self.wait_attached("gui", wait).await {
-            return Err(ApiError::new(StatusCode::GATEWAY_TIMEOUT, "timeout", format!("the window (pid {child}) did not attach in {}s", wait.as_secs())));
+            return Err(ApiError::new(
+                StatusCode::GATEWAY_TIMEOUT,
+                "timeout",
+                format!(
+                    "the window (pid {child}) did not attach in {}s",
+                    wait.as_secs()
+                ),
+            ));
         }
-        Ok(json!({"pid": child, "state": self.forward("gui", "state", json!({}), Duration::from_secs(10)).await.ok()}))
+        Ok(
+            json!({"pid": child, "state": self.forward("gui", "state", json!({}), Duration::from_secs(10)).await.ok()}),
+        )
     }
 
     async fn launch_tui(self: &Arc<Self>, args: &Value) -> Result<Value, ApiError> {
-        let headless = args.get("headless").and_then(Value::as_bool).unwrap_or(true);
-        let wait = Duration::from_secs_f64(args.get("wait_s").and_then(Value::as_f64).unwrap_or(30.0).clamp(1.0, 300.0));
+        let headless = args
+            .get("headless")
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
+        let wait = Duration::from_secs_f64(
+            args.get("wait_s")
+                .and_then(Value::as_f64)
+                .unwrap_or(30.0)
+                .clamp(1.0, 300.0),
+        );
         if self.is_attached("tui").await {
             return Ok(json!({"already_open": true}));
         }
-        let exe = sibling("transferd-tui").ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "not_built", "transferd-tui is not next to transferd"))?;
+        let exe = sibling("transferd-tui").ok_or_else(|| {
+            ApiError::new(
+                StatusCode::NOT_FOUND,
+                "not_built",
+                "transferd-tui is not next to transferd",
+            )
+        })?;
         let mut cmd = std::process::Command::new(&exe);
         cmd.env("TRANSFERD_ADDR", &self.cfg.grpc_url);
         if headless {
@@ -403,11 +561,26 @@ impl Hub {
         } else if !cfg!(windows) {
             return Err(ApiError::new(StatusCode::BAD_REQUEST, "unsupported", "a visible terminal UI can only be opened from here on Windows; run transferd-tui in a terminal, or use headless"));
         }
-        let pid = spawn_detached(&mut cmd, !headless).map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "launch_failed", e.to_string()))?;
+        let pid = spawn_detached(&mut cmd, !headless).map_err(|e| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "launch_failed",
+                e.to_string(),
+            )
+        })?;
         if !self.wait_attached("tui", wait).await {
-            return Err(ApiError::new(StatusCode::GATEWAY_TIMEOUT, "timeout", format!("the terminal UI (pid {pid}) did not attach in {}s", wait.as_secs())));
+            return Err(ApiError::new(
+                StatusCode::GATEWAY_TIMEOUT,
+                "timeout",
+                format!(
+                    "the terminal UI (pid {pid}) did not attach in {}s",
+                    wait.as_secs()
+                ),
+            ));
         }
-        Ok(json!({"pid": pid, "headless": headless, "state": self.forward("tui", "state", json!({}), Duration::from_secs(10)).await.ok()}))
+        Ok(
+            json!({"pid": pid, "headless": headless, "state": self.forward("tui", "state", json!({}), Duration::from_secs(10)).await.ok()}),
+        )
     }
 
     // ---- local relays -------------------------------------------------------------------------------------------
@@ -416,7 +589,10 @@ impl Hub {
         if let Ok(mut map) = self.relays.lock() {
             map.retain(|_, r| matches!(r.child.try_wait(), Ok(None)));
             for (k, r) in map.iter() {
-                local.insert(k.clone(), json!({"pid": r.child.id(), "bind": r.bind, "started_at": r.started_at}));
+                local.insert(
+                    k.clone(),
+                    json!({"pid": r.child.id(), "bind": r.bind, "started_at": r.started_at}),
+                );
             }
         }
         let configured: Vec<String> = std::env::var("TRANSFERD_RELAY_ADDR")
@@ -425,7 +601,10 @@ impl Hub {
             .map(|s| s.trim().to_string())
             .filter(|s| !s.is_empty())
             .collect();
-        let available: Vec<&str> = ["relayd", "relayd-ws", "dhtd"].into_iter().filter(|k| sibling(k).is_some()).collect();
+        let available: Vec<&str> = ["relayd", "relayd-ws", "dhtd"]
+            .into_iter()
+            .filter(|k| sibling(k).is_some())
+            .collect();
         json!({"configured": configured, "dht_bootstrap": std::env::var("TRANSFERD_DHT_BOOTSTRAP").ok(), "local": local,
                "available": available})
     }
@@ -433,17 +612,41 @@ impl Hub {
     fn relay_start(&self, args: &Value) -> Result<Value, ApiError> {
         let kind = args.get("kind").and_then(Value::as_str).unwrap_or_default();
         if !["relayd", "relayd-ws", "dhtd"].contains(&kind) {
-            return Err(ApiError::new(StatusCode::BAD_REQUEST, "bad_arguments", "kind is relayd, relayd-ws or dhtd"));
+            return Err(ApiError::new(
+                StatusCode::BAD_REQUEST,
+                "bad_arguments",
+                "kind is relayd, relayd-ws or dhtd",
+            ));
         }
-        let mut map = self.relays.lock().map_err(|_| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "lock", "relay table poisoned"))?;
+        let mut map = self.relays.lock().map_err(|_| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "lock",
+                "relay table poisoned",
+            )
+        })?;
         if let Some(r) = map.get_mut(kind) {
             if matches!(r.child.try_wait(), Ok(None)) {
                 return Ok(json!({"already_running": true, "pid": r.child.id(), "bind": r.bind}));
             }
         }
-        let exe = sibling(kind).ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "not_built", format!("{kind} is not next to transferd")))?;
-        let default = match kind { "relayd" => "0.0.0.0:7777", "relayd-ws" => "0.0.0.0:8081", _ => "0.0.0.0:7901" };
-        let bind = args.get("bind").and_then(Value::as_str).unwrap_or(default).to_string();
+        let exe = sibling(kind).ok_or_else(|| {
+            ApiError::new(
+                StatusCode::NOT_FOUND,
+                "not_built",
+                format!("{kind} is not next to transferd"),
+            )
+        })?;
+        let default = match kind {
+            "relayd" => "0.0.0.0:7777",
+            "relayd-ws" => "0.0.0.0:8081",
+            _ => "0.0.0.0:7901",
+        };
+        let bind = args
+            .get("bind")
+            .and_then(Value::as_str)
+            .unwrap_or(default)
+            .to_string();
         let mut cmd = std::process::Command::new(&exe);
         match kind {
             "relayd" => {
@@ -459,7 +662,10 @@ impl Hub {
         }
         if let Some(env) = args.get("env").and_then(Value::as_object) {
             for (k, v) in env {
-                let v = v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string());
+                let v = v
+                    .as_str()
+                    .map(str::to_string)
+                    .unwrap_or_else(|| v.to_string());
                 cmd.env(k, v);
             }
         }
@@ -474,7 +680,8 @@ impl Hub {
                 }
             }
             None => {
-                cmd.stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+                cmd.stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null());
             }
         }
         #[cfg(windows)]
@@ -482,22 +689,47 @@ impl Hub {
             use std::os::windows::process::CommandExt as _;
             cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
         }
-        let child = cmd.spawn().map_err(|e| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "launch_failed", e.to_string()))?;
+        let child = cmd.spawn().map_err(|e| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "launch_failed",
+                e.to_string(),
+            )
+        })?;
         let pid = child.id();
-        map.insert(kind.into(), LocalRelay { child, bind: bind.clone(), started_at: now() });
-        Ok(json!({"started": kind, "pid": pid, "bind": bind, "log": data_dir().join(format!("{kind}.log"))}))
+        map.insert(
+            kind.into(),
+            LocalRelay {
+                child,
+                bind: bind.clone(),
+                started_at: now(),
+            },
+        );
+        Ok(
+            json!({"started": kind, "pid": pid, "bind": bind, "log": data_dir().join(format!("{kind}.log"))}),
+        )
     }
 
     fn relay_stop(&self, args: &Value) -> Result<Value, ApiError> {
         let kind = args.get("kind").and_then(Value::as_str).unwrap_or_default();
-        let mut map = self.relays.lock().map_err(|_| ApiError::new(StatusCode::INTERNAL_SERVER_ERROR, "lock", "relay table poisoned"))?;
+        let mut map = self.relays.lock().map_err(|_| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "lock",
+                "relay table poisoned",
+            )
+        })?;
         match map.remove(kind) {
             Some(mut r) => {
                 let _ = r.child.kill();
                 let _ = r.child.wait();
                 Ok(json!({"stopped": kind}))
             }
-            None => Err(ApiError::new(StatusCode::NOT_FOUND, "not_running", format!("no local {kind} was started from here"))),
+            None => Err(ApiError::new(
+                StatusCode::NOT_FOUND,
+                "not_running",
+                format!("no local {kind} was started from here"),
+            )),
         }
     }
 
@@ -509,7 +741,10 @@ impl Hub {
             }
         }
         // Only our own discovery file: a daemon started since may already have written its own.
-        if crate::client::discover().map(|d| d.pid == std::process::id()).unwrap_or(false) {
+        if crate::client::discover()
+            .map(|d| d.pid == std::process::id())
+            .unwrap_or(false)
+        {
             let _ = std::fs::remove_file(discovery_path());
         }
     }
@@ -525,7 +760,8 @@ fn log_to(cmd: &mut std::process::Command, name: &str) {
             cmd.stdout(f);
         }
         Err(_) => {
-            cmd.stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+            cmd.stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
         }
     }
 }
@@ -534,7 +770,12 @@ fn redact(v: &mut Value) {
     if let Some(o) = v.as_object_mut() {
         for (k, val) in o.iter_mut() {
             let k = k.to_lowercase();
-            if k.contains("phrase") || k.contains("pin") || k.contains("token") || k.contains("secret") || k.contains("password") {
+            if k.contains("phrase")
+                || k.contains("pin")
+                || k.contains("token")
+                || k.contains("secret")
+                || k.contains("password")
+            {
                 *val = json!("***");
             } else {
                 redact(val);
@@ -546,7 +787,9 @@ fn redact(v: &mut Value) {
 fn daemon_env() -> Value {
     let mut out = serde_json::Map::new();
     for (k, v) in std::env::vars() {
-        if (k.starts_with("TRANSFERD_") || k.starts_with("RELAYD_") || k.starts_with("DHTD_")) && !k.contains("TOKEN") {
+        if (k.starts_with("TRANSFERD_") || k.starts_with("RELAYD_") || k.starts_with("DHTD_"))
+            && !k.contains("TOKEN")
+        {
             out.insert(k, json!(v));
         }
     }
@@ -570,7 +813,14 @@ pub fn spawn_detached(cmd: &mut std::process::Command, console: bool) -> std::io
         const CREATE_NEW_CONSOLE: u32 = 0x0000_0010;
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-        cmd.creation_flags(CREATE_NEW_PROCESS_GROUP | if console { CREATE_NEW_CONSOLE } else { CREATE_NO_WINDOW });
+        cmd.creation_flags(
+            CREATE_NEW_PROCESS_GROUP
+                | if console {
+                    CREATE_NEW_CONSOLE
+                } else {
+                    CREATE_NO_WINDOW
+                },
+        );
     }
     let _ = console;
     let child = cmd.spawn()?;
@@ -580,35 +830,76 @@ pub fn spawn_detached(cmd: &mut std::process::Command, console: bool) -> std::io
 async fn relay_probe(addr: &str) -> Result<Value, ApiError> {
     let bad = |m: String| ApiError::new(StatusCode::BAD_REQUEST, "bad_arguments", m);
     let started = Instant::now();
-    if let Some(hp) = addr.strip_prefix("udp://").or_else(|| (!addr.contains("://")).then_some(addr)) {
-        let sock = tokio::net::UdpSocket::bind("0.0.0.0:0").await.map_err(|e| bad(e.to_string()))?;
-        sock.connect(hp).await.map_err(|e| bad(format!("{hp}: {e}")))?;
+    if let Some(hp) = addr
+        .strip_prefix("udp://")
+        .or_else(|| (!addr.contains("://")).then_some(addr))
+    {
+        let sock = tokio::net::UdpSocket::bind("0.0.0.0:0")
+            .await
+            .map_err(|e| bad(e.to_string()))?;
+        sock.connect(hp)
+            .await
+            .map_err(|e| bad(format!("{hp}: {e}")))?;
         sock.send(&[0x04]).await.map_err(|e| bad(e.to_string()))?; // a bare Challenge request
         let mut buf = [0u8; 2048];
-        return Ok(match tokio::time::timeout(Duration::from_secs(3), sock.recv(&mut buf)).await {
-            Ok(Ok(n)) if n > 0 && buf[0] == 0x04 => json!({"addr": addr, "ok": true, "kind": "udp relay", "rtt_ms": started.elapsed().as_millis()}),
-            Ok(Ok(n)) => json!({"addr": addr, "ok": false, "note": format!("answered with {n} bytes that are not a relay challenge")}),
-            Ok(Err(e)) => json!({"addr": addr, "ok": false, "error": e.to_string()}),
-            Err(_) => json!({"addr": addr, "ok": false, "error": "no answer in 3 s"}),
-        });
+        return Ok(
+            match tokio::time::timeout(Duration::from_secs(3), sock.recv(&mut buf)).await {
+                Ok(Ok(n)) if n > 0 && buf[0] == 0x04 => {
+                    json!({"addr": addr, "ok": true, "kind": "udp relay", "rtt_ms": started.elapsed().as_millis()})
+                }
+                Ok(Ok(n)) => {
+                    json!({"addr": addr, "ok": false, "note": format!("answered with {n} bytes that are not a relay challenge")})
+                }
+                Ok(Err(e)) => json!({"addr": addr, "ok": false, "error": e.to_string()}),
+                Err(_) => json!({"addr": addr, "ok": false, "error": "no answer in 3 s"}),
+            },
+        );
     }
-    let (tls, rest) = if let Some(r) = addr.strip_prefix("wss://") { (true, r) } else if let Some(r) = addr.strip_prefix("ws://") { (false, r) } else {
-        return Err(bad("addr is udp://host:port, ws://host:port or wss://host".into()));
+    let (tls, rest) = if let Some(r) = addr.strip_prefix("wss://") {
+        (true, r)
+    } else if let Some(r) = addr.strip_prefix("ws://") {
+        (false, r)
+    } else {
+        return Err(bad(
+            "addr is udp://host:port, ws://host:port or wss://host".into()
+        ));
     };
     let hostport = rest.split('/').next().unwrap_or(rest);
-    let target = if hostport.contains(':') { hostport.to_string() } else { format!("{hostport}:{}", if tls { 443 } else { 80 }) };
+    let target = if hostport.contains(':') {
+        hostport.to_string()
+    } else {
+        format!("{hostport}:{}", if tls { 443 } else { 80 })
+    };
     if !tls {
-        return Ok(match tokio::time::timeout(Duration::from_secs(5), tokio_tungstenite::connect_async(addr)).await {
-            Ok(Ok(_)) => json!({"addr": addr, "ok": true, "kind": "websocket relay", "rtt_ms": started.elapsed().as_millis()}),
+        return Ok(
+            match tokio::time::timeout(
+                Duration::from_secs(5),
+                tokio_tungstenite::connect_async(addr),
+            )
+            .await
+            {
+                Ok(Ok(_)) => {
+                    json!({"addr": addr, "ok": true, "kind": "websocket relay", "rtt_ms": started.elapsed().as_millis()})
+                }
+                Ok(Err(e)) => json!({"addr": addr, "ok": false, "error": e.to_string()}),
+                Err(_) => json!({"addr": addr, "ok": false, "error": "no answer in 5 s"}),
+            },
+        );
+    }
+    Ok(
+        match tokio::time::timeout(
+            Duration::from_secs(5),
+            tokio::net::TcpStream::connect(&target),
+        )
+        .await
+        {
+            Ok(Ok(_)) => {
+                json!({"addr": addr, "ok": true, "kind": "wss (TCP reachable; TLS and the WebSocket upgrade are checked by the daemon when it connects)", "rtt_ms": started.elapsed().as_millis()})
+            }
             Ok(Err(e)) => json!({"addr": addr, "ok": false, "error": e.to_string()}),
             Err(_) => json!({"addr": addr, "ok": false, "error": "no answer in 5 s"}),
-        });
-    }
-    Ok(match tokio::time::timeout(Duration::from_secs(5), tokio::net::TcpStream::connect(&target)).await {
-        Ok(Ok(_)) => json!({"addr": addr, "ok": true, "kind": "wss (TCP reachable; TLS and the WebSocket upgrade are checked by the daemon when it connects)", "rtt_ms": started.elapsed().as_millis()}),
-        Ok(Err(e)) => json!({"addr": addr, "ok": false, "error": e.to_string()}),
-        Err(_) => json!({"addr": addr, "ok": false, "error": "no answer in 5 s"}),
-    })
+        },
+    )
 }
 
 // ---- HTTP ----------------------------------------------------------------------------------------------------------
@@ -616,7 +907,11 @@ async fn relay_probe(addr: &str) -> Result<Value, ApiError> {
 fn authorize(hub: &Hub, headers: &HeaderMap) -> Result<(), ApiError> {
     if let Some(origin) = headers.get("origin").and_then(|v| v.to_str().ok()) {
         if origin != "null" && !origin.is_empty() {
-            return Err(ApiError::new(StatusCode::FORBIDDEN, "forbidden", "requests from web pages are not accepted"));
+            return Err(ApiError::new(
+                StatusCode::FORBIDDEN,
+                "forbidden",
+                "requests from web pages are not accepted",
+            ));
         }
     }
     let given = headers
@@ -628,26 +923,50 @@ fn authorize(hub: &Hub, headers: &HeaderMap) -> Result<(), ApiError> {
     if same(given, &hub.token) {
         Ok(())
     } else {
-        Err(ApiError::new(StatusCode::UNAUTHORIZED, "unauthorized", "missing or wrong token (see control.json)"))
+        Err(ApiError::new(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "missing or wrong token (see control.json)",
+        ))
     }
 }
 
 async fn health(State(hub): State<Shared>) -> Json<Value> {
-    Json(json!({"ok": true, "pid": std::process::id(), "version": hub.cfg.version, "service": "transferdaemon"}))
+    Json(
+        json!({"ok": true, "pid": std::process::id(), "version": hub.cfg.version, "service": "transferdaemon"}),
+    )
 }
 
-async fn operations(State(hub): State<Shared>, headers: HeaderMap) -> Result<Json<Value>, ApiError> {
+async fn operations(
+    State(hub): State<Shared>,
+    headers: HeaderMap,
+) -> Result<Json<Value>, ApiError> {
     authorize(&hub, &headers)?;
     Ok(Json(Value::Array(hub.ops_json())))
 }
 
-async fn operation(State(hub): State<Shared>, headers: HeaderMap, Path(id): Path<String>) -> Result<Json<Value>, ApiError> {
+async fn operation(
+    State(hub): State<Shared>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Json<Value>, ApiError> {
     authorize(&hub, &headers)?;
-    let op = hub.find(&id).ok_or_else(|| ApiError::new(StatusCode::NOT_FOUND, "unknown_operation", format!("no operation {id:?}")))?;
+    let op = hub.find(&id).ok_or_else(|| {
+        ApiError::new(
+            StatusCode::NOT_FOUND,
+            "unknown_operation",
+            format!("no operation {id:?}"),
+        )
+    })?;
     Ok(Json(serde_json::to_value(op).unwrap_or_default()))
 }
 
-async fn call(State(hub): State<Shared>, headers: HeaderMap, Path(id): Path<String>, body: Option<Json<Value>>) -> Result<Json<Value>, ApiError> {
+async fn call(
+    State(hub): State<Shared>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    body: Option<Json<Value>>,
+) -> Result<Json<Value>, ApiError> {
     authorize(&hub, &headers)?;
     let args = body.map(|Json(v)| v).unwrap_or(json!({}));
     Ok(Json(json!({"result": hub.call(&id, args).await?})))
@@ -678,7 +997,12 @@ struct McpQuery {
     tools: Option<String>,
 }
 
-async fn mcp_post(State(hub): State<Shared>, headers: HeaderMap, Query(q): Query<McpQuery>, Json(body): Json<Value>) -> Result<Response, ApiError> {
+async fn mcp_post(
+    State(hub): State<Shared>,
+    headers: HeaderMap,
+    Query(q): Query<McpQuery>,
+    Json(body): Json<Value>,
+) -> Result<Response, ApiError> {
     authorize(&hub, &headers)?;
     let mode = mcp::Mode::parse(q.tools.as_deref().unwrap_or("all"));
     let ops = hub.ops_json();
@@ -688,7 +1012,11 @@ async fn mcp_post(State(hub): State<Shared>, headers: HeaderMap, Query(q): Query
         async move {
             let call = |op: String, args: Value| {
                 let hub = hub.clone();
-                async move { hub.call(&op, args).await.map_err(|e| format!("{}: {}", e.code, e.message)) }
+                async move {
+                    hub.call(&op, args)
+                        .await
+                        .map_err(|e| format!("{}: {}", e.code, e.message))
+                }
             };
             mcp::handle(&msg, &ops, mode, call).await
         }
@@ -701,7 +1029,11 @@ async fn mcp_post(State(hub): State<Shared>, headers: HeaderMap, Query(q): Query
                     out.push(r);
                 }
             }
-            Ok(if out.is_empty() { StatusCode::ACCEPTED.into_response() } else { Json(Value::Array(out)).into_response() })
+            Ok(if out.is_empty() {
+                StatusCode::ACCEPTED.into_response()
+            } else {
+                Json(Value::Array(out)).into_response()
+            })
         }
         msg => Ok(match one(msg).await {
             Some(r) => Json(r).into_response(),
@@ -710,23 +1042,35 @@ async fn mcp_post(State(hub): State<Shared>, headers: HeaderMap, Query(q): Query
     }
 }
 
-async fn attach(State(hub): State<Shared>, headers: HeaderMap, Path(kind): Path<String>, Json(body): Json<Value>) -> Result<Json<Value>, ApiError> {
+async fn attach(
+    State(hub): State<Shared>,
+    headers: HeaderMap,
+    Path(kind): Path<String>,
+    Json(body): Json<Value>,
+) -> Result<Json<Value>, ApiError> {
     authorize(&hub, &headers)?;
     if kind != "gui" && kind != "tui" {
-        return Err(ApiError::new(StatusCode::NOT_FOUND, "unknown_kind", "gui or tui"));
+        return Err(ApiError::new(
+            StatusCode::NOT_FOUND,
+            "unknown_kind",
+            "gui or tui",
+        ));
     }
     let (tx, rx) = mpsc::unbounded_channel();
     let session = new_token()[..16].to_string();
     let mut map = hub.attached.lock().await;
-    map.insert(kind.clone(), Attachment {
-        session: session.clone(),
-        pid: body.get("pid").and_then(Value::as_u64).unwrap_or(0) as u32,
-        info: body.get("info").cloned().unwrap_or(json!({})),
-        queue_tx: tx,
-        queue_rx: Arc::new(Mutex::new(rx)),
-        pending: HashMap::new(),
-        last_seen: Instant::now(),
-    });
+    map.insert(
+        kind.clone(),
+        Attachment {
+            session: session.clone(),
+            pid: body.get("pid").and_then(Value::as_u64).unwrap_or(0) as u32,
+            info: body.get("info").cloned().unwrap_or(json!({})),
+            queue_tx: tx,
+            queue_rx: Arc::new(Mutex::new(rx)),
+            pending: HashMap::new(),
+            last_seen: Instant::now(),
+        },
+    );
     Ok(Json(json!({"session": session})))
 }
 
@@ -735,7 +1079,12 @@ struct SessionQuery {
     session: String,
 }
 
-async fn attach_next(State(hub): State<Shared>, headers: HeaderMap, Path(kind): Path<String>, Query(q): Query<SessionQuery>) -> Result<Response, ApiError> {
+async fn attach_next(
+    State(hub): State<Shared>,
+    headers: HeaderMap,
+    Path(kind): Path<String>,
+    Query(q): Query<SessionQuery>,
+) -> Result<Response, ApiError> {
     authorize(&hub, &headers)?;
     let rx = {
         let mut map = hub.attached.lock().await;
@@ -762,10 +1111,17 @@ async fn attach_next(State(hub): State<Shared>, headers: HeaderMap, Path(kind): 
     }
 }
 
-async fn attach_reply(State(hub): State<Shared>, headers: HeaderMap, Path(kind): Path<String>, Json(body): Json<Value>) -> Result<StatusCode, ApiError> {
+async fn attach_reply(
+    State(hub): State<Shared>,
+    headers: HeaderMap,
+    Path(kind): Path<String>,
+    Json(body): Json<Value>,
+) -> Result<StatusCode, ApiError> {
     authorize(&hub, &headers)?;
     let mut map = hub.attached.lock().await;
-    let Some(a) = map.get_mut(&kind) else { return Ok(StatusCode::GONE) };
+    let Some(a) = map.get_mut(&kind) else {
+        return Ok(StatusCode::GONE);
+    };
     if body.get("session").and_then(Value::as_str) != Some(a.session.as_str()) {
         return Ok(StatusCode::GONE);
     }
@@ -775,17 +1131,30 @@ async fn attach_reply(State(hub): State<Shared>, headers: HeaderMap, Path(kind):
         let r = if body.get("ok").and_then(Value::as_bool) == Some(true) {
             Ok(body.get("result").cloned().unwrap_or(Value::Null))
         } else {
-            Err(body.get("error").and_then(Value::as_str).unwrap_or("failed").to_string())
+            Err(body
+                .get("error")
+                .and_then(Value::as_str)
+                .unwrap_or("failed")
+                .to_string())
         };
         let _ = tx.send(r);
     }
     Ok(StatusCode::NO_CONTENT)
 }
 
-async fn attach_detach(State(hub): State<Shared>, headers: HeaderMap, Path(kind): Path<String>, Json(body): Json<Value>) -> Result<StatusCode, ApiError> {
+async fn attach_detach(
+    State(hub): State<Shared>,
+    headers: HeaderMap,
+    Path(kind): Path<String>,
+    Json(body): Json<Value>,
+) -> Result<StatusCode, ApiError> {
     authorize(&hub, &headers)?;
     let mut map = hub.attached.lock().await;
-    if map.get(&kind).map(|a| body.get("session").and_then(Value::as_str) == Some(a.session.as_str())).unwrap_or(false) {
+    if map
+        .get(&kind)
+        .map(|a| body.get("session").and_then(Value::as_str) == Some(a.session.as_str()))
+        .unwrap_or(false)
+    {
         map.remove(&kind);
     }
     Ok(StatusCode::NO_CONTENT)
@@ -796,11 +1165,20 @@ struct AuditQuery {
     limit: Option<usize>,
 }
 
-async fn audit(State(hub): State<Shared>, headers: HeaderMap, Query(q): Query<AuditQuery>) -> Result<Json<Value>, ApiError> {
+async fn audit(
+    State(hub): State<Shared>,
+    headers: HeaderMap,
+    Query(q): Query<AuditQuery>,
+) -> Result<Json<Value>, ApiError> {
     authorize(&hub, &headers)?;
     let text = std::fs::read_to_string(data_dir().join("control-audit.jsonl")).unwrap_or_default();
     let limit = q.limit.unwrap_or(100).min(2000);
-    let rows: Vec<Value> = text.lines().rev().take(limit).filter_map(|l| serde_json::from_str(l).ok()).collect();
+    let rows: Vec<Value> = text
+        .lines()
+        .rev()
+        .take(limit)
+        .filter_map(|l| serde_json::from_str(l).ok())
+        .collect();
     Ok(Json(Value::Array(rows)))
 }
 

@@ -99,8 +99,8 @@ pub fn encrypt_message(key: &[u8; 32], plaintext: &[u8]) -> Result<(Vec<u8>, Vec
     rand::thread_rng().fill_bytes(&mut nonce_bytes);
 
     // Create cipher
-    let cipher = Aes256Gcm::new_from_slice(key)
-        .map_err(|e| format!("Failed to create cipher: {e}"))?;
+    let cipher =
+        Aes256Gcm::new_from_slice(key).map_err(|e| format!("Failed to create cipher: {e}"))?;
 
     // Encrypt the padded message
     let nonce = Nonce::from_slice(&nonce_bytes);
@@ -128,8 +128,8 @@ pub fn decrypt_message(key: &[u8; 32], nonce: &[u8], ciphertext: &[u8]) -> Resul
     }
 
     // Create cipher
-    let cipher = Aes256Gcm::new_from_slice(key)
-        .map_err(|e| format!("Failed to create cipher: {e}"))?;
+    let cipher =
+        Aes256Gcm::new_from_slice(key).map_err(|e| format!("Failed to create cipher: {e}"))?;
 
     // Decrypt
     let nonce = Nonce::from_slice(nonce);

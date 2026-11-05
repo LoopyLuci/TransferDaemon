@@ -28,7 +28,10 @@ pub fn now_ym() -> (u16, u8) {
     #[cfg(not(target_arch = "wasm32"))]
     {
         use std::time::{SystemTime, UNIX_EPOCH};
-        let secs = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+        let secs = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
         // Days since 1970-01-01, then civil-from-days (Hinnant's algorithm).
         let days = (secs / 86400) as i64;
         let z = days + 719_468;

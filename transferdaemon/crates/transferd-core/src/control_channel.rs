@@ -4,12 +4,26 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ControlMessage {
-    Ack { session_id: SessionId, cumulative_gsn: u64 },
-    Nack { session_id: SessionId, missing_gsn: u64, highest_received: u64 },
-    WindowUpdate { session_id: SessionId, cumulative_gsn: u64, right_edge: u64 },
+    Ack {
+        session_id: SessionId,
+        cumulative_gsn: u64,
+    },
+    Nack {
+        session_id: SessionId,
+        missing_gsn: u64,
+        highest_received: u64,
+    },
+    WindowUpdate {
+        session_id: SessionId,
+        cumulative_gsn: u64,
+        right_edge: u64,
+    },
     Heartbeat,
     Close,
-    Error { code: u16, reason: String },
+    Error {
+        code: u16,
+        reason: String,
+    },
 }
 
 impl ControlMessage {

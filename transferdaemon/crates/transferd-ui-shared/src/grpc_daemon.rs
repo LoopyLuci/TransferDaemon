@@ -1,19 +1,20 @@
 //! GrpcDaemon — DaemonApi backed by a live transferd gRPC server.
 
 use crate::daemon::{DaemonApi, DaemonError};
-use crate::types::{Connection, Contact, Group, GroupMember, Identity, Message, MessageContent, MessageStatus, TransferStatus, UpdateStatus};
-use async_trait::async_trait;
-use transferd_api::{
-    AccountServiceClient, FriendServiceClient, MessageServiceClient,
-    TransferServiceClient, SettingsServiceClient, GroupServiceClient, ConnectionServiceClient,
-    UpdateServiceClient,
-    AddContactRequest, CancelTransferRequest, CreateIdentityRequest, Empty,
-    GetMessagesRequest, RestoreIdentityRequest, SendTextRequest,
-    GetSettingRequest, SetSettingRequest, SendFileRequest, SearchMessagesRequest,
-    SendTypingRequest, ReactionRequest,
+use crate::types::{
+    Connection, Contact, Group, GroupMember, Identity, Message, MessageContent, MessageStatus,
+    TransferStatus, UpdateStatus,
 };
+use async_trait::async_trait;
 use tonic::transport::Channel;
-use transferd_api::auth::{AuthChannel, resolve_token};
+use transferd_api::auth::{resolve_token, AuthChannel};
+use transferd_api::{
+    AccountServiceClient, AddContactRequest, CancelTransferRequest, ConnectionServiceClient,
+    CreateIdentityRequest, Empty, FriendServiceClient, GetMessagesRequest, GetSettingRequest,
+    GroupServiceClient, MessageServiceClient, ReactionRequest, RestoreIdentityRequest,
+    SearchMessagesRequest, SendFileRequest, SendTextRequest, SendTypingRequest, SetSettingRequest,
+    SettingsServiceClient, TransferServiceClient, UpdateServiceClient,
+};
 
 #[derive(Clone)]
 pub struct GrpcDaemon {
@@ -28,27 +29,48 @@ impl GrpcDaemon {
             .await
             .map_err(|e| DaemonError::NotReachable(e.to_string()))?;
         let token = resolve_token().unwrap_or_default();
-        Ok(Self { channel: AuthChannel::new(channel, &token) })
+        Ok(Self {
+            channel: AuthChannel::new(channel, &token),
+        })
     }
 
     pub async fn try_connect(addr: &str) -> Option<Self> {
-        let channel = Channel::from_shared(addr.to_owned()).ok()?
+        let channel = Channel::from_shared(addr.to_owned())
+            .ok()?
             .connect_timeout(std::time::Duration::from_millis(500))
             .connect()
             .await
             .ok()?;
         let token = resolve_token().unwrap_or_default();
-        Some(Self { channel: AuthChannel::new(channel, &token) })
+        Some(Self {
+            channel: AuthChannel::new(channel, &token),
+        })
     }
 
-    fn account(&self) -> AccountServiceClient<AuthChannel> { AccountServiceClient::new(self.channel.clone()) }
-    fn friends(&self) -> FriendServiceClient<AuthChannel> { FriendServiceClient::new(self.channel.clone()) }
-    fn messages(&self) -> MessageServiceClient<AuthChannel> { MessageServiceClient::new(self.channel.clone()) }
-    fn transfers(&self) -> TransferServiceClient<AuthChannel> { TransferServiceClient::new(self.channel.clone()) }
-    fn settings(&self) -> SettingsServiceClient<AuthChannel> { SettingsServiceClient::new(self.channel.clone()) }
-    fn groups(&self) -> GroupServiceClient<AuthChannel> { GroupServiceClient::new(self.channel.clone()) }
-    fn connections(&self) -> ConnectionServiceClient<AuthChannel> { ConnectionServiceClient::new(self.channel.clone()) }
-    fn updates(&self) -> UpdateServiceClient<AuthChannel> { UpdateServiceClient::new(self.channel.clone()) }
+    fn account(&self) -> AccountServiceClient<AuthChannel> {
+        AccountServiceClient::new(self.channel.clone())
+    }
+    fn friends(&self) -> FriendServiceClient<AuthChannel> {
+        FriendServiceClient::new(self.channel.clone())
+    }
+    fn messages(&self) -> MessageServiceClient<AuthChannel> {
+        MessageServiceClient::new(self.channel.clone())
+    }
+    fn transfers(&self) -> TransferServiceClient<AuthChannel> {
+        TransferServiceClient::new(self.channel.clone())
+    }
+    fn settings(&self) -> SettingsServiceClient<AuthChannel> {
+        SettingsServiceClient::new(self.channel.clone())
+    }
+    fn groups(&self) -> GroupServiceClient<AuthChannel> {
+        GroupServiceClient::new(self.channel.clone())
+    }
+    fn connections(&self) -> ConnectionServiceClient<AuthChannel> {
+        ConnectionServiceClient::new(self.channel.clone())
+    }
+    fn updates(&self) -> UpdateServiceClient<AuthChannel> {
+        UpdateServiceClient::new(self.channel.clone())
+    }
 }
 
 fn proto_to_group(r: transferd_api::GroupReply) -> Group {
@@ -56,21 +78,25 @@ fn proto_to_group(r: transferd_api::GroupReply) -> Group {
         id: r.group_id,
         name: r.name,
         owner: r.owner,
-        members: r.members.into_iter().map(|m| GroupMember {
-            public_key: m.public_key,
-            role: m.role as u8,
-        }).collect(),
+        members: r
+            .members
+            .into_iter()
+            .map(|m| GroupMember {
+                public_key: m.public_key,
+                role: m.role as u8,
+            })
+            .collect(),
         created_at: r.created_at,
     }
 }
 
 fn map_status(s: &str) -> MessageStatus {
     match s {
-        "sent"      => MessageStatus::Sent,
+        "sent" => MessageStatus::Sent,
         "delivered" => MessageStatus::Delivered,
-        "read"      => MessageStatus::Read,
-        "failed"    => MessageStatus::Failed,
-        _           => MessageStatus::Pending,
+        "read" => MessageStatus::Read,
+        "failed" => MessageStatus::Failed,
+        _ => MessageStatus::Pending,
     }
 }
 
@@ -80,7 +106,11 @@ fn proto_to_message(r: transferd_api::MessageReply) -> Message {
             name: r.file_name,
             size_bytes: r.file_size_bytes,
             transferred_bytes: r.file_transferred,
-            mime: if r.file_mime.is_empty() { None } else { Some(r.file_mime) },
+            mime: if r.file_mime.is_empty() {
+                None
+            } else {
+                Some(r.file_mime)
+            },
         }
     } else {
         MessageContent::Text(r.text)
@@ -92,10 +122,26 @@ fn proto_to_message(r: transferd_api::MessageReply) -> Message {
         content,
         timestamp_ts: r.timestamp_ts,
         status: map_status(&r.status),
-        group_id: if r.group_id.is_empty() { None } else { Some(r.group_id) },
-        sender_pk: if r.sender_pk.is_empty() { None } else { Some(r.sender_pk) },
-        reply_to: if r.reply_to.is_empty() { None } else { Some(r.reply_to) },
-        reactions: r.reactions.iter().map(|x| (x.emoji.clone(), x.sender.clone())).collect(),
+        group_id: if r.group_id.is_empty() {
+            None
+        } else {
+            Some(r.group_id)
+        },
+        sender_pk: if r.sender_pk.is_empty() {
+            None
+        } else {
+            Some(r.sender_pk)
+        },
+        reply_to: if r.reply_to.is_empty() {
+            None
+        } else {
+            Some(r.reply_to)
+        },
+        reactions: r
+            .reactions
+            .iter()
+            .map(|x| (x.emoji.clone(), x.sender.clone()))
+            .collect(),
     }
 }
 
@@ -104,7 +150,11 @@ fn proto_to_contact(r: transferd_api::ContactReply) -> Contact {
         id: r.id,
         name: r.name,
         nickname: None, // nicknames are stored locally; merged after load
-        last_seen_ts: if r.last_seen_ts == 0 { None } else { Some(r.last_seen_ts) },
+        last_seen_ts: if r.last_seen_ts == 0 {
+            None
+        } else {
+            Some(r.last_seen_ts)
+        },
         online: r.online,
         blocked: r.blocked,
         typing: r.typing,
@@ -128,7 +178,12 @@ fn proto_to_transfer(r: transferd_api::TransferReply) -> TransferStatus {
 #[async_trait]
 impl DaemonApi for GrpcDaemon {
     async fn get_identity(&self) -> Option<Identity> {
-        let reply = self.account().get_identity(Empty {}).await.ok()?.into_inner();
+        let reply = self
+            .account()
+            .get_identity(Empty {})
+            .await
+            .ok()?
+            .into_inner();
         if reply.has_identity {
             Some(Identity {
                 public_key: reply.public_key,
@@ -149,7 +204,8 @@ impl DaemonApi for GrpcDaemon {
     }
 
     async fn restore_identity(&self, phrase: String) -> Result<Identity, DaemonError> {
-        let reply = self.account()
+        let reply = self
+            .account()
             .restore_identity(RestoreIdentityRequest { phrase })
             .await
             .map_err(|e| DaemonError::NotReachable(e.to_string()))?
@@ -169,13 +225,29 @@ impl DaemonApi for GrpcDaemon {
         self.friends()
             .get_contacts(Empty {})
             .await
-            .map(|r| r.into_inner().contacts.into_iter().map(proto_to_contact).collect())
+            .map(|r| {
+                r.into_inner()
+                    .contacts
+                    .into_iter()
+                    .map(proto_to_contact)
+                    .collect()
+            })
             .unwrap_or_default()
     }
 
-    async fn add_contact(&self, public_key: String, name: String, address: Option<String>) -> Result<Contact, DaemonError> {
-        let result = self.friends()
-            .add_contact(AddContactRequest { public_key, name, address: address.clone().unwrap_or_default() })
+    async fn add_contact(
+        &self,
+        public_key: String,
+        name: String,
+        address: Option<String>,
+    ) -> Result<Contact, DaemonError> {
+        let result = self
+            .friends()
+            .add_contact(AddContactRequest {
+                public_key,
+                name,
+                address: address.clone().unwrap_or_default(),
+            })
             .await
             .map(|r| proto_to_contact(r.into_inner()))
             .map_err(|e| {
@@ -237,9 +309,17 @@ impl DaemonApi for GrpcDaemon {
 
     async fn get_messages(&self, contact_id: &str) -> Vec<Message> {
         self.messages()
-            .get_messages(GetMessagesRequest { contact_id: contact_id.to_owned() })
+            .get_messages(GetMessagesRequest {
+                contact_id: contact_id.to_owned(),
+            })
             .await
-            .map(|r| r.into_inner().messages.into_iter().map(proto_to_message).collect())
+            .map(|r| {
+                r.into_inner()
+                    .messages
+                    .into_iter()
+                    .map(proto_to_message)
+                    .collect()
+            })
             .unwrap_or_default()
     }
 
@@ -250,34 +330,58 @@ impl DaemonApi for GrpcDaemon {
                 query: query.to_owned(),
             })
             .await
-            .map(|r| r.into_inner().messages.into_iter().map(proto_to_message).collect())
+            .map(|r| {
+                r.into_inner()
+                    .messages
+                    .into_iter()
+                    .map(proto_to_message)
+                    .collect()
+            })
             .unwrap_or_default()
     }
 
     async fn send_text(&self, contact_id: &str, text: String) -> Result<Message, DaemonError> {
         self.messages()
-            .send_text(SendTextRequest { contact_id: contact_id.to_owned(), text, reply_to: String::new() })
+            .send_text(SendTextRequest {
+                contact_id: contact_id.to_owned(),
+                text,
+                reply_to: String::new(),
+            })
             .await
             .map(|r| proto_to_message(r.into_inner()))
             .map_err(|e| DaemonError::NotReachable(e.to_string()))
     }
 
-    async fn send_reply(&self, contact_id: &str, text: String, reply_to: String) -> Result<Message, DaemonError> {
+    async fn send_reply(
+        &self,
+        contact_id: &str,
+        text: String,
+        reply_to: String,
+    ) -> Result<Message, DaemonError> {
         self.messages()
-            .send_text(SendTextRequest { contact_id: contact_id.to_owned(), text, reply_to })
+            .send_text(SendTextRequest {
+                contact_id: contact_id.to_owned(),
+                text,
+                reply_to,
+            })
             .await
             .map(|r| proto_to_message(r.into_inner()))
             .map_err(|e| DaemonError::NotReachable(e.to_string()))
     }
 
     async fn send_typing(&self, contact_id: &str, is_typing: bool) {
-        let _ = self.messages()
-            .send_typing(SendTypingRequest { contact_id: contact_id.to_owned(), is_typing })
+        let _ = self
+            .messages()
+            .send_typing(SendTypingRequest {
+                contact_id: contact_id.to_owned(),
+                is_typing,
+            })
             .await;
     }
 
     async fn toggle_reaction(&self, contact_id: &str, target_msg_id: &str, emoji: &str) {
-        let _ = self.messages()
+        let _ = self
+            .messages()
             .toggle_reaction(ReactionRequest {
                 contact_id: contact_id.to_owned(),
                 target_msg_id: target_msg_id.to_owned(),
@@ -290,13 +394,20 @@ impl DaemonApi for GrpcDaemon {
         self.transfers()
             .get_transfers(Empty {})
             .await
-            .map(|r| r.into_inner().transfers.into_iter().map(proto_to_transfer).collect())
+            .map(|r| {
+                r.into_inner()
+                    .transfers
+                    .into_iter()
+                    .map(proto_to_transfer)
+                    .collect()
+            })
             .unwrap_or_default()
     }
 
     async fn send_file(&self, contact_id: &str, path: String) -> Result<Message, DaemonError> {
         let p = std::path::Path::new(&path);
-        let file_name = p.file_name()
+        let file_name = p
+            .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
         let file_size = std::fs::metadata(p)
@@ -326,7 +437,9 @@ impl DaemonApi for GrpcDaemon {
 
     async fn cancel_transfer(&self, transfer_id: &str) -> Result<(), DaemonError> {
         self.transfers()
-            .cancel_transfer(CancelTransferRequest { transfer_id: transfer_id.to_owned() })
+            .cancel_transfer(CancelTransferRequest {
+                transfer_id: transfer_id.to_owned(),
+            })
             .await
             .map(|_| ())
             .map_err(|e| DaemonError::NotReachable(e.to_string()))
@@ -334,7 +447,9 @@ impl DaemonApi for GrpcDaemon {
 
     async fn pause_transfer(&self, transfer_id: &str) -> Result<(), DaemonError> {
         self.transfers()
-            .pause_transfer(CancelTransferRequest { transfer_id: transfer_id.to_owned() })
+            .pause_transfer(CancelTransferRequest {
+                transfer_id: transfer_id.to_owned(),
+            })
             .await
             .map(|_| ())
             .map_err(|e| DaemonError::NotReachable(e.to_string()))
@@ -342,29 +457,50 @@ impl DaemonApi for GrpcDaemon {
 
     async fn resume_transfer(&self, transfer_id: &str) -> Result<(), DaemonError> {
         self.transfers()
-            .resume_transfer(CancelTransferRequest { transfer_id: transfer_id.to_owned() })
+            .resume_transfer(CancelTransferRequest {
+                transfer_id: transfer_id.to_owned(),
+            })
             .await
             .map(|_| ())
             .map_err(|e| DaemonError::NotReachable(e.to_string()))
     }
 
     async fn get_public_key_hex(&self) -> Option<String> {
-        let reply = self.account()
+        let reply = self
+            .account()
             .get_public_key_hex(Empty {})
-            .await.ok()?.into_inner();
-        if reply.hex.is_empty() { None } else { Some(reply.hex) }
+            .await
+            .ok()?
+            .into_inner();
+        if reply.hex.is_empty() {
+            None
+        } else {
+            Some(reply.hex)
+        }
     }
 
     async fn get_setting(&self, key: &str) -> Option<String> {
-        let r = self.settings()
-            .get_setting(GetSettingRequest { key: key.to_owned() })
-            .await.ok()?.into_inner();
-        if r.found { Some(r.value) } else { None }
+        let r = self
+            .settings()
+            .get_setting(GetSettingRequest {
+                key: key.to_owned(),
+            })
+            .await
+            .ok()?
+            .into_inner();
+        if r.found {
+            Some(r.value)
+        } else {
+            None
+        }
     }
 
     async fn set_setting(&self, key: &str, value: &str) -> Result<(), DaemonError> {
         self.settings()
-            .set_setting(SetSettingRequest { key: key.to_owned(), value: value.to_owned() })
+            .set_setting(SetSettingRequest {
+                key: key.to_owned(),
+                value: value.to_owned(),
+            })
             .await
             .map(|_| ())
             .map_err(|e| DaemonError::NotReachable(e.to_string()))
@@ -374,11 +510,21 @@ impl DaemonApi for GrpcDaemon {
         self.groups()
             .get_groups(Empty {})
             .await
-            .map(|r| r.into_inner().groups.into_iter().map(proto_to_group).collect())
+            .map(|r| {
+                r.into_inner()
+                    .groups
+                    .into_iter()
+                    .map(proto_to_group)
+                    .collect()
+            })
             .unwrap_or_default()
     }
 
-    async fn create_group(&self, name: String, member_ids: Vec<String>) -> Result<Group, DaemonError> {
+    async fn create_group(
+        &self,
+        name: String,
+        member_ids: Vec<String>,
+    ) -> Result<Group, DaemonError> {
         self.groups()
             .create_group(transferd_api::CreateGroupRequest { name, member_ids })
             .await
@@ -388,23 +534,40 @@ impl DaemonApi for GrpcDaemon {
 
     async fn rename_group(&self, group_id: &str, name: String) -> Result<Group, DaemonError> {
         self.groups()
-            .rename_group(transferd_api::RenameGroupRequest { group_id: group_id.to_owned(), name })
+            .rename_group(transferd_api::RenameGroupRequest {
+                group_id: group_id.to_owned(),
+                name,
+            })
             .await
             .map(|r| proto_to_group(r.into_inner()))
             .map_err(|e| DaemonError::NotReachable(e.to_string()))
     }
 
-    async fn add_group_members(&self, group_id: &str, member_ids: Vec<String>) -> Result<Group, DaemonError> {
+    async fn add_group_members(
+        &self,
+        group_id: &str,
+        member_ids: Vec<String>,
+    ) -> Result<Group, DaemonError> {
         self.groups()
-            .add_members(transferd_api::GroupMembersRequest { group_id: group_id.to_owned(), member_ids })
+            .add_members(transferd_api::GroupMembersRequest {
+                group_id: group_id.to_owned(),
+                member_ids,
+            })
             .await
             .map(|r| proto_to_group(r.into_inner()))
             .map_err(|e| DaemonError::NotReachable(e.to_string()))
     }
 
-    async fn remove_group_members(&self, group_id: &str, member_ids: Vec<String>) -> Result<Group, DaemonError> {
+    async fn remove_group_members(
+        &self,
+        group_id: &str,
+        member_ids: Vec<String>,
+    ) -> Result<Group, DaemonError> {
         self.groups()
-            .remove_members(transferd_api::GroupMembersRequest { group_id: group_id.to_owned(), member_ids })
+            .remove_members(transferd_api::GroupMembersRequest {
+                group_id: group_id.to_owned(),
+                member_ids,
+            })
             .await
             .map(|r| proto_to_group(r.into_inner()))
             .map_err(|e| DaemonError::NotReachable(e.to_string()))
@@ -412,7 +575,9 @@ impl DaemonApi for GrpcDaemon {
 
     async fn leave_group(&self, group_id: &str) -> Result<(), DaemonError> {
         self.groups()
-            .leave_group(transferd_api::GetGroupRequest { group_id: group_id.to_owned() })
+            .leave_group(transferd_api::GetGroupRequest {
+                group_id: group_id.to_owned(),
+            })
             .await
             .map(|_| ())
             .map_err(|e| DaemonError::NotReachable(e.to_string()))
@@ -420,7 +585,9 @@ impl DaemonApi for GrpcDaemon {
 
     async fn delete_group(&self, group_id: &str) -> Result<(), DaemonError> {
         self.groups()
-            .delete_group(transferd_api::GetGroupRequest { group_id: group_id.to_owned() })
+            .delete_group(transferd_api::GetGroupRequest {
+                group_id: group_id.to_owned(),
+            })
             .await
             .map(|_| ())
             .map_err(|e| DaemonError::NotReachable(e.to_string()))
@@ -428,15 +595,26 @@ impl DaemonApi for GrpcDaemon {
 
     async fn get_group_messages(&self, group_id: &str) -> Vec<Message> {
         self.groups()
-            .get_group_messages(transferd_api::GetGroupRequest { group_id: group_id.to_owned() })
+            .get_group_messages(transferd_api::GetGroupRequest {
+                group_id: group_id.to_owned(),
+            })
             .await
-            .map(|r| r.into_inner().messages.into_iter().map(proto_to_message).collect())
+            .map(|r| {
+                r.into_inner()
+                    .messages
+                    .into_iter()
+                    .map(proto_to_message)
+                    .collect()
+            })
             .unwrap_or_default()
     }
 
     async fn send_group_text(&self, group_id: &str, text: String) -> Result<Message, DaemonError> {
         self.groups()
-            .send_group_text(transferd_api::SendGroupTextRequest { group_id: group_id.to_owned(), text })
+            .send_group_text(transferd_api::SendGroupTextRequest {
+                group_id: group_id.to_owned(),
+                text,
+            })
             .await
             .map(|r| proto_to_message(r.into_inner()))
             .map_err(|e| DaemonError::NotReachable(e.to_string()))
@@ -446,11 +624,21 @@ impl DaemonApi for GrpcDaemon {
         self.connections()
             .list_connections(Empty {})
             .await
-            .map(|r| r.into_inner().connections.into_iter().map(proto_to_connection).collect())
+            .map(|r| {
+                r.into_inner()
+                    .connections
+                    .into_iter()
+                    .map(proto_to_connection)
+                    .collect()
+            })
             .unwrap_or_default()
     }
 
-    async fn set_connection_policy(&self, connection_id: &str, policy: &str) -> Result<(), DaemonError> {
+    async fn set_connection_policy(
+        &self,
+        connection_id: &str,
+        policy: &str,
+    ) -> Result<(), DaemonError> {
         self.connections()
             .set_connection_policy(transferd_api::SetConnectionPolicyRequest {
                 connection_id: connection_id.to_owned(),
@@ -463,7 +651,9 @@ impl DaemonApi for GrpcDaemon {
 
     async fn get_safety_number(&self, contact_id: &str) -> (String, bool) {
         self.friends()
-            .get_safety_number(transferd_api::SafetyNumberRequest { contact_id: contact_id.to_owned() })
+            .get_safety_number(transferd_api::SafetyNumberRequest {
+                contact_id: contact_id.to_owned(),
+            })
             .await
             .map(|r| {
                 let r = r.into_inner();

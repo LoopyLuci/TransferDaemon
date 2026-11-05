@@ -74,14 +74,18 @@ pub fn parse(src: &str) -> Proto {
                 continue;
             }
             let (stmt, tail) = match (trimmed.find(';'), trimmed.find('{')) {
-                (Some(s), Some(b)) if b < s => (trimmed[..=b].to_string(), trimmed[b + 1..].to_string()),
+                (Some(s), Some(b)) if b < s => {
+                    (trimmed[..=b].to_string(), trimmed[b + 1..].to_string())
+                }
                 (Some(s), _) => (trimmed[..=s].to_string(), trimmed[s + 1..].to_string()),
                 (None, Some(b)) => (trimmed[..=b].to_string(), trimmed[b + 1..].to_string()),
                 (None, None) => (trimmed.clone(), String::new()),
             };
             rest = tail;
             let words: Vec<&str> = stmt
-                .split(|c: char| c.is_whitespace() || c == '(' || c == ')' || c == '{' || c == ';' || c == '=')
+                .split(|c: char| {
+                    c.is_whitespace() || c == '(' || c == ')' || c == '{' || c == ';' || c == '='
+                })
                 .filter(|w| !w.is_empty())
                 .collect();
             if words.is_empty() {
@@ -111,10 +115,18 @@ pub fn parse(src: &str) -> Proto {
                 }
                 "rpc" => {
                     // rpc Name (Input) returns (stream Output);
-                    let service = stack.iter().rev().find(|(k, _)| k == "service").map(|(_, n)| n.clone()).unwrap_or_default();
+                    let service = stack
+                        .iter()
+                        .rev()
+                        .find(|(k, _)| k == "service")
+                        .map(|(_, n)| n.clone())
+                        .unwrap_or_default();
                     let returns = words.iter().position(|w| *w == "returns").unwrap_or(0);
                     let streaming = words.get(returns + 1) == Some(&"stream");
-                    let output = words.get(returns + if streaming { 2 } else { 1 }).copied().unwrap_or_default();
+                    let output = words
+                        .get(returns + if streaming { 2 } else { 1 })
+                        .copied()
+                        .unwrap_or_default();
                     p.rpcs.push(Rpc {
                         service,
                         name: words.get(1).copied().unwrap_or_default().to_string(),
@@ -125,13 +137,24 @@ pub fn parse(src: &str) -> Proto {
                     });
                 }
                 _ => {
-                    let Some((kind, name)) = stack.last().cloned() else { continue };
+                    let Some((kind, name)) = stack.last().cloned() else {
+                        continue;
+                    };
                     if kind == "enum" {
                         p.enums.entry(name).or_default().push(words[0].to_string());
                     } else if kind == "message" || kind == "oneof" {
-                        let message = stack.iter().rev().find(|(k, _)| k == "message").map(|(_, n)| n.clone()).unwrap_or_default();
+                        let message = stack
+                            .iter()
+                            .rev()
+                            .find(|(k, _)| k == "message")
+                            .map(|(_, n)| n.clone())
+                            .unwrap_or_default();
                         let repeated = words[0] == "repeated";
-                        let (ty, fname) = if repeated { (words.get(1), words.get(2)) } else { (words.first(), words.get(1)) };
+                        let (ty, fname) = if repeated {
+                            (words.get(1), words.get(2))
+                        } else {
+                            (words.first(), words.get(1))
+                        };
                         if let (Some(ty), Some(fname)) = (ty, fname) {
                             p.messages.entry(message).or_default().push(Field {
                                 name: fname.to_string(),
@@ -171,7 +194,11 @@ impl Proto {
             if let Some(group) = &f.oneof {
                 if let Some(o) = s.as_object_mut() {
                     let note = format!("one of the `{group}` fields");
-                    let d = o.get("description").and_then(Value::as_str).map(|d| format!("{d} ({note})")).unwrap_or(note);
+                    let d = o
+                        .get("description")
+                        .and_then(Value::as_str)
+                        .map(|d| format!("{d} ({note})"))
+                        .unwrap_or(note);
                     o.insert("description".into(), Value::String(d));
                 }
             }
@@ -187,13 +214,21 @@ impl Proto {
         match ty {
             "string" => json!({"type": "string"}),
             "bool" => json!({"type": "boolean"}),
-            "int32" | "sint32" | "sfixed32" | "int64" | "sint64" | "sfixed64" => json!({"type": "integer"}),
+            "int32" | "sint32" | "sfixed32" | "int64" | "sint64" | "sfixed64" => {
+                json!({"type": "integer"})
+            }
             "uint32" | "fixed32" | "uint64" | "fixed64" => json!({"type": "integer", "minimum": 0}),
             "float" | "double" => json!({"type": "number"}),
-            "bytes" => json!({"type": "array", "items": {"type": "integer", "minimum": 0, "maximum": 255}}),
+            "bytes" => {
+                json!({"type": "array", "items": {"type": "integer", "minimum": 0, "maximum": 255}})
+            }
             other => {
                 if let Some(values) = self.enums.get(other) {
-                    let described: Vec<String> = values.iter().enumerate().map(|(i, v)| format!("{i} = {v}")).collect();
+                    let described: Vec<String> = values
+                        .iter()
+                        .enumerate()
+                        .map(|(i, v)| format!("{i} = {v}"))
+                        .collect();
                     json!({"type": "integer", "enum": (0..values.len()).collect::<Vec<_>>(),
                            "description": described.join(", ")})
                 } else if depth < 4 {
@@ -233,19 +268,47 @@ mod tests {
         let p = proto();
         assert!(p.rpcs.len() >= 45, "only {} rpcs parsed", p.rpcs.len());
         for r in &p.rpcs {
-            assert!(p.messages.contains_key(&r.input), "{}: no message {}", r.name, r.input);
-            assert!(p.messages.contains_key(&r.output), "{}: no message {}", r.name, r.output);
+            assert!(
+                p.messages.contains_key(&r.input),
+                "{}: no message {}",
+                r.name,
+                r.input
+            );
+            assert!(
+                p.messages.contains_key(&r.output),
+                "{}: no message {}",
+                r.name,
+                r.output
+            );
         }
         let send = p.schema("SendTextRequest");
         assert_eq!(send["properties"]["contact_id"]["type"], "string");
-        assert!(send["properties"]["reply_to"]["description"].as_str().unwrap_or("").contains("replied"));
+        assert!(send["properties"]["reply_to"]["description"]
+            .as_str()
+            .unwrap_or("")
+            .contains("replied"));
         let group = p.schema("GroupReply");
         assert_eq!(group["properties"]["members"]["type"], "array");
-        assert_eq!(group["properties"]["members"]["items"]["properties"]["role"]["type"], "integer");
-        assert!(p.rpcs.iter().any(|r| r.name == "StreamTelemetry" && r.server_streaming));
-        assert!(p.rpcs.iter().any(|r| r.name == "StreamTelemetry" && r.doc.contains("Live event stream")));
+        assert_eq!(
+            group["properties"]["members"]["items"]["properties"]["role"]["type"],
+            "integer"
+        );
+        assert!(p
+            .rpcs
+            .iter()
+            .any(|r| r.name == "StreamTelemetry" && r.server_streaming));
+        assert!(p
+            .rpcs
+            .iter()
+            .any(|r| r.name == "StreamTelemetry" && r.doc.contains("Live event stream")));
         let ev = p.schema("TelemetryEventMsg");
-        assert!(ev["properties"]["system_health"]["description"].as_str().unwrap_or("").contains("event"));
-        assert_eq!(p.enum_fields("SetMemberRoleRequest"), vec![("role".to_string(), p.enums["GroupRole"].clone())]);
+        assert!(ev["properties"]["system_health"]["description"]
+            .as_str()
+            .unwrap_or("")
+            .contains("event"));
+        assert_eq!(
+            p.enum_fields("SetMemberRoleRequest"),
+            vec![("role".to_string(), p.enums["GroupRole"].clone())]
+        );
     }
 }

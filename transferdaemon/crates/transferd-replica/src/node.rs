@@ -37,17 +37,27 @@ pub enum ReplicaError {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Request {
     /// A write: SQL statements applied in one transaction on every replica, in log order.
-    Exec { sql: String },
+    Exec {
+        sql: String,
+    },
     /// A linearizable read on the leader: rows as JSON.
-    Query { sql: String },
+    Query {
+        sql: String,
+    },
     Status,
 }
 
 /// JSON travels as text (bincode can't carry `serde_json::Value`); `status()` / `rows()` parse it.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Reply {
-    Done { index: Index, changed: u64 },
-    Rows { columns: Vec<String>, rows_json: String },
+    Done {
+        index: Index,
+        changed: u64,
+    },
+    Rows {
+        columns: Vec<String>,
+        rows_json: String,
+    },
     Status(String),
     Error(String),
 }
@@ -84,8 +94,10 @@ struct Disk {
 
 impl Disk {
     fn load(&self) -> Result<(HardState, Vec<Entry>), ReplicaError> {
-        let hard = std::fs::read(self.dir.join("hard.json")).ok()
-            .and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+        let hard = std::fs::read(self.dir.join("hard.json"))
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default();
         let mut log = Vec::new();
         if let Ok(mut f) = std::fs::File::open(self.dir.join("log.bin")) {
             let mut len = [0u8; 4];
@@ -105,7 +117,10 @@ impl Disk {
 
     fn save_hard(&self, h: &HardState) -> Result<(), ReplicaError> {
         let tmp = self.dir.join("hard.json.tmp");
-        std::fs::write(&tmp, serde_json::to_vec(h).map_err(|e| ReplicaError::Other(e.to_string()))?)?;
+        std::fs::write(
+            &tmp,
+            serde_json::to_vec(h).map_err(|e| ReplicaError::Other(e.to_string()))?,
+        )?;
         sync_file(&tmp)?;
         std::fs::rename(tmp, self.dir.join("hard.json"))?;
         Ok(())
@@ -158,7 +173,11 @@ fn open_db(dir: &Path) -> Result<Connection, ReplicaError> {
 }
 
 fn applied_index(db: &Connection) -> Result<Index, ReplicaError> {
-    Ok(db.query_row("SELECT idx FROM _replica_applied WHERE one = 1", [], |r| r.get::<_, i64>(0))? as Index)
+    Ok(
+        db.query_row("SELECT idx FROM _replica_applied WHERE one = 1", [], |r| {
+            r.get::<_, i64>(0)
+        })? as Index,
+    )
 }
 
 /// Apply one committed entry: its statements and the applied index in one transaction (exactly once, even across
@@ -180,11 +199,19 @@ fn apply(db: &mut Connection, index: Index, e: &Entry) -> Result<u64, String> {
         drop(tx);
         // the failed entry still counts as applied (every replica fails it the same way)
         let tx = db.transaction().map_err(|e| e.to_string())?;
-        tx.execute("UPDATE _replica_applied SET idx = ?1 WHERE one = 1", [index as i64]).map_err(|e| e.to_string())?;
+        tx.execute(
+            "UPDATE _replica_applied SET idx = ?1 WHERE one = 1",
+            [index as i64],
+        )
+        .map_err(|e| e.to_string())?;
         tx.commit().map_err(|e| e.to_string())?;
         return Err(err.unwrap_or_default());
     }
-    tx.execute("UPDATE _replica_applied SET idx = ?1 WHERE one = 1", [index as i64]).map_err(|e| e.to_string())?;
+    tx.execute(
+        "UPDATE _replica_applied SET idx = ?1 WHERE one = 1",
+        [index as i64],
+    )
+    .map_err(|e| e.to_string())?;
     tx.commit().map_err(|e| e.to_string())?;
     Ok(changed)
 }
@@ -196,25 +223,40 @@ fn query(db: &Connection, sql: &str) -> Result<Reply, String> {
     }
     let columns: Vec<String> = st.column_names().iter().map(|s| s.to_string()).collect();
     let n = columns.len();
-    let rows = st.query_map([], |r| {
-        (0..n).map(|i| {
-            Ok(match r.get_ref(i)? {
-                rusqlite::types::ValueRef::Null => serde_json::Value::Null,
-                rusqlite::types::ValueRef::Integer(v) => serde_json::json!(v),
-                rusqlite::types::ValueRef::Real(v) => serde_json::json!(v),
-                rusqlite::types::ValueRef::Text(t) => serde_json::json!(String::from_utf8_lossy(t)),
-                rusqlite::types::ValueRef::Blob(b) => serde_json::json!(b.iter().map(|x| format!("{x:02x}")).collect::<String>()),
-            })
-        }).collect::<Result<Vec<_>, rusqlite::Error>>()
-    }).map_err(|e| e.to_string())?;
-    let rows = rows.collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
-    Ok(Reply::Rows { columns, rows_json: serde_json::Value::from(rows).to_string() })
+    let rows = st
+        .query_map([], |r| {
+            (0..n)
+                .map(|i| {
+                    Ok(match r.get_ref(i)? {
+                        rusqlite::types::ValueRef::Null => serde_json::Value::Null,
+                        rusqlite::types::ValueRef::Integer(v) => serde_json::json!(v),
+                        rusqlite::types::ValueRef::Real(v) => serde_json::json!(v),
+                        rusqlite::types::ValueRef::Text(t) => {
+                            serde_json::json!(String::from_utf8_lossy(t))
+                        }
+                        rusqlite::types::ValueRef::Blob(b) => serde_json::json!(b
+                            .iter()
+                            .map(|x| format!("{x:02x}"))
+                            .collect::<String>()),
+                    })
+                })
+                .collect::<Result<Vec<_>, rusqlite::Error>>()
+        })
+        .map_err(|e| e.to_string())?;
+    let rows = rows
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    Ok(Reply::Rows {
+        columns,
+        rows_json: serde_json::Value::from(rows).to_string(),
+    })
 }
 
 // ---- framing ------------------------------------------------------------------------------------------------------- //
 
 async fn write_frame(s: &mut (impl AsyncWriteExt + Unpin), f: &Frame) -> std::io::Result<()> {
-    let b = bincode::serialize(f).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
+    let b = bincode::serialize(f)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
     s.write_all(&(b.len() as u32).to_le_bytes()).await?;
     s.write_all(&b).await
 }
@@ -224,11 +266,15 @@ async fn read_frame(s: &mut (impl AsyncReadExt + Unpin)) -> std::io::Result<Fram
     s.read_exact(&mut len).await?;
     let n = u32::from_le_bytes(len) as usize;
     if n > 64 << 20 {
-        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "frame too large"));
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "frame too large",
+        ));
     }
     let mut b = vec![0u8; n];
     s.read_exact(&mut b).await?;
-    bincode::deserialize(&b).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))
+    bincode::deserialize(&b)
+        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))
 }
 
 // ---- the node ------------------------------------------------------------------------------------------------------ //
@@ -267,16 +313,28 @@ impl Drop for Tasks {
 pub async fn run(cfg: Config) -> Result<(), ReplicaError> {
     let mut tasks = Tasks(Vec::new());
     std::fs::create_dir_all(&cfg.dir)?;
-    let disk = Disk { dir: cfg.dir.clone() };
+    let disk = Disk {
+        dir: cfg.dir.clone(),
+    };
     let (hard, log) = disk.load()?;
     let mut db = open_db(&cfg.dir)?;
     let applied = applied_index(&db)?;
-    let mut raft = Raft::new(cfg.id, cfg.peers.keys().copied().collect(), hard, log, rand::random());
+    let mut raft = Raft::new(
+        cfg.id,
+        cfg.peers.keys().copied().collect(),
+        hard,
+        log,
+        rand::random(),
+    );
     raft.set_applied(applied);
-    let my_addr = *cfg.peers.get(&cfg.id).ok_or_else(|| ReplicaError::Other("this node is not in its own peer list".into()))?;
+    let my_addr = *cfg
+        .peers
+        .get(&cfg.id)
+        .ok_or_else(|| ReplicaError::Other("this node is not in its own peer list".into()))?;
     let listener = TcpListener::bind(SocketAddr::new([0, 0, 0, 0].into(), my_addr.port())).await?;
     let (tx, mut rx) = mpsc::channel::<Event>(4096);
-    let senders: Arc<Mutex<HashMap<NodeId, mpsc::Sender<Msg>>>> = Arc::new(Mutex::new(HashMap::new()));
+    let senders: Arc<Mutex<HashMap<NodeId, mpsc::Sender<Msg>>>> =
+        Arc::new(Mutex::new(HashMap::new()));
     let leader_hint: Arc<Mutex<Option<NodeId>>> = Arc::new(Mutex::new(None));
 
     // outgoing: one connection per peer, re-dialled when it drops
@@ -292,7 +350,16 @@ pub async fn run(cfg: Config) -> Result<(), ReplicaError> {
                     continue;
                 };
                 let _ = s.set_nodelay(true);
-                if write_frame(&mut s, &Frame::Hello { id: me, cluster: cluster.clone() }).await.is_err() {
+                if write_frame(
+                    &mut s,
+                    &Frame::Hello {
+                        id: me,
+                        cluster: cluster.clone(),
+                    },
+                )
+                .await
+                .is_err()
+                {
                     continue;
                 }
                 while let Some(m) = prx.recv().await {
@@ -306,15 +373,28 @@ pub async fn run(cfg: Config) -> Result<(), ReplicaError> {
 
     // incoming: peers' Raft messages and clients' requests
     {
-        let (tx, cluster, peers, leader_hint, me) = (tx.clone(), cfg.cluster.clone(), cfg.peers.clone(), leader_hint.clone(), cfg.id);
+        let (tx, cluster, peers, leader_hint, me) = (
+            tx.clone(),
+            cfg.cluster.clone(),
+            cfg.peers.clone(),
+            leader_hint.clone(),
+            cfg.id,
+        );
         tasks.0.push(tokio::spawn(async move {
-            let mut conns = tokio::task::JoinSet::new();   // dropped with the listener task: its connections end too
+            let mut conns = tokio::task::JoinSet::new(); // dropped with the listener task: its connections end too
             while let Ok((mut s, _)) = listener.accept().await {
-                let (tx, cluster, peers, leader_hint) = (tx.clone(), cluster.clone(), peers.clone(), leader_hint.clone());
+                let (tx, cluster, peers, leader_hint) = (
+                    tx.clone(),
+                    cluster.clone(),
+                    peers.clone(),
+                    leader_hint.clone(),
+                );
                 conns.spawn(async move {
                     let _ = s.set_nodelay(true);
                     match read_frame(&mut s).await {
-                        Ok(Frame::Hello { id, cluster: c }) if c == cluster && peers.contains_key(&id) => {
+                        Ok(Frame::Hello { id, cluster: c })
+                            if c == cluster && peers.contains_key(&id) =>
+                        {
                             while let Ok(Frame::Raft(m)) = read_frame(&mut s).await {
                                 if tx.send(Event::Peer(id, m)).await.is_err() {
                                     break;
@@ -324,15 +404,21 @@ pub async fn run(cfg: Config) -> Result<(), ReplicaError> {
                         Ok(Frame::Client(req)) => {
                             let (otx, orx) = oneshot::channel();
                             let reply = if tx.send(Event::Client(req.clone(), otx)).await.is_ok() {
-                                orx.await.unwrap_or(Reply::Error("the replica stopped".into()))
+                                orx.await
+                                    .unwrap_or(Reply::Error("the replica stopped".into()))
                             } else {
                                 Reply::Error("the replica stopped".into())
                             };
                             // a follower forwards writes and reads to the leader it knows
                             let reply = match (&reply, &req) {
-                                (Reply::Error(e), Request::Exec { .. } | Request::Query { .. }) if e.starts_with("not the leader") => {
+                                (Reply::Error(e), Request::Exec { .. } | Request::Query { .. })
+                                    if e.starts_with("not the leader") =>
+                                {
                                     let hint = *leader_hint.lock().await;
-                                    match hint.filter(|l| *l != me).and_then(|l| peers.get(&l).copied()) {
+                                    match hint
+                                        .filter(|l| *l != me)
+                                        .and_then(|l| peers.get(&l).copied())
+                                    {
                                         Some(addr) => request(addr, req).await.unwrap_or(reply),
                                         None => reply,
                                     }
@@ -348,7 +434,11 @@ pub async fn run(cfg: Config) -> Result<(), ReplicaError> {
         }));
     }
 
-    let mut waiting = Waiting { writes: HashMap::new(), reads: HashMap::new(), ready_reads: Vec::new() };
+    let mut waiting = Waiting {
+        writes: HashMap::new(),
+        reads: HashMap::new(),
+        ready_reads: Vec::new(),
+    };
     let mut ticker = tokio::time::interval(TICK);
     let mut read_id: u64 = 0;
     loop {
@@ -413,7 +503,9 @@ pub async fn run(cfg: Config) -> Result<(), ReplicaError> {
             }
         }
         let now_applied = applied_index(&db).unwrap_or(0);
-        let (serve, keep): (Vec<_>, Vec<_>) = std::mem::take(&mut waiting.ready_reads).into_iter().partition(|(at, _, _)| *at <= now_applied);
+        let (serve, keep): (Vec<_>, Vec<_>) = std::mem::take(&mut waiting.ready_reads)
+            .into_iter()
+            .partition(|(at, _, _)| *at <= now_applied);
         waiting.ready_reads = keep;
         for (_, sql, reply) in serve {
             let _ = reply.send(query(&db, &sql).unwrap_or_else(Reply::Error));
@@ -432,11 +524,14 @@ pub async fn run(cfg: Config) -> Result<(), ReplicaError> {
 
 /// Send one client request to a replica (any: followers forward to the leader).
 pub async fn request(addr: SocketAddr, req: Request) -> Result<Reply, ReplicaError> {
-    let mut s = tokio::time::timeout(Duration::from_secs(5), TcpStream::connect(addr)).await
+    let mut s = tokio::time::timeout(Duration::from_secs(5), TcpStream::connect(addr))
+        .await
         .map_err(|_| ReplicaError::Other(format!("{addr} did not answer")))??;
     write_frame(&mut s, &Frame::Client(req)).await?;
-    match tokio::time::timeout(Duration::from_secs(30), read_frame(&mut s)).await
-        .map_err(|_| ReplicaError::Other("no reply within 30 s".into()))?? {
+    match tokio::time::timeout(Duration::from_secs(30), read_frame(&mut s))
+        .await
+        .map_err(|_| ReplicaError::Other("no reply within 30 s".into()))??
+    {
         Frame::Reply(r) => Ok(r),
         _ => Err(ReplicaError::Other("unexpected frame".into())),
     }
@@ -444,10 +539,21 @@ pub async fn request(addr: SocketAddr, req: Request) -> Result<Reply, ReplicaErr
 
 /// `1=host:port,2=host:port,...`
 pub fn parse_peers(s: &str) -> Result<BTreeMap<NodeId, SocketAddr>, ReplicaError> {
-    s.split(',').filter(|x| !x.trim().is_empty()).map(|kv| {
-        let (k, v) = kv.split_once('=').ok_or_else(|| ReplicaError::Other(format!("{kv}: expected id=host:port")))?;
-        let id: NodeId = k.trim().parse().map_err(|_| ReplicaError::Other(format!("{k}: not a node id")))?;
-        let addr: SocketAddr = v.trim().parse().map_err(|_| ReplicaError::Other(format!("{v}: not host:port")))?;
-        Ok((id, addr))
-    }).collect()
+    s.split(',')
+        .filter(|x| !x.trim().is_empty())
+        .map(|kv| {
+            let (k, v) = kv
+                .split_once('=')
+                .ok_or_else(|| ReplicaError::Other(format!("{kv}: expected id=host:port")))?;
+            let id: NodeId = k
+                .trim()
+                .parse()
+                .map_err(|_| ReplicaError::Other(format!("{k}: not a node id")))?;
+            let addr: SocketAddr = v
+                .trim()
+                .parse()
+                .map_err(|_| ReplicaError::Other(format!("{v}: not host:port")))?;
+            Ok((id, addr))
+        })
+        .collect()
 }

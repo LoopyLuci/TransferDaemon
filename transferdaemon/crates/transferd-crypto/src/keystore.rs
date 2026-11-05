@@ -181,9 +181,10 @@ impl Default for RamKeyStore {
 
 impl KeyStore for RamKeyStore {
     fn store_signing_key(&self, key_id: &str, key_data: &[u8]) -> KeyStoreResult<()> {
-        let mut keys = self.keys.lock().map_err(|e| {
-            KeyStoreError::HardwareError(format!("Lock error: {e}"))
-        })?;
+        let mut keys = self
+            .keys
+            .lock()
+            .map_err(|e| KeyStoreError::HardwareError(format!("Lock error: {e}")))?;
 
         if keys.contains_key(key_id) {
             return Err(KeyStoreError::AlreadyExists(key_id.to_string()));
@@ -194,9 +195,10 @@ impl KeyStore for RamKeyStore {
     }
 
     fn load_signing_key(&self, key_id: &str) -> KeyStoreResult<Vec<u8>> {
-        let keys = self.keys.lock().map_err(|e| {
-            KeyStoreError::HardwareError(format!("Lock error: {e}"))
-        })?;
+        let keys = self
+            .keys
+            .lock()
+            .map_err(|e| KeyStoreError::HardwareError(format!("Lock error: {e}")))?;
 
         keys.get(key_id)
             .cloned()
@@ -204,9 +206,10 @@ impl KeyStore for RamKeyStore {
     }
 
     fn delete_signing_key(&self, key_id: &str) -> KeyStoreResult<()> {
-        let mut keys = self.keys.lock().map_err(|e| {
-            KeyStoreError::HardwareError(format!("Lock error: {e}"))
-        })?;
+        let mut keys = self
+            .keys
+            .lock()
+            .map_err(|e| KeyStoreError::HardwareError(format!("Lock error: {e}")))?;
 
         if keys.remove(key_id).is_none() {
             return Err(KeyStoreError::NotFound(key_id.to_string()));
@@ -216,13 +219,15 @@ impl KeyStore for RamKeyStore {
     }
 
     fn has_signing_key(&self, key_id: &str) -> bool {
-        self.keys.lock()
+        self.keys
+            .lock()
             .map(|keys| keys.contains_key(key_id))
             .unwrap_or(false)
     }
 
     fn list_keys(&self) -> Vec<String> {
-        self.keys.lock()
+        self.keys
+            .lock()
             .map(|keys| keys.keys().cloned().collect())
             .unwrap_or_default()
     }
@@ -259,7 +264,9 @@ mod tests {
         let store = RamKeyStore::new();
 
         // Store a key
-        store.store_signing_key("test-key", b"secret-key-data").unwrap();
+        store
+            .store_signing_key("test-key", b"secret-key-data")
+            .unwrap();
 
         // Load it back
         let loaded = store.load_signing_key("test-key").unwrap();

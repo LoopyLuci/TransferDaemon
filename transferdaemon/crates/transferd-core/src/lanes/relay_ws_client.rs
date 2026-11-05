@@ -12,9 +12,11 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use futures_util::{SinkExt, StreamExt};
-use relayd::protocol::{ChallengeMsg, DeliveredMsg, ForwardMsg, KeepaliveMsg, RegisterMsg, Tag, encode, split};
+use relayd::protocol::{
+    encode, split, ChallengeMsg, DeliveredMsg, ForwardMsg, KeepaliveMsg, RegisterMsg, Tag,
+};
 use tokio::net::TcpStream;
-use tokio::sync::{Mutex, mpsc};
+use tokio::sync::{mpsc, Mutex};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::Message;
 use tokio_tungstenite::{MaybeTlsStream, WebSocketStream};
@@ -143,21 +145,37 @@ impl RelayWsClient {
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
         let mut sink = self.sink.lock().await;
         match sink.as_mut() {
-            Some(s) => s.send(Message::Binary(frame)).await.map_err(std::io::Error::other),
-            None => Err(std::io::Error::new(std::io::ErrorKind::NotConnected, "ws relay disconnected")),
+            Some(s) => s
+                .send(Message::Binary(frame))
+                .await
+                .map_err(std::io::Error::other),
+            None => Err(std::io::Error::new(
+                std::io::ErrorKind::NotConnected,
+                "ws relay disconnected",
+            )),
         }
     }
 
     /// Refresh the relay-side TTL for `token`.
     pub async fn send_keepalive(&self, token: [u8; 32]) -> std::io::Result<()> {
         let seq = self.seq.fetch_add(1, Ordering::Relaxed);
-        let msg = KeepaliveMsg { session_token: token, pow_nonce: 0, seq: seq as u32 };
+        let msg = KeepaliveMsg {
+            session_token: token,
+            pow_nonce: 0,
+            seq: seq as u32,
+        };
         let frame = encode(Tag::Keepalive, &msg)
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
         let mut sink = self.sink.lock().await;
         match sink.as_mut() {
-            Some(s) => s.send(Message::Binary(frame)).await.map_err(std::io::Error::other),
-            None => Err(std::io::Error::new(std::io::ErrorKind::NotConnected, "ws relay disconnected")),
+            Some(s) => s
+                .send(Message::Binary(frame))
+                .await
+                .map_err(std::io::Error::other),
+            None => Err(std::io::Error::new(
+                std::io::ErrorKind::NotConnected,
+                "ws relay disconnected",
+            )),
         }
     }
 
@@ -214,7 +232,11 @@ async fn connect_and_register(
     let nonce = solve_pow(&challenge, self_token, difficulty);
     let reg = encode(
         Tag::Register,
-        &RegisterMsg { session_token: *self_token, pow_nonce: nonce, seq: 1 },
+        &RegisterMsg {
+            session_token: *self_token,
+            pow_nonce: nonce,
+            seq: 1,
+        },
     )
     .unwrap_or_default();
     sink.send(Message::Binary(reg))
@@ -234,15 +256,23 @@ async fn re_register(
     token: &[u8; 32],
 ) -> std::io::Result<()> {
     let ask = encode(Tag::Challenge, &()).unwrap_or_default();
-    sink.send(Message::Binary(ask)).await.map_err(std::io::Error::other)?;
+    sink.send(Message::Binary(ask))
+        .await
+        .map_err(std::io::Error::other)?;
     let (challenge, difficulty) = read_challenge_reply(stream).await?;
     let nonce = solve_pow(&challenge, token, difficulty);
     let reg = encode(
         Tag::Register,
-        &RegisterMsg { session_token: *token, pow_nonce: nonce, seq: 1 },
+        &RegisterMsg {
+            session_token: *token,
+            pow_nonce: nonce,
+            seq: 1,
+        },
     )
     .unwrap_or_default();
-    sink.send(Message::Binary(reg)).await.map_err(std::io::Error::other)?;
+    sink.send(Message::Binary(reg))
+        .await
+        .map_err(std::io::Error::other)?;
     let _ = read_challenge_reply(stream).await?;
     Ok(())
 }
@@ -256,9 +286,14 @@ async fn read_challenge_reply(
     tokio::time::timeout(std::time::Duration::from_secs(30), async {
         loop {
             let Some(frame) = source.next().await else {
-                return Err(std::io::Error::new(std::io::ErrorKind::UnexpectedEof, "ws closed"));
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "ws closed",
+                ));
             };
-            let Ok(Message::Binary(f)) = frame else { continue };
+            let Ok(Message::Binary(f)) = frame else {
+                continue;
+            };
             if let Some((Tag::Challenge, body)) = split(&f) {
                 let c: ChallengeMsg = bincode::deserialize(body)
                     .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
@@ -267,7 +302,9 @@ async fn read_challenge_reply(
         }
     })
     .await
-    .map_err(|_| std::io::Error::new(std::io::ErrorKind::TimedOut, "ws challenge reply timed out"))?
+    .map_err(|_| {
+        std::io::Error::new(std::io::ErrorKind::TimedOut, "ws challenge reply timed out")
+    })?
 }
 
 /// Solve the relay's BLAKE3 PoW (iterate nonces until the difficulty holds).

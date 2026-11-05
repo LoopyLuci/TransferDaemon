@@ -30,13 +30,23 @@ pub fn render_add_contact(f: &mut Frame, key_input: &str, name_input: &str, fiel
         .split(inner);
 
     f.render_widget(
-        Paragraph::new(Span::styled("Public Key (64 hex chars):", Style::default().fg(Color::Gray))),
+        Paragraph::new(Span::styled(
+            "Public Key (64 hex chars):",
+            Style::default().fg(Color::Gray),
+        )),
         chunks[0],
     );
-    let key_block = Block::default().borders(Borders::ALL)
-        .border_style(if field == 0 { Style::default().fg(Color::Cyan) } else { Style::default() });
+    let key_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(if field == 0 {
+            Style::default().fg(Color::Cyan)
+        } else {
+            Style::default()
+        });
     f.render_widget(
-        Paragraph::new(key_input).block(key_block).wrap(Wrap { trim: true }),
+        Paragraph::new(key_input)
+            .block(key_block)
+            .wrap(Wrap { trim: true }),
         chunks[1],
     );
     if field == 0 {
@@ -45,15 +55,20 @@ pub fn render_add_contact(f: &mut Frame, key_input: &str, name_input: &str, fiel
     }
 
     f.render_widget(
-        Paragraph::new(Span::styled("Display name:", Style::default().fg(Color::Gray))),
+        Paragraph::new(Span::styled(
+            "Display name:",
+            Style::default().fg(Color::Gray),
+        )),
         chunks[2],
     );
-    let name_block = Block::default().borders(Borders::ALL)
-        .border_style(if field == 1 { Style::default().fg(Color::Cyan) } else { Style::default() });
-    f.render_widget(
-        Paragraph::new(name_input).block(name_block),
-        chunks[3],
-    );
+    let name_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(if field == 1 {
+            Style::default().fg(Color::Cyan)
+        } else {
+            Style::default()
+        });
+    f.render_widget(Paragraph::new(name_input).block(name_block), chunks[3]);
     if field == 1 {
         let cx = (chunks[3].x + 1 + name_input.len() as u16).min(chunks[3].x + chunks[3].width - 2);
         f.set_cursor(cx, chunks[3].y + 1);
@@ -85,20 +100,29 @@ pub fn render_send_file(f: &mut Frame, path_input: &str) {
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Length(1), Constraint::Length(3), Constraint::Min(0)])
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(3),
+            Constraint::Min(0),
+        ])
         .split(inner);
 
     f.render_widget(
         Paragraph::new(Span::styled("File path:", Style::default().fg(Color::Gray))),
         chunks[0],
     );
-    let b = Block::default().borders(Borders::ALL).border_style(Style::default().fg(Color::Cyan));
+    let b = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan));
     f.render_widget(Paragraph::new(path_input).block(b), chunks[1]);
     let cx = (chunks[1].x + 1 + path_input.len() as u16).min(chunks[1].x + chunks[1].width - 2);
     f.set_cursor(cx, chunks[1].y + 1);
 
     f.render_widget(
-        Paragraph::new(Span::styled("Enter send  Esc cancel", Style::default().fg(Color::DarkGray))),
+        Paragraph::new(Span::styled(
+            "Enter send  Esc cancel",
+            Style::default().fg(Color::DarkGray),
+        )),
         chunks[2],
     );
 }
@@ -117,10 +141,18 @@ pub fn render_confirm(f: &mut Frame, message: &str) {
     f.render_widget(
         Paragraph::new(vec![
             Line::from(""),
-            Line::from(Span::styled(message, Style::default().fg(Color::White).add_modifier(Modifier::BOLD))),
+            Line::from(Span::styled(
+                message,
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            )),
             Line::from(""),
             Line::from(vec![
-                Span::styled("Y", Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)),
+                Span::styled(
+                    "Y",
+                    Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                ),
                 Span::styled(" confirm  ", Style::default().fg(Color::DarkGray)),
                 Span::styled("Esc", Style::default().fg(Color::Green)),
                 Span::styled(" cancel", Style::default().fg(Color::DarkGray)),
@@ -136,7 +168,12 @@ pub fn render_phrase(f: &mut Frame, phrase: &str) {
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(Span::styled(" ⚠ Recovery Phrase — keep secret ", Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)))
+        .title(Span::styled(
+            " ⚠ Recovery Phrase — keep secret ",
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ))
         .border_style(Style::default().fg(Color::Yellow));
     let inner = block.inner(area);
     f.render_widget(block, area);
@@ -157,14 +194,19 @@ pub fn render_phrase(f: &mut Frame, phrase: &str) {
             if i < words.len() {
                 spans.push(Span::styled(
                     format!("{:2}. {:<14}", i + 1, words[i]),
-                    Style::default().fg(Color::White).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(Color::White)
+                        .add_modifier(Modifier::BOLD),
                 ));
             }
         }
         lines.push(Line::from(spans));
     }
     lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled("Esc  close", Style::default().fg(Color::DarkGray))));
+    lines.push(Line::from(Span::styled(
+        "Esc  close",
+        Style::default().fg(Color::DarkGray),
+    )));
 
     f.render_widget(Paragraph::new(lines), inner);
 }
@@ -199,10 +241,10 @@ pub fn render_qr(f: &mut Frame, hex: &str) {
                         false
                     };
                     let ch = match (top, bot) {
-                        (true, true)  => "█",
+                        (true, true) => "█",
                         (true, false) => "▀",
                         (false, true) => "▄",
-                        (false,false) => " ",
+                        (false, false) => " ",
                     };
                     spans.push(Span::raw(ch));
                 }
@@ -210,19 +252,28 @@ pub fn render_qr(f: &mut Frame, hex: &str) {
             }
         }
         Err(_) => {
-            lines.push(Line::from(Span::styled("QR generation failed", Style::default().fg(Color::Red))));
+            lines.push(Line::from(Span::styled(
+                "QR generation failed",
+                Style::default().fg(Color::Red),
+            )));
         }
     }
 
     lines.push(Line::from(""));
     // Truncated key for display.
     let key_display = if hex.len() > 24 {
-        format!("{}…{}", &hex[..12], &hex[hex.len()-12..])
+        format!("{}…{}", &hex[..12], &hex[hex.len() - 12..])
     } else {
         hex.to_owned()
     };
-    lines.push(Line::from(Span::styled(key_display, Style::default().fg(Color::Cyan))));
-    lines.push(Line::from(Span::styled("Esc close", Style::default().fg(Color::DarkGray))));
+    lines.push(Line::from(Span::styled(
+        key_display,
+        Style::default().fg(Color::Cyan),
+    )));
+    lines.push(Line::from(Span::styled(
+        "Esc close",
+        Style::default().fg(Color::DarkGray),
+    )));
 
     f.render_widget(Paragraph::new(lines), inner);
 }

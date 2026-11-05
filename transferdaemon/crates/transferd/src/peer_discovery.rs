@@ -12,7 +12,9 @@ use std::sync::Arc;
 /// Start a DHT node from `TRANSFERD_DHT_BIND` (default ephemeral) and bootstrap
 /// from `TRANSFERD_DHT_BOOTSTRAP` (comma-separated `host:port`). Returns `None`
 /// when the DHT isn't configured.
-pub async fn spawn_dht_node(public_key_hex: Option<String>) -> Option<Arc<transferd_relay::DhtNode>> {
+pub async fn spawn_dht_node(
+    public_key_hex: Option<String>,
+) -> Option<Arc<transferd_relay::DhtNode>> {
     let bind = std::env::var("TRANSFERD_DHT_BIND").unwrap_or_else(|_| "0.0.0.0:0".to_owned());
     // Deterministic node id derived from the identity public key, so the same
     // identity keeps the same DHT presence across restarts.
@@ -35,13 +37,14 @@ pub async fn spawn_dht_node(public_key_hex: Option<String>) -> Option<Arc<transf
         .ok()
         .and_then(|s| s.parse().ok());
 
-    let node = match transferd_relay::DhtNode::start_with_advertised(&bind, node_id, advertised).await {
-        Ok(n) => Arc::new(n),
-        Err(e) => {
-            tracing::warn!("[dht] failed to start node: {e}");
-            return None;
-        }
-    };
+    let node =
+        match transferd_relay::DhtNode::start_with_advertised(&bind, node_id, advertised).await {
+            Ok(n) => Arc::new(n),
+            Err(e) => {
+                tracing::warn!("[dht] failed to start node: {e}");
+                return None;
+            }
+        };
 
     if let Ok(bootstrap) = std::env::var("TRANSFERD_DHT_BOOTSTRAP") {
         let peers: Vec<std::net::SocketAddr> = bootstrap
@@ -86,14 +89,16 @@ pub async fn publish_endpoint_if_ready(
         let s = state.lock();
         let Some(id) = &s.identity else { return };
         let Some(_dht) = &s.dht else { return };
-        let relay_strs = s.relay_hub
+        let relay_strs = s
+            .relay_hub
             .as_ref()
             .map(|hub| hub.relay_endpoint_strs())
             .unwrap_or_default();
         // Direct addresses: the peer transport listener is bound reachably
         // (non-loopback bind), so publish tcp:// for every reachable IPv4
         // address (incl. Tailscale 100.64/10) at the listener's port.
-        let direct = s.peer_listen
+        let direct = s
+            .peer_listen
             .map(|listen| {
                 if listen.ip().is_loopback() {
                     vec![format!("tcp://{listen}")]
@@ -224,7 +229,10 @@ impl PeerEndpoint {
     pub fn signed(self, key: &SigningKey) -> Self {
         let bytes = self.canonical_bytes().unwrap_or_default();
         let sig = key.sign(&bytes).to_bytes().to_vec();
-        Self { signature: sig, ..self }
+        Self {
+            signature: sig,
+            ..self
+        }
     }
 
     /// Verify the Ed25519 signature against `public_key`.
@@ -236,8 +244,12 @@ impl PeerEndpoint {
             },
             Err(_) => return false,
         };
-        let Ok(vk) = VerifyingKey::from_bytes(&pk_bytes) else { return false };
-        let Some(bytes) = self.canonical_bytes() else { return false };
+        let Ok(vk) = VerifyingKey::from_bytes(&pk_bytes) else {
+            return false;
+        };
+        let Some(bytes) = self.canonical_bytes() else {
+            return false;
+        };
         let sig_bytes: [u8; 64] = match self.signature.as_slice().try_into() {
             Ok(s) => s,
             Err(_) => return false,
@@ -281,13 +293,20 @@ impl PeerEndpoint {
         addrs.extend(ep.direct.clone());
         for (addr, token) in ep.relay_endpoints() {
             // `ws://host:port` / `wss://host:port` publish as WS relay URIs.
-            if let Some(stripped) = addr.strip_prefix("ws://").or_else(|| addr.strip_prefix("wss://")) {
+            if let Some(stripped) = addr
+                .strip_prefix("ws://")
+                .or_else(|| addr.strip_prefix("wss://"))
+            {
                 addrs.push(format!("wsrelay://{stripped}/{token}"));
             } else {
                 addrs.push(format!("relay://{addr}/{token}"));
             }
         }
-        if addrs.is_empty() { None } else { Some((addrs, ep.limits)) }
+        if addrs.is_empty() {
+            None
+        } else {
+            Some((addrs, ep.limits))
+        }
     }
 }
 

@@ -11,11 +11,8 @@ fn bench_protocol_encode_decode(c: &mut Criterion) {
 
     c.bench_function("relay_encode_forward_msg", |b| {
         b.iter(|| {
-            let encoded = relayd::protocol::encode(
-                relayd::protocol::Tag::Forward,
-                black_box(&msg),
-            )
-            .unwrap();
+            let encoded =
+                relayd::protocol::encode(relayd::protocol::Tag::Forward, black_box(&msg)).unwrap();
             black_box(encoded)
         })
     });

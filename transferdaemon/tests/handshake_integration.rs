@@ -1,6 +1,6 @@
 use transferd_crypto::{
-    DmiDecryptor, DmiEncryptor,
     handshake::{Initiator, Responder},
+    DmiDecryptor, DmiEncryptor,
 };
 
 /// Both sides must derive the same session key.
@@ -27,8 +27,16 @@ fn test_handshake_sessions_differ() {
     let (init1, resp1) = run_handshake();
     let (init2, resp2) = run_handshake();
 
-    assert_ne!(init1.as_bytes(), init2.as_bytes(), "keys must differ across sessions");
-    assert_ne!(resp1.as_bytes(), resp2.as_bytes(), "keys must differ across sessions");
+    assert_ne!(
+        init1.as_bytes(),
+        init2.as_bytes(),
+        "keys must differ across sessions"
+    );
+    assert_ne!(
+        resp1.as_bytes(),
+        resp2.as_bytes(),
+        "keys must differ across sessions"
+    );
     println!("Session-uniqueness test passed.");
 }
 

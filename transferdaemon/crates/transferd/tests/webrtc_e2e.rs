@@ -14,9 +14,7 @@ use tonic::transport::{Channel, Server};
 use transferd_api::{CallServiceClient, Empty};
 use transferd_lib::{grpc::add_all_services, new_state};
 use transferd_webrtc::{
-    grpc_signaling::GrpcSignaling,
-    media::MockMediaCapture,
-    session::SimulatedCallSession,
+    grpc_signaling::GrpcSignaling, media::MockMediaCapture, session::SimulatedCallSession,
     MediaCapture,
 };
 
@@ -30,9 +28,7 @@ async fn start_daemon() -> SocketAddr {
     let state = new_state();
     tokio::spawn(async move {
         add_all_services(Server::builder(), state)
-            .serve_with_incoming(
-                tokio_stream::wrappers::TcpListenerStream::new(listener),
-            )
+            .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener))
             .await
             .unwrap();
     });
@@ -94,14 +90,10 @@ async fn test_video_call_signaling_e2e() {
     )
     .await;
 
-    let sig_a = GrpcSignaling::new_caller(
-        ch_a.clone(),
-        "conv-alice-bob",
-        true,
-        &session_a.local_sdp,
-    )
-    .await
-    .expect("Alice: StartCall failed");
+    let sig_a =
+        GrpcSignaling::new_caller(ch_a.clone(), "conv-alice-bob", true, &session_a.local_sdp)
+            .await
+            .expect("Alice: StartCall failed");
 
     let call_id = sig_a.call_id.clone();
     assert!(!call_id.is_empty(), "call_id must be non-empty");
@@ -127,13 +119,10 @@ async fn test_video_call_signaling_e2e() {
     )
     .await;
 
-    let (_sig_b, remote_sdp) = GrpcSignaling::new_callee(
-        ch_b.clone(),
-        &invite.call_id,
-        &session_b.local_sdp,
-    )
-    .await
-    .expect("Bob: AcceptCall failed");
+    let (_sig_b, remote_sdp) =
+        GrpcSignaling::new_callee(ch_b.clone(), &invite.call_id, &session_b.local_sdp)
+            .await
+            .expect("Bob: AcceptCall failed");
 
     // remote_sdp returned from AcceptCall is the original offer.
     assert_eq!(remote_sdp, offer_sdp, "remote SDP should be Alice's offer");
@@ -146,7 +135,9 @@ async fn test_video_call_signaling_e2e() {
             .expect("timeout waiting for accepted")
             .expect("stream error")
             .expect("stream ended");
-        if ev.event_type == "accepted" { break ev; }
+        if ev.event_type == "accepted" {
+            break ev;
+        }
     };
 
     // ── 6. Both activate ─────────────────────────────────────────────────────
@@ -163,11 +154,7 @@ async fn test_video_call_signaling_e2e() {
             .expect("video channel closed");
         assert_eq!(frame.width, 640, "frame width");
         assert_eq!(frame.height, 480, "frame height");
-        assert_eq!(
-            frame.rgba.len(),
-            640 * 480 * 4,
-            "RGBA buffer size"
-        );
+        assert_eq!(frame.rgba.len(), 640 * 480 * 4, "RGBA buffer size");
     }
 
     // ── 8. Hang up ───────────────────────────────────────────────────────────

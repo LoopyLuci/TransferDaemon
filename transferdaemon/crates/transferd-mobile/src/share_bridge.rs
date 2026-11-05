@@ -14,7 +14,10 @@ pub static PENDING_SHARE: Mutex<Option<(String, String)>> = Mutex::new(None);
 
 /// Take the pending share (if any), clearing the slot.
 pub fn take() -> Option<(String, String)> {
-    PENDING_SHARE.lock().unwrap_or_else(|e| e.into_inner()).take()
+    PENDING_SHARE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take()
 }
 
 // ---------------------------------------------------------------------------

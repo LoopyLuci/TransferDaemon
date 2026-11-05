@@ -82,7 +82,9 @@ pub fn init(base_dir: &std::path::Path) {
             .ok();
 
         logcat(&format!("Logger initialised → {log_path:?}"));
-        FileLogger { file: Mutex::new(file) }
+        FileLogger {
+            file: Mutex::new(file),
+        }
     });
 }
 

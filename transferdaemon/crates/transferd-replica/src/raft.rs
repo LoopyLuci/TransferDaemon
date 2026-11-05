@@ -27,16 +27,39 @@ pub struct Entry {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Msg {
-    Vote { term: Term, last_index: Index, last_term: Term },
-    VoteResp { term: Term, granted: bool },
-    Append { term: Term, prev_index: Index, prev_term: Term, entries: Vec<Entry>, commit: Index, read_seq: u64 },
-    AppendResp { term: Term, success: bool, match_index: Index, conflict_hint: Index, read_seq: u64 },
+    Vote {
+        term: Term,
+        last_index: Index,
+        last_term: Term,
+    },
+    VoteResp {
+        term: Term,
+        granted: bool,
+    },
+    Append {
+        term: Term,
+        prev_index: Index,
+        prev_term: Term,
+        entries: Vec<Entry>,
+        commit: Index,
+        read_seq: u64,
+    },
+    AppendResp {
+        term: Term,
+        success: bool,
+        match_index: Index,
+        conflict_hint: Index,
+        read_seq: u64,
+    },
 }
 
 impl Msg {
     pub fn term(&self) -> Term {
         match self {
-            Msg::Vote { term, .. } | Msg::VoteResp { term, .. } | Msg::Append { term, .. } | Msg::AppendResp { term, .. } => *term,
+            Msg::Vote { term, .. }
+            | Msg::VoteResp { term, .. }
+            | Msg::Append { term, .. }
+            | Msg::AppendResp { term, .. } => *term,
         }
     }
 }
@@ -93,9 +116,18 @@ pub struct Raft {
 
 impl Raft {
     /// A node with its persisted state (a fresh node: `HardState::default()` and an empty log).
-    pub fn new(id: NodeId, peers: Vec<NodeId>, hard: HardState, log: Vec<Entry>, seed: u64) -> Self {
+    pub fn new(
+        id: NodeId,
+        peers: Vec<NodeId>,
+        hard: HardState,
+        log: Vec<Entry>,
+        seed: u64,
+    ) -> Self {
         use rand::SeedableRng;
-        let mut full = vec![Entry { term: 0, data: Vec::new() }];
+        let mut full = vec![Entry {
+            term: 0,
+            data: Vec::new(),
+        }];
         full.extend(log);
         let mut r = Self {
             id,
@@ -154,7 +186,10 @@ impl Raft {
 
     fn become_follower(&mut self, term: Term, leader: Option<NodeId>) {
         if term > self.hard.term {
-            self.hard = HardState { term, voted_for: None };
+            self.hard = HardState {
+                term,
+                voted_for: None,
+            };
             self.hard_dirty = true;
         }
         self.role = Role::Follower;
@@ -166,7 +201,10 @@ impl Raft {
 
     fn campaign(&mut self) {
         self.role = Role::Candidate;
-        self.hard = HardState { term: self.hard.term + 1, voted_for: Some(self.id) };
+        self.hard = HardState {
+            term: self.hard.term + 1,
+            voted_for: Some(self.id),
+        };
         self.hard_dirty = true;
         self.leader = None;
         self.votes = [self.id].into_iter().collect();
@@ -175,9 +213,19 @@ impl Raft {
             self.become_leader();
             return;
         }
-        let (li, lt) = (self.last_index(), self.term_at(self.last_index()).unwrap_or(0));
+        let (li, lt) = (
+            self.last_index(),
+            self.term_at(self.last_index()).unwrap_or(0),
+        );
         for p in self.peers.clone() {
-            self.outbox.push((p, Msg::Vote { term: self.hard.term, last_index: li, last_term: lt }));
+            self.outbox.push((
+                p,
+                Msg::Vote {
+                    term: self.hard.term,
+                    last_index: li,
+                    last_term: lt,
+                },
+            ));
         }
     }
 
@@ -193,7 +241,10 @@ impl Raft {
     }
 
     fn append_local(&mut self, data: Vec<u8>) -> Index {
-        self.log.push(Entry { term: self.hard.term, data });
+        self.log.push(Entry {
+            term: self.hard.term,
+            data,
+        });
         let i = self.last_index();
         self.log_dirty_from = Some(self.log_dirty_from.map_or(i, |d| d.min(i)));
         if self.peers.is_empty() {
@@ -206,9 +257,22 @@ impl Raft {
         let next = *self.next.get(&to).unwrap_or(&1);
         let prev = next.saturating_sub(1);
         let prev_term = self.term_at(prev).unwrap_or(0);
-        let entries: Vec<Entry> = self.log[(next as usize).min(self.log.len())..].iter().take(self.max_batch).cloned().collect();
-        self.outbox.push((to, Msg::Append { term: self.hard.term, prev_index: prev, prev_term, entries, commit: self.commit,
-                                            read_seq: self.read_seq }));
+        let entries: Vec<Entry> = self.log[(next as usize).min(self.log.len())..]
+            .iter()
+            .take(self.max_batch)
+            .cloned()
+            .collect();
+        self.outbox.push((
+            to,
+            Msg::Append {
+                term: self.hard.term,
+                prev_index: prev,
+                prev_term,
+                entries,
+                commit: self.commit,
+                read_seq: self.read_seq,
+            },
+        ));
     }
 
     fn broadcast_append(&mut self) {
@@ -256,13 +320,19 @@ impl Raft {
         }
         self.read_seq += 1;
         self.pending_reads.push((id, self.read_seq, self.commit));
-        self.read_acks.insert(self.read_seq, [self.id].into_iter().collect());
+        self.read_acks
+            .insert(self.read_seq, [self.id].into_iter().collect());
         self.broadcast_append();
         Ok(())
     }
 
     fn maybe_commit(&mut self) {
-        let mut idx: Vec<Index> = self.matched.values().copied().chain(std::iter::once(self.last_index())).collect();
+        let mut idx: Vec<Index> = self
+            .matched
+            .values()
+            .copied()
+            .chain(std::iter::once(self.last_index()))
+            .collect();
         idx.sort_unstable_by(|a, b| b.cmp(a));
         let n = idx[self.quorum() - 1];
         if n > self.commit && self.term_at(n) == Some(self.hard.term) {
@@ -277,9 +347,19 @@ impl Raft {
             return;
         }
         let q = self.quorum();
-        let confirmed: Vec<u64> = self.read_acks.iter().filter(|(_, a)| a.len() >= q).map(|(s, _)| *s).collect();
-        let Some(max_seq) = confirmed.iter().max().copied() else { return };
-        let (ready, waiting): (Vec<_>, Vec<_>) = self.pending_reads.drain(..).partition(|(_, s, _)| *s <= max_seq);
+        let confirmed: Vec<u64> = self
+            .read_acks
+            .iter()
+            .filter(|(_, a)| a.len() >= q)
+            .map(|(s, _)| *s)
+            .collect();
+        let Some(max_seq) = confirmed.iter().max().copied() else {
+            return;
+        };
+        let (ready, waiting): (Vec<_>, Vec<_>) = self
+            .pending_reads
+            .drain(..)
+            .partition(|(_, s, _)| *s <= max_seq);
         self.pending_reads = waiting;
         for (id, _, at) in ready {
             self.ready_reads.push((id, at.max(self.commit)));
@@ -290,21 +370,37 @@ impl Raft {
     /// A message from a peer.
     pub fn step(&mut self, from: NodeId, msg: Msg) {
         if msg.term() > self.hard.term {
-            let leader = if matches!(msg, Msg::Append { .. }) { Some(from) } else { None };
+            let leader = if matches!(msg, Msg::Append { .. }) {
+                Some(from)
+            } else {
+                None
+            };
             self.become_follower(msg.term(), leader);
         }
         match msg {
-            Msg::Vote { term, last_index, last_term } => {
+            Msg::Vote {
+                term,
+                last_index,
+                last_term,
+            } => {
                 let my_lt = self.term_at(self.last_index()).unwrap_or(0);
-                let up_to_date = last_term > my_lt || (last_term == my_lt && last_index >= self.last_index());
-                let can = term == self.hard.term && (self.hard.voted_for.is_none() || self.hard.voted_for == Some(from));
+                let up_to_date =
+                    last_term > my_lt || (last_term == my_lt && last_index >= self.last_index());
+                let can = term == self.hard.term
+                    && (self.hard.voted_for.is_none() || self.hard.voted_for == Some(from));
                 let granted = can && up_to_date;
                 if granted {
                     self.hard.voted_for = Some(from);
                     self.hard_dirty = true;
                     self.reset_election_timeout();
                 }
-                self.outbox.push((from, Msg::VoteResp { term: self.hard.term, granted }));
+                self.outbox.push((
+                    from,
+                    Msg::VoteResp {
+                        term: self.hard.term,
+                        granted,
+                    },
+                ));
             }
             Msg::VoteResp { term, granted } => {
                 if self.role == Role::Candidate && term == self.hard.term && granted {
@@ -314,10 +410,25 @@ impl Raft {
                     }
                 }
             }
-            Msg::Append { term, prev_index, prev_term, entries, commit, read_seq } => {
+            Msg::Append {
+                term,
+                prev_index,
+                prev_term,
+                entries,
+                commit,
+                read_seq,
+            } => {
                 if term < self.hard.term {
-                    self.outbox.push((from, Msg::AppendResp { term: self.hard.term, success: false, match_index: 0,
-                                                              conflict_hint: 0, read_seq }));
+                    self.outbox.push((
+                        from,
+                        Msg::AppendResp {
+                            term: self.hard.term,
+                            success: false,
+                            match_index: 0,
+                            conflict_hint: 0,
+                            read_seq,
+                        },
+                    ));
                     return;
                 }
                 self.role = Role::Follower;
@@ -335,8 +446,16 @@ impl Raft {
                         }
                         i
                     };
-                    self.outbox.push((from, Msg::AppendResp { term: self.hard.term, success: false, match_index: 0,
-                                                              conflict_hint: hint.max(1), read_seq }));
+                    self.outbox.push((
+                        from,
+                        Msg::AppendResp {
+                            term: self.hard.term,
+                            success: false,
+                            match_index: 0,
+                            conflict_hint: hint.max(1),
+                            read_seq,
+                        },
+                    ));
                     return;
                 }
                 let mut i = prev_index;
@@ -358,10 +477,24 @@ impl Raft {
                 if commit > self.commit {
                     self.commit = commit.min(i).max(self.commit);
                 }
-                self.outbox.push((from, Msg::AppendResp { term: self.hard.term, success: true, match_index: i,
-                                                          conflict_hint: 0, read_seq }));
+                self.outbox.push((
+                    from,
+                    Msg::AppendResp {
+                        term: self.hard.term,
+                        success: true,
+                        match_index: i,
+                        conflict_hint: 0,
+                        read_seq,
+                    },
+                ));
             }
-            Msg::AppendResp { term, success, match_index, conflict_hint, read_seq } => {
+            Msg::AppendResp {
+                term,
+                success,
+                match_index,
+                conflict_hint,
+                read_seq,
+            } => {
                 if self.role != Role::Leader || term != self.hard.term {
                     return;
                 }

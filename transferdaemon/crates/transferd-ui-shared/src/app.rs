@@ -20,7 +20,12 @@ use std::sync::Arc;
 type SharePoller = Box<dyn Fn() -> Option<(String, String)> + Send + Sync>;
 use std::time::{Duration, Instant};
 
-type LoadResult = (Vec<Contact>, Vec<TransferStatus>, Option<Identity>, Vec<Group>);
+type LoadResult = (
+    Vec<Contact>,
+    Vec<TransferStatus>,
+    Option<Identity>,
+    Vec<Group>,
+);
 
 #[derive(Default, PartialEq, Clone, Copy)]
 pub enum Page {
@@ -101,20 +106,20 @@ fn build_conversations(
     contacts: &[Contact],
     previews: &HashMap<String, (String, u64)>,
 ) -> Vec<Conversation> {
-    let mut convs: Vec<Conversation> = contacts.iter().map(|c| {
-        let (last_message, last_time_sec) = previews
-            .get(&c.id)
-            .cloned()
-            .unwrap_or_default();
-        Conversation {
-            contact_id: c.id.clone(),
-            display_name: c.display_name().to_owned(),
-            online: c.online,
-            last_message,
-            last_time_sec,
-            unread: 0,
-        }
-    }).collect();
+    let mut convs: Vec<Conversation> = contacts
+        .iter()
+        .map(|c| {
+            let (last_message, last_time_sec) = previews.get(&c.id).cloned().unwrap_or_default();
+            Conversation {
+                contact_id: c.id.clone(),
+                display_name: c.display_name().to_owned(),
+                online: c.online,
+                last_message,
+                last_time_sec,
+                unread: 0,
+            }
+        })
+        .collect();
     convs.sort_by_key(|b| std::cmp::Reverse(b.last_time_sec));
     convs
 }
@@ -125,8 +130,7 @@ fn build_conversations(
 
 const REFRESH_INTERVAL: Duration = Duration::from_secs(3);
 
-static REFRESH_RESULT: std::sync::Mutex<Option<LoadResult>> =
-    std::sync::Mutex::new(None);
+static REFRESH_RESULT: std::sync::Mutex<Option<LoadResult>> = std::sync::Mutex::new(None);
 
 pub struct TransferDaemonApp {
     pub state: AppState,
@@ -197,10 +201,10 @@ impl TransferDaemonApp {
         let d = Arc::clone(&daemon);
         if let Ok(rt) = tokio::runtime::Handle::try_current() {
             rt.spawn(async move {
-                let contacts  = d.get_contacts().await;
+                let contacts = d.get_contacts().await;
                 let transfers = d.get_transfers().await;
-                let identity  = d.get_identity().await;
-                let groups    = d.get_groups().await;
+                let identity = d.get_identity().await;
+                let groups = d.get_groups().await;
                 let _ = tx.send((contacts, transfers, identity, groups));
             });
         }
@@ -242,7 +246,9 @@ impl TransferDaemonApp {
     /// Initialize the local SQLite DB. Call this right after `with_daemon()`.
     pub fn init_db(&mut self, path: impl AsRef<std::path::Path>) {
         match LocalDb::open(path) {
-            Ok(db) => { self.db = Some(db); }
+            Ok(db) => {
+                self.db = Some(db);
+            }
             Err(e) => {
                 tracing::error!("[TDDb] Failed to open local DB: {e}");
                 self.toasts.error(format!("Failed to open database: {e}"));
@@ -254,12 +260,13 @@ impl TransferDaemonApp {
         let d = Arc::clone(&self.state.daemon);
         if let Ok(rt) = tokio::runtime::Handle::try_current() {
             rt.spawn(async move {
-                let contacts  = d.get_contacts().await;
+                let contacts = d.get_contacts().await;
                 let transfers = d.get_transfers().await;
-                let identity  = d.get_identity().await;
-                let groups    = d.get_groups().await;
+                let identity = d.get_identity().await;
+                let groups = d.get_groups().await;
                 crate::call_caps::update_call_kbps(d.get_setting("limits.call_kbps").await);
-                *REFRESH_RESULT.lock().unwrap_or_else(|e| e.into_inner()) = Some((contacts, transfers, identity, groups));
+                *REFRESH_RESULT.lock().unwrap_or_else(|e| e.into_inner()) =
+                    Some((contacts, transfers, identity, groups));
             });
         }
     }
@@ -281,12 +288,12 @@ impl TransferDaemonApp {
     /// Load data from the local SQLite cache (fallback when daemon can't be restored).
     fn load_from_local_cache(&mut self) {
         if let Some(db) = &self.db {
-                                if let Ok(Some((pk, name))) = db.load_cached_identity() {
-                                    self.state.identity = Some(Identity {
-                                        public_key: pk,
-                                        display_name: name,
-                                        phrase: String::new(),
-                                    });
+            if let Ok(Some((pk, name))) = db.load_cached_identity() {
+                self.state.identity = Some(Identity {
+                    public_key: pk,
+                    display_name: name,
+                    phrase: String::new(),
+                });
                 // Also load locally-cached contacts (with nicknames).
                 if let Ok(cached) = db.load_contacts() {
                     if !cached.is_empty() {
@@ -304,9 +311,9 @@ impl TransferDaemonApp {
 
     /// Load the cached recovery phrase from the local DB.
     fn load_cached_recovery_phrase(&self) -> Option<String> {
-        self.db.as_ref().and_then(|db| {
-            db.load_cached_recovery_phrase().ok().flatten()
-        })
+        self.db
+            .as_ref()
+            .and_then(|db| db.load_cached_recovery_phrase().ok().flatten())
     }
 
     /// Persist all current contacts (with nicknames) to the local DB.
@@ -414,9 +421,8 @@ impl TransferDaemonApp {
         // Detect transfer completion
         for t in transfers {
             let prev = self.prev_transfer_bytes.get(&t.id).copied().unwrap_or(0);
-            let just_completed = prev > 0
-                && prev < t.size_bytes
-                && t.transferred_bytes >= t.size_bytes;
+            let just_completed =
+                prev > 0 && prev < t.size_bytes && t.transferred_bytes >= t.size_bytes;
             if just_completed {
                 let action = if t.outbound { "Sent" } else { "Received" };
                 self.toasts.success(format!("{action} {}", t.file_name));
@@ -512,9 +518,7 @@ impl eframe::App for TransferDaemonApp {
                 } else {
                     ctx.pixels_per_point()
                 };
-            } else if device_ppp > 0.0
-                && (device_ppp - self.base_pixels_per_point).abs() > 0.005
-            {
+            } else if device_ppp > 0.0 && (device_ppp - self.base_pixels_per_point).abs() > 0.005 {
                 // Android: re-tracks the device Display-size density if it
                 // changes (or arrives late), keeping user scale applied on top.
                 self.base_pixels_per_point = device_ppp;
@@ -529,9 +533,9 @@ impl eframe::App for TransferDaemonApp {
         // ── Android: reserve exact pixel height for system bars ────────────────
         #[cfg(target_os = "android")]
         {
-            use crate::platform_hooks::{SYSTEM_INSET_TOP, SYSTEM_INSET_BOTTOM};
+            use crate::platform_hooks::{SYSTEM_INSET_BOTTOM, SYSTEM_INSET_TOP};
             use std::sync::atomic::Ordering;
-            let top_px    = SYSTEM_INSET_TOP.load(Ordering::Relaxed);
+            let top_px = SYSTEM_INSET_TOP.load(Ordering::Relaxed);
             let bottom_px = SYSTEM_INSET_BOTTOM.load(Ordering::Relaxed);
             if top_px > 0 {
                 let pts = top_px as f32 / ctx.pixels_per_point();
@@ -556,32 +560,35 @@ impl eframe::App for TransferDaemonApp {
             let mut idx = 0;
             while idx < i.events.len() {
                 let consume = match &i.events[idx] {
-                    egui::Event::Key { key, pressed, modifiers, .. } if *pressed => {
-                        match (key, modifiers.ctrl, modifiers.shift) {
-                            (egui::Key::N, true, false) if self.state.page != Page::Onboarding => {
-                                self.state.page = Page::Home;
-                                self.home.tab = Tab::Contacts;
-                                true
-                            }
-                            (egui::Key::Comma, true, false) if self.state.page != Page::Onboarding => {
-                                self.state.page = Page::Home;
-                                self.home.tab = Tab::Settings;
-                                true
-                            }
-                            (egui::Key::Escape, false, false) if self.state.page == Page::Chat => {
-                                self.state.page = Page::Home;
-                                true
-                            }
-                            (egui::Key::Tab, true, false) if self.state.page == Page::Home => {
-                                let tabs = &[Tab::Chats, Tab::Contacts, Tab::Transfers, Tab::Settings];
-                                if let Some(pos) = tabs.iter().position(|t| *t == self.home.tab) {
-                                    self.home.tab = tabs[(pos + 1) % tabs.len()];
-                                }
-                                true
-                            }
-                            _ => false,
+                    egui::Event::Key {
+                        key,
+                        pressed,
+                        modifiers,
+                        ..
+                    } if *pressed => match (key, modifiers.ctrl, modifiers.shift) {
+                        (egui::Key::N, true, false) if self.state.page != Page::Onboarding => {
+                            self.state.page = Page::Home;
+                            self.home.tab = Tab::Contacts;
+                            true
                         }
-                    }
+                        (egui::Key::Comma, true, false) if self.state.page != Page::Onboarding => {
+                            self.state.page = Page::Home;
+                            self.home.tab = Tab::Settings;
+                            true
+                        }
+                        (egui::Key::Escape, false, false) if self.state.page == Page::Chat => {
+                            self.state.page = Page::Home;
+                            true
+                        }
+                        (egui::Key::Tab, true, false) if self.state.page == Page::Home => {
+                            let tabs = &[Tab::Chats, Tab::Contacts, Tab::Transfers, Tab::Settings];
+                            if let Some(pos) = tabs.iter().position(|t| *t == self.home.tab) {
+                                self.home.tab = tabs[(pos + 1) % tabs.len()];
+                            }
+                            true
+                        }
+                        _ => false,
+                    },
                     _ => false,
                 };
                 if consume {
@@ -659,12 +666,21 @@ impl eframe::App for TransferDaemonApp {
         // ── Restore the persisted appearance once the DB is available ─────────
         if !self.db_theme_loaded {
             if let Some(db) = &self.db {
-                let theme = db.get_setting("appearance.theme").ok().flatten()
+                let theme = db
+                    .get_setting("appearance.theme")
+                    .ok()
+                    .flatten()
                     .or_else(|| db.get_setting("theme").ok().flatten()); // legacy key
                 let accent = db.get_setting("appearance.accent").ok().flatten();
-                let ui_scale = db.get_setting("appearance.ui_scale").ok().flatten()
+                let ui_scale = db
+                    .get_setting("appearance.ui_scale")
+                    .ok()
+                    .flatten()
                     .and_then(|s| s.parse::<f32>().ok());
-                let font_scale = db.get_setting("appearance.font_scale").ok().flatten()
+                let font_scale = db
+                    .get_setting("appearance.font_scale")
+                    .ok()
+                    .flatten()
                     .and_then(|s| s.parse::<f32>().ok());
                 let prefs = UiPreferences::from_settings(theme, accent, ui_scale, font_scale);
                 self.set_appearance(prefs, ctx);
@@ -673,9 +689,8 @@ impl eframe::App for TransferDaemonApp {
         }
 
         // ── Apply a pending appearance change from the settings page ────────
-        let pending = ctx.data_mut(|d| {
-            d.get_persisted::<UiPreferences>(egui::Id::new("pending_appearance"))
-        });
+        let pending =
+            ctx.data_mut(|d| d.get_persisted::<UiPreferences>(egui::Id::new("pending_appearance")));
         if let Some(prefs) = pending {
             self.set_appearance(prefs, ctx);
             ctx.data_mut(|d| {
@@ -695,7 +710,9 @@ impl eframe::App for TransferDaemonApp {
 
                     // App lock: if a PIN is configured, gate the UI.
                     let rt = tokio::runtime::Handle::current();
-                    if let Some(pin_hash) = rt.block_on(self.state.daemon.get_setting("app.lock.pin")) {
+                    if let Some(pin_hash) =
+                        rt.block_on(self.state.daemon.get_setting("app.lock.pin"))
+                    {
                         if !pin_hash.is_empty() {
                             self.state.pin_hash = Some(pin_hash);
                             self.state.locked = true;
@@ -714,15 +731,19 @@ impl eframe::App for TransferDaemonApp {
 
                             // Try to restore from cached recovery phrase
                             if let Some(phrase) = self.load_cached_recovery_phrase() {
-                                tracing::info!("[App] Found cached recovery phrase, attempting restore");
+                                tracing::info!(
+                                    "[App] Found cached recovery phrase, attempting restore"
+                                );
                                 let rt = tokio::runtime::Handle::current();
                                 match rt.block_on(self.state.daemon.restore_identity(phrase)) {
                                     Ok(id) => {
                                         self.state.identity = Some(id);
                                         self.state.page = Page::Home;
                                         // Refresh contacts and transfers after restore
-                                        let contacts = rt.block_on(self.state.daemon.get_contacts());
-                                        let transfers = rt.block_on(self.state.daemon.get_transfers());
+                                        let contacts =
+                                            rt.block_on(self.state.daemon.get_contacts());
+                                        let transfers =
+                                            rt.block_on(self.state.daemon.get_transfers());
                                         self.state.contacts = contacts;
                                         self.state.transfers = transfers;
                                         self.save_identity_to_db();
@@ -730,7 +751,9 @@ impl eframe::App for TransferDaemonApp {
                                         tracing::info!("[App] Successfully restored identity from cached phrase");
                                     }
                                     Err(e) => {
-                                        tracing::warn!("[App] Failed to restore from cached phrase: {e}");
+                                        tracing::warn!(
+                                            "[App] Failed to restore from cached phrase: {e}"
+                                        );
                                         // Fall back to local DB cache
                                         self.load_from_local_cache();
                                     }
@@ -756,7 +779,9 @@ impl eframe::App for TransferDaemonApp {
         if let Ok(mut slot) = REFRESH_RESULT.try_lock() {
             if let Some((contacts, transfers, identity, groups)) = slot.take() {
                 // Merge daemon contacts with local nicknames.
-                let local_nicknames: HashMap<String, Option<String>> = self.state.contacts
+                let local_nicknames: HashMap<String, Option<String>> = self
+                    .state
+                    .contacts
                     .iter()
                     .map(|c| (c.id.clone(), c.nickname.clone()))
                     .collect();
@@ -822,7 +847,9 @@ impl eframe::App for TransferDaemonApp {
                         resp.request_focus();
                         let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
                         let mut attempt = || {
-                            let digest = blake3::hash(self.state.lock_input.as_bytes()).to_hex().to_string();
+                            let digest = blake3::hash(self.state.lock_input.as_bytes())
+                                .to_hex()
+                                .to_string();
                             if Some(&digest) == self.state.pin_hash.as_ref() {
                                 self.state.locked = false;
                                 self.state.lock_input.clear();
@@ -868,7 +895,8 @@ impl eframe::App for TransferDaemonApp {
 
             Page::Home => {
                 let layout_mode = self.state.layout_mode;
-                self.home.show(ctx, &mut self.state, &mut self.chat, layout_mode);
+                self.home
+                    .show(ctx, &mut self.state, &mut self.chat, layout_mode);
                 // Persist any nickname saved by the inline editor.
                 if let Some((id, nick)) = self.home.take_pending_nickname_save() {
                     self.set_contact_nickname(&id, nick);

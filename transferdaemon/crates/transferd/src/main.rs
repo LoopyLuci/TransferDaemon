@@ -9,7 +9,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Warnings and errors to stderr; RUST_LOG for more (e.g. RUST_LOG=transferd_overlay=debug).
     let _ = tracing_subscriber::fmt()
         .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
         )
         .with_writer(std::io::stderr)
         .try_init();
@@ -47,14 +48,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // The control hub: every operation over local HTTP and MCP, and the place the GUI and TUI attach so they can be
     // driven from outside (transferd-cli, ABP, any MCP client). TRANSFERD_CONTROL=off leaves it out.
     let control_facts = std::sync::Arc::new(std::sync::Mutex::new(serde_json::Map::new()));
-    let hub = if std::env::var("TRANSFERD_CONTROL").map(|v| v == "off" || v == "0").unwrap_or(false) {
+    let hub = if std::env::var("TRANSFERD_CONTROL")
+        .map(|v| v == "off" || v == "0")
+        .unwrap_or(false)
+    {
         None
     } else {
         let bind: std::net::SocketAddr = std::env::var("TRANSFERD_CONTROL_ADDR")
             .ok()
             .and_then(|v| v.parse().ok())
             .unwrap_or_else(|| std::net::SocketAddr::from(([127, 0, 0, 1], 50060)));
-        let host = if addr.ip().is_unspecified() { "127.0.0.1".to_string() } else { addr.ip().to_string() };
+        let host = if addr.ip().is_unspecified() {
+            "127.0.0.1".to_string()
+        } else {
+            addr.ip().to_string()
+        };
         let hub = transferd_control::hub::Hub::new(transferd_control::hub::HubConfig {
             grpc_url: format!("http://{host}:{}", addr.port()),
             grpc_token: Some(grpc_token.clone()),
@@ -79,13 +87,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // On a runtime worker: the node's post-quantum key derivation needs more stack than the main
     // thread has on Windows (1 MB).
     let _overlay = match hub.clone() {
-        Some(hub) => tokio::spawn(async move { transferd_lib::overlay::start(&hub).await }).await.ok().flatten(),
+        Some(hub) => tokio::spawn(async move { transferd_lib::overlay::start(&hub).await })
+            .await
+            .ok()
+            .flatten(),
         None => None,
     };
 
     // Start the telemetry collector and wire the global ATE hook.
-    let telemetry_dir = transferd_control::client::data_dir()
-        .join("telemetry");
+    let telemetry_dir = transferd_control::client::data_dir().join("telemetry");
     std::fs::create_dir_all(&telemetry_dir)?;
 
     let collector = transferd_telemetry::TelemetryCollector::start(&telemetry_dir);
@@ -105,8 +115,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .as_secs();
             let mut hash = [0u8; 8];
             hash.copy_from_slice(&data.session_id[..8]);
-            let event = transferd_telemetry::TelemetryEvent::AteLane(
-                transferd_telemetry::AteLaneEvent {
+            let event =
+                transferd_telemetry::TelemetryEvent::AteLane(transferd_telemetry::AteLaneEvent {
                     ts,
                     session_id_hash: hash,
                     gsn: data.gsn,
@@ -115,10 +125,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     bandwidth_bps: data.bandwidth_bps,
                     active_chunks: data.active_chunks,
                     total_lanes: data.total_lanes,
-                },
-            );
+                });
             let col2 = std::sync::Arc::clone(&col);
-            tokio::spawn(async move { col2.record(event).await; });
+            tokio::spawn(async move {
+                col2.record(event).await;
+            });
         });
     }
 
@@ -144,12 +155,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         };
         tokio::spawn(async move {
-            match transferd_lib::transport::spawn_inbound_listener(state_clone.clone(), bind_addr).await {
+            match transferd_lib::transport::spawn_inbound_listener(state_clone.clone(), bind_addr)
+                .await
+            {
                 Ok(listening) => {
                     println!("TransferDaemon peer listener on {listening} (bind {bind_host})");
                     state_clone.lock().peer_listen = Some(listening);
                     if let Ok(mut f) = facts.lock() {
-                        f.insert("peer_listener".into(), serde_json::json!(listening.to_string()));
+                        f.insert(
+                            "peer_listener".into(),
+                            serde_json::json!(listening.to_string()),
+                        );
                         f.insert("peer_bind".into(), serde_json::json!(bind_host));
                     }
                 }
@@ -170,8 +186,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Initialize mesh networking (zero-relay direct mode + auto-meshing relay)
     {
-        use std::sync::Arc as SyncArc;
         use parking_lot::Mutex as PkMutex;
+        use std::sync::Arc as SyncArc;
 
         let config = transferd_lib::mesh::MeshConfig {
             enable_direct: true,
@@ -202,7 +218,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("TransferDaemon gRPC server listening on {addr}");
 
-    let server = transferd_lib::grpc::add_all_services(tonic::transport::Server::builder(), state).serve(addr);
+    let server = transferd_lib::grpc::add_all_services(tonic::transport::Server::builder(), state)
+        .serve(addr);
     match &hub {
         Some(hub) => {
             let stop = hub.stop.clone();

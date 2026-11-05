@@ -30,11 +30,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use aes_gcm::{
-    Aes256Gcm, Key, Nonce,
     aead::{Aead, KeyInit},
+    Aes256Gcm, Key, Nonce,
 };
 use argon2::{Algorithm, Argon2, Params, Version};
-use rand::{RngCore, rngs::OsRng};
+use rand::{rngs::OsRng, RngCore};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
 
@@ -84,12 +84,20 @@ pub struct StoreParams {
 
 impl StoreParams {
     pub fn production() -> Self {
-        Self { m_cost: 65_536, t_cost: 3, p_cost: 4 }
+        Self {
+            m_cost: 65_536,
+            t_cost: 3,
+            p_cost: 4,
+        }
     }
 
     /// Minimal cost — fast enough for unit tests, NOT safe for production.
     pub fn fast() -> Self {
-        Self { m_cost: 1024, t_cost: 1, p_cost: 1 }
+        Self {
+            m_cost: 1024,
+            t_cost: 1,
+            p_cost: 1,
+        }
     }
 }
 
@@ -99,16 +107,16 @@ impl StoreParams {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PersistedContact {
-    pub id:           String,
-    pub name:         String,
+    pub id: String,
+    pub name: String,
     pub last_seen_ts: u64,
-    pub online:       bool,
+    pub online: bool,
     /// Whether this contact is blocked.
     #[serde(default)]
-    pub blocked:      bool,
+    pub blocked: bool,
     /// Network address for this contact (e.g., "127.0.0.1:50051" or relay token).
     #[serde(default)]
-    pub address:      Option<String>,
+    pub address: Option<String>,
     /// Hex-encoded 2624-byte hybrid public key verified on the peer's FIRST
     /// authenticated session (trust-on-first-use). Subsequent sessions must
     /// present the same identity or they are rejected.
@@ -122,20 +130,20 @@ pub struct PersistedContact {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PersistedMessage {
-    pub id:           String,
-    pub contact_id:   String,
-    pub outbound:     bool,
+    pub id: String,
+    pub contact_id: String,
+    pub outbound: bool,
     pub content_type: String,
-    pub text:         String,
-    pub file_name:    String,
-    pub file_size:    u64,
-    pub file_xferd:   u64,
-    pub file_mime:    String,
+    pub text: String,
+    pub file_name: String,
+    pub file_size: u64,
+    pub file_xferd: u64,
+    pub file_mime: String,
     pub timestamp_ts: u64,
-    pub status:       String,
+    pub status: String,
     /// Group-thread messages carry the group id + actual author.
     #[serde(default)]
-    pub group_id:  Option<String>,
+    pub group_id: Option<String>,
     #[serde(default)]
     pub sender_pk: String,
     /// Id of the message this one quotes (reply).
@@ -149,65 +157,65 @@ pub struct PersistedMessage {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PersistedGroupMember {
     pub public_key: String,
-    pub role:       u8,
+    pub role: u8,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PersistedGroup {
-    pub id:         String,
-    pub name:       String,
-    pub owner:      String,
-    pub members:    Vec<PersistedGroupMember>,
+    pub id: String,
+    pub name: String,
+    pub owner: String,
+    pub members: Vec<PersistedGroupMember>,
     pub created_at: u64,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PersistedTransfer {
-    pub id:           String,
+    pub id: String,
     pub contact_name: String,
-    pub file_name:    String,
-    pub size_bytes:   u64,
-    pub xferd_bytes:  u64,
-    pub outbound:     bool,
+    pub file_name: String,
+    pub size_bytes: u64,
+    pub xferd_bytes: u64,
+    pub outbound: bool,
     pub lanes_active: u32,
-    pub bps:          u64,
+    pub bps: u64,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PersistedUserData {
     /// Bump when the schema changes (current: 2).
-    pub version:               u32,
-    pub display_name:          String,
+    pub version: u32,
+    pub display_name: String,
     /// Hex-encoded 32-byte Ed25519 verifying key.
-    pub public_key_hex:        String,
+    pub public_key_hex: String,
     /// Hex-encoded 2624-byte hybrid public key: `ed25519_pk ‖ ml_dsa_87_pk`.
     /// Empty on records written before the quantum-resistant identity upgrade.
     #[serde(default)]
     pub hybrid_public_key_hex: String,
-    pub recovery_phrase:       String,
-    pub contacts:              Vec<PersistedContact>,
+    pub recovery_phrase: String,
+    pub contacts: Vec<PersistedContact>,
     /// contact_id → messages
-    pub messages:              HashMap<String, Vec<PersistedMessage>>,
+    pub messages: HashMap<String, Vec<PersistedMessage>>,
     /// group_id → group
     #[serde(default)]
-    pub groups:                HashMap<String, PersistedGroup>,
+    pub groups: HashMap<String, PersistedGroup>,
     /// File transfers
     #[serde(default)]
-    pub transfers:             Vec<PersistedTransfer>,
-    pub settings:              HashMap<String, String>,
-    pub next_id:               u64,
-    pub created_at:            u64,
-    pub last_modified:         u64,
+    pub transfers: Vec<PersistedTransfer>,
+    pub settings: HashMap<String, String>,
+    pub next_id: u64,
+    pub created_at: u64,
+    pub last_modified: u64,
 }
 
 // ---------------------------------------------------------------------------
 // File-format constants
 // ---------------------------------------------------------------------------
 
-const MAGIC:     &[u8; 4] = b"TDMN";
-const SALT_LEN:  usize    = 16;
-const NONCE_LEN: usize    = 12;
-const KEY_LEN:   usize    = 32;
+const MAGIC: &[u8; 4] = b"TDMN";
+const SALT_LEN: usize = 16;
+const NONCE_LEN: usize = 12;
+const KEY_LEN: usize = 32;
 
 const HDR_LEN: usize = 4 + SALT_LEN + NONCE_LEN; // 32 bytes total
 
@@ -215,7 +223,11 @@ const HDR_LEN: usize = 4 + SALT_LEN + NONCE_LEN; // 32 bytes total
 // Core crypto helpers
 // ---------------------------------------------------------------------------
 
-fn derive_key(phrase: &str, salt: &[u8], params: &StoreParams) -> Result<Zeroizing<[u8; KEY_LEN]>, StoreError> {
+fn derive_key(
+    phrase: &str,
+    salt: &[u8],
+    params: &StoreParams,
+) -> Result<Zeroizing<[u8; KEY_LEN]>, StoreError> {
     let argon2_params = Params::new(params.m_cost, params.t_cost, params.p_cost, Some(KEY_LEN))
         .map_err(|e| StoreError::Kdf(e.to_string()))?;
     let argon2 = Argon2::new(Algorithm::Argon2id, Version::V0x13, argon2_params);
@@ -226,21 +238,28 @@ fn derive_key(phrase: &str, salt: &[u8], params: &StoreParams) -> Result<Zeroizi
     Ok(key)
 }
 
-fn encrypt(key: &[u8; KEY_LEN], plaintext: &[u8]) -> Result<(Vec<u8>, [u8; NONCE_LEN]), StoreError> {
+fn encrypt(
+    key: &[u8; KEY_LEN],
+    plaintext: &[u8],
+) -> Result<(Vec<u8>, [u8; NONCE_LEN]), StoreError> {
     let mut nonce_bytes = [0u8; NONCE_LEN];
     OsRng.fill_bytes(&mut nonce_bytes);
 
     let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
-    let nonce  = Nonce::from_slice(&nonce_bytes);
+    let nonce = Nonce::from_slice(&nonce_bytes);
     let ciphertext = cipher
         .encrypt(nonce, plaintext)
         .map_err(|_| StoreError::DecryptionFailed)?;
     Ok((ciphertext, nonce_bytes))
 }
 
-fn decrypt(key: &[u8; KEY_LEN], nonce_bytes: &[u8; NONCE_LEN], ciphertext: &[u8]) -> Result<Vec<u8>, StoreError> {
+fn decrypt(
+    key: &[u8; KEY_LEN],
+    nonce_bytes: &[u8; NONCE_LEN],
+    ciphertext: &[u8],
+) -> Result<Vec<u8>, StoreError> {
     let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
-    let nonce  = Nonce::from_slice(nonce_bytes);
+    let nonce = Nonce::from_slice(nonce_bytes);
     cipher
         .decrypt(nonce, ciphertext)
         .map_err(|_| StoreError::DecryptionFailed)
@@ -260,7 +279,7 @@ pub fn default_store_path() -> Result<PathBuf, StoreError> {
         Some(d) => PathBuf::from(d),
         None => dirs::data_local_dir().ok_or(StoreError::NoDataDir)?,
     };
-    let dir  = base.join("transferdaemon");
+    let dir = base.join("transferdaemon");
     fs::create_dir_all(&dir)?;
     Ok(dir.join("user_data.enc"))
 }
@@ -270,7 +289,12 @@ pub fn default_store_path() -> Result<PathBuf, StoreError> {
 /// If the file already exists, its salt is reused so the same phrase always
 /// produces the same key.  If it does not exist, a fresh random salt is
 /// generated and embedded in the new file.
-pub fn save(path: &Path, phrase: &str, data: &PersistedUserData, params: &StoreParams) -> Result<(), StoreError> {
+pub fn save(
+    path: &Path,
+    phrase: &str,
+    data: &PersistedUserData,
+    params: &StoreParams,
+) -> Result<(), StoreError> {
     let creds = StoreCredentials::derive(path, phrase, params)?;
     save_with_key(path, &creds, data)
 }
@@ -295,7 +319,9 @@ impl StoreCredentials {
         let salt: [u8; SALT_LEN] = if path.exists() {
             let existing = fs::read(path)?;
             if existing.len() >= HDR_LEN && &existing[..4] == MAGIC {
-                existing[4..4 + SALT_LEN].try_into().unwrap_or_else(|_| fresh_salt())
+                existing[4..4 + SALT_LEN]
+                    .try_into()
+                    .unwrap_or_else(|_| fresh_salt())
             } else {
                 fresh_salt()
             }
@@ -307,16 +333,22 @@ impl StoreCredentials {
     }
 
     /// The derived AES-256 key (zeroized on drop).
-    pub fn key(&self) -> &[u8; KEY_LEN] { &self.key }
+    pub fn key(&self) -> &[u8; KEY_LEN] {
+        &self.key
+    }
 }
 
 /// Encrypt `data` with already-derived credentials and write to `path`.
 ///
 /// Unlike [`save`], this never re-runs Argon2 — suitable for the daemon's
 /// write-through persistence hot path.
-pub fn save_with_key(path: &Path, creds: &StoreCredentials, data: &PersistedUserData) -> Result<(), StoreError> {
-    let plaintext = bincode::serialize(data)
-        .map_err(|e| StoreError::Serialisation(e.to_string()))?;
+pub fn save_with_key(
+    path: &Path,
+    creds: &StoreCredentials,
+    data: &PersistedUserData,
+) -> Result<(), StoreError> {
+    let plaintext =
+        bincode::serialize(data).map_err(|e| StoreError::Serialisation(e.to_string()))?;
     let (ciphertext, nonce) = encrypt(creds.key(), &plaintext)?;
 
     // Build the file: MAGIC || SALT || NONCE || CIPHERTEXT
@@ -337,7 +369,11 @@ pub fn save_with_key(path: &Path, creds: &StoreCredentials, data: &PersistedUser
 /// Decrypt and deserialise user data from `path` using a key derived from `phrase`.
 ///
 /// Returns [`StoreError::DecryptionFailed`] if the phrase is wrong.
-pub fn load(path: &Path, phrase: &str, params: &StoreParams) -> Result<PersistedUserData, StoreError> {
+pub fn load(
+    path: &Path,
+    phrase: &str,
+    params: &StoreParams,
+) -> Result<PersistedUserData, StoreError> {
     let raw = fs::read(path)?;
 
     if raw.len() < HDR_LEN {
@@ -349,15 +385,19 @@ pub fn load(path: &Path, phrase: &str, params: &StoreParams) -> Result<Persisted
 
     // Lengths are guaranteed by the `HDR_LEN` check above; these slices are
     // exactly SALT_LEN and NONCE_LEN bytes.
-    let salt:  [u8; SALT_LEN]  = raw[4..4 + SALT_LEN].try_into().expect("salt length verified");
-    let nonce: [u8; NONCE_LEN] = raw[4 + SALT_LEN..HDR_LEN].try_into().expect("nonce length verified");
+    let salt: [u8; SALT_LEN] = raw[4..4 + SALT_LEN]
+        .try_into()
+        .expect("salt length verified");
+    let nonce: [u8; NONCE_LEN] = raw[4 + SALT_LEN..HDR_LEN]
+        .try_into()
+        .expect("nonce length verified");
     let ciphertext = &raw[HDR_LEN..];
 
-    let key       = derive_key(phrase, &salt, params)?;
+    let key = derive_key(phrase, &salt, params)?;
     let plaintext = decrypt(&key, &nonce, ciphertext)?;
 
-    let data: PersistedUserData = bincode::deserialize(&plaintext)
-        .map_err(|e| StoreError::Serialisation(e.to_string()))?;
+    let data: PersistedUserData =
+        bincode::deserialize(&plaintext).map_err(|e| StoreError::Serialisation(e.to_string()))?;
 
     Ok(data)
 }
@@ -392,31 +432,34 @@ mod tests {
 
     fn test_data() -> PersistedUserData {
         PersistedUserData {
-            version:               2,
-            display_name:          "Alice".into(),
-            public_key_hex:        "abcd".repeat(16),
+            version: 2,
+            display_name: "Alice".into(),
+            public_key_hex: "abcd".repeat(16),
             hybrid_public_key_hex: "ef01".repeat(656), // 2624 bytes hex = 5248 chars
-            recovery_phrase:       "word ".repeat(12).trim().into(),
+            recovery_phrase: "word ".repeat(12).trim().into(),
             contacts: vec![PersistedContact {
-                id:           "bob-key".into(),
-                name:         "Bob".into(),
+                id: "bob-key".into(),
+                name: "Bob".into(),
                 last_seen_ts: 1_000,
-                online:       false,
-                blocked:      false,
-                address:      None,
+                online: false,
+                blocked: false,
+                address: None,
                 hybrid_public_key: None,
-                limits:      None,
+                limits: None,
             }],
             messages: {
                 let mut m = HashMap::new();
-                m.insert("bob-key".into(), vec![PersistedMessage {
-                    id:           "msg-1".into(),
-                    contact_id:   "bob-key".into(),
-                    outbound:     true,
-                    content_type: "text".into(),
-                    text:         "hello".into(),
-                    ..Default::default()
-                }]);
+                m.insert(
+                    "bob-key".into(),
+                    vec![PersistedMessage {
+                        id: "msg-1".into(),
+                        contact_id: "bob-key".into(),
+                        outbound: true,
+                        content_type: "text".into(),
+                        text: "hello".into(),
+                        ..Default::default()
+                    }],
+                );
                 m
             },
             groups: HashMap::new(),
@@ -426,8 +469,8 @@ mod tests {
                 s.insert("theme".into(), "dark".into());
                 s
             },
-            next_id:       3,
-            created_at:    1_000,
+            next_id: 3,
+            created_at: 1_000,
             last_modified: 2_000,
         }
     }
@@ -443,7 +486,7 @@ mod tests {
         assert!(file_exists(&path));
 
         let loaded = load(&path, "correct phrase", &params).unwrap();
-        assert_eq!(loaded.display_name,   data.display_name);
+        assert_eq!(loaded.display_name, data.display_name);
         assert_eq!(loaded.public_key_hex, data.public_key_hex);
         assert_eq!(loaded.contacts.len(), 1);
         assert_eq!(loaded.contacts[0].name, "Bob");

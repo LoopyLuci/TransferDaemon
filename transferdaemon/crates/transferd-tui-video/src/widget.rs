@@ -106,11 +106,18 @@ impl VideoCallOverlay {
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::Green))
-            .title(Span::styled(title, Style::default().fg(Color::Green).add_modifier(Modifier::BOLD)));
+            .title(Span::styled(
+                title,
+                Style::default()
+                    .fg(Color::Green)
+                    .add_modifier(Modifier::BOLD),
+            ));
         let inner = block.inner(area);
         block.render_in_buffer(area, buf);
 
-        if inner.width < 2 || inner.height < 2 { return; }
+        if inner.width < 2 || inner.height < 2 {
+            return;
+        }
 
         let Some(ref frame) = self.last_frame else {
             // No frame yet — show a "waiting" message.
@@ -122,9 +129,10 @@ impl VideoCallOverlay {
             let y = inner.y + inner.height / 2;
             for (i, ch) in "  waiting for video…".chars().enumerate() {
                 let cx = x + i as u16;
-                if cx >= inner.x + inner.width { break; }
-                buf.get_mut(cx, y).set_char(ch)
-                    .set_fg(Color::DarkGray);
+                if cx >= inner.x + inner.width {
+                    break;
+                }
+                buf.get_mut(cx, y).set_char(ch).set_fg(Color::DarkGray);
             }
             let _ = msg;
             return;
@@ -140,12 +148,16 @@ impl VideoCallOverlay {
             TerminalGraphics::Kitty => {
                 // Fill area with a colored placeholder so ratatui doesn't overdraw.
                 fill_placeholder(inner, buf, Color::DarkGray, '▓');
-                let seq = self.kitty.render_to_string(frame, inner.width, inner.height);
+                let seq = self
+                    .kitty
+                    .render_to_string(frame, inner.width, inner.height);
                 self.pending_direct = Some((inner, seq));
             }
             TerminalGraphics::Sixel => {
                 fill_placeholder(inner, buf, Color::DarkGray, '▒');
-                let seq = self.sixel.render_to_string(frame, inner.width, inner.height);
+                let seq = self
+                    .sixel
+                    .render_to_string(frame, inner.width, inner.height);
                 self.pending_direct = Some((inner, seq));
             }
         }
@@ -164,16 +176,16 @@ impl VideoCallOverlay {
             // Color bars: 8 vertical stripes, cycling hue with a scrolling
             // horizontal wave for frame_idx animation.
             let stripe = (x * 8 / width) as u8;
-            let wave   = (((x + frame_idx * 2) % width) as f32 / width as f32
-                * std::f32::consts::TAU).sin();
+            let wave =
+                (((x + frame_idx * 2) % width) as f32 / width as f32 * std::f32::consts::TAU).sin();
             let bright = ((y as f32 / height as f32 + wave * 0.1) * 255.0) as u8;
             let (r, g, b) = match stripe {
-                0 => (bright, 0,      0),
+                0 => (bright, 0, 0),
                 1 => (bright, bright, 0),
-                2 => (0,      bright, 0),
-                3 => (0,      bright, bright),
-                4 => (0,      0,      bright),
-                5 => (bright, 0,      bright),
+                2 => (0, bright, 0),
+                3 => (0, bright, bright),
+                4 => (0, 0, bright),
+                5 => (bright, 0, bright),
                 6 => (bright, bright, bright),
                 _ => (bright / 2, bright / 2, bright / 2),
             };

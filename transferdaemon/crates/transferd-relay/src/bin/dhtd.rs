@@ -15,7 +15,9 @@ use std::net::SocketAddr;
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
     let bind = std::env::var("DHTD_BIND").unwrap_or_else(|_| "0.0.0.0:7901".to_owned());
-    let advertised = std::env::var("DHTD_ADVERTISE").ok().and_then(|s| s.parse::<SocketAddr>().ok());
+    let advertised = std::env::var("DHTD_ADVERTISE")
+        .ok()
+        .and_then(|s| s.parse::<SocketAddr>().ok());
 
     let mut id = [0u8; 32];
     rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut id);
@@ -23,7 +25,9 @@ async fn main() -> std::io::Result<()> {
     let node = transferd_relay::DhtNode::start_with_advertised(&bind, id, advertised).await?;
     println!(
         "dhtd: listening on {bind} (advertised {})",
-        advertised.map(|a| a.to_string()).unwrap_or_else(|| bind.clone())
+        advertised
+            .map(|a| a.to_string())
+            .unwrap_or_else(|| bind.clone())
     );
     println!("dhtd: node id {}", hex(&id[..4]));
     println!("dhtd: reachable at {}", node.addr());

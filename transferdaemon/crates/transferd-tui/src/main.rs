@@ -52,15 +52,23 @@ struct Options {
 }
 
 fn options() -> Result<Options, String> {
-    let mut o = Options { headless: false, size: (120, 40) };
+    let mut o = Options {
+        headless: false,
+        size: (120, 40),
+    };
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
             "--headless" => o.headless = true,
             "--size" => {
                 let v = args.next().ok_or("--size needs WxH")?;
-                let (w, h) = v.split_once(['x', 'X']).ok_or("--size is WxH, e.g. 120x40")?;
-                o.size = (w.parse().map_err(|_| "bad width")?, h.parse().map_err(|_| "bad height")?);
+                let (w, h) = v
+                    .split_once(['x', 'X'])
+                    .ok_or("--size is WxH, e.g. 120x40")?;
+                o.size = (
+                    w.parse().map_err(|_| "bad width")?,
+                    h.parse().map_err(|_| "bad height")?,
+                );
                 if o.size.0 < 40 || o.size.1 < 12 {
                     return Err("the screen must be at least 40x12".into());
                 }
@@ -81,19 +89,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             std::process::exit(if msg == USAGE { 0 } else { 2 });
         }
     };
-    let addr = std::env::var("TRANSFERD_ADDR")
-        .unwrap_or_else(|_| "http://127.0.0.1:50051".into());
+    let addr = std::env::var("TRANSFERD_ADDR").unwrap_or_else(|_| "http://127.0.0.1:50051".into());
 
     let (daemon, daemon_live, live_addr): (Arc<dyn daemon::DaemonApi>, bool, Option<String>) =
         match GrpcDaemon::try_connect(&addr).await {
             Some(g) => (Arc::new(g), true, Some(addr.clone())),
-            None    => (Arc::new(MockDaemon::new()), false, None),
+            None => (Arc::new(MockDaemon::new()), false, None),
         };
 
     let mut app = App::new(daemon, daemon_live, live_addr).await;
 
-    let control = !std::env::var("TRANSFERD_TUI_CONTROL").map(|v| v == "off" || v == "0").unwrap_or(false);
-    let jobs = if control || opts.headless { Some(automation::start(opts.headless)) } else { None };
+    let control = !std::env::var("TRANSFERD_TUI_CONTROL")
+        .map(|v| v == "off" || v == "0")
+        .unwrap_or(false);
+    let jobs = if control || opts.headless {
+        Some(automation::start(opts.headless))
+    } else {
+        None
+    };
 
     if opts.headless {
         let mut terminal = Terminal::new(TestBackend::new(opts.size.0, opts.size.1))?;
@@ -111,11 +124,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // ── Event reader thread ──────────────────────────────────────────────────
     let (ev_tx, ev_rx) = tokio::sync::mpsc::channel::<crossterm::event::Event>(64);
-    tokio::task::spawn_blocking(move || {
-        loop {
-            if crossterm::event::poll(Duration::from_millis(50)).unwrap_or(false) {
-                if let Ok(ev) = crossterm::event::read() {
-                    if ev_tx.blocking_send(ev).is_err() { break; }
+    tokio::task::spawn_blocking(move || loop {
+        if crossterm::event::poll(Duration::from_millis(50)).unwrap_or(false) {
+            if let Ok(ev) = crossterm::event::read() {
+                if ev_tx.blocking_send(ev).is_err() {
+                    break;
                 }
             }
         }
@@ -252,7 +265,9 @@ async fn handle_job<B: Backend + Resize>(
             let evs = if job.action == "key" {
                 automation::key_events(args.get("keys").and_then(Value::as_str).unwrap_or_default())
             } else {
-                Ok(automation::text_events(args.get("text").and_then(Value::as_str).unwrap_or_default()))
+                Ok(automation::text_events(
+                    args.get("text").and_then(Value::as_str).unwrap_or_default(),
+                ))
             };
             match evs {
                 Ok(evs) => {
@@ -264,13 +279,22 @@ async fn handle_job<B: Backend + Resize>(
                     // Let background work the keys started (sends, loads) land before answering.
                     app.tick().await;
                     let text = redraw(terminal, app);
-                    (Ok(json!({"state": automation::state(app, size, headless), "screen": text})), false)
+                    (
+                        Ok(
+                            json!({"state": automation::state(app, size, headless), "screen": text}),
+                        ),
+                        false,
+                    )
                 }
                 Err(e) => (Err(e), false),
             }
         }
         "navigate" => {
-            let to = args.get("to").and_then(Value::as_str).unwrap_or_default().to_lowercase();
+            let to = args
+                .get("to")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_lowercase();
             match automation::TABS.iter().find(|(n, _)| *n == to) {
                 Some((_, tab)) => {
                     app.tab = *tab;
@@ -278,13 +302,35 @@ async fn handle_job<B: Backend + Resize>(
                     let text = redraw(terminal, app);
                     (Ok(json!({"tab": to, "screen": text})), false)
                 }
-                None => (Err(format!("no tab {to:?}; one of: {}", automation::TABS.iter().map(|(n, _)| *n).collect::<Vec<_>>().join(", "))), false),
+                None => (
+                    Err(format!(
+                        "no tab {to:?}; one of: {}",
+                        automation::TABS
+                            .iter()
+                            .map(|(n, _)| *n)
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )),
+                    false,
+                ),
             }
         }
         "resize" => {
-            let w = args.get("width").and_then(Value::as_u64).unwrap_or(120).clamp(40, 500) as u16;
-            let h = args.get("height").and_then(Value::as_u64).unwrap_or(40).clamp(12, 300) as u16;
-            match terminal.backend_mut().resize_to(w, h).and_then(|_| terminal.autoresize().map_err(|e| e.to_string())) {
+            let w = args
+                .get("width")
+                .and_then(Value::as_u64)
+                .unwrap_or(120)
+                .clamp(40, 500) as u16;
+            let h = args
+                .get("height")
+                .and_then(Value::as_u64)
+                .unwrap_or(40)
+                .clamp(12, 300) as u16;
+            match terminal
+                .backend_mut()
+                .resize_to(w, h)
+                .and_then(|_| terminal.autoresize().map_err(|e| e.to_string()))
+            {
                 Ok(()) => {
                     let text = redraw(terminal, app);
                     (Ok(json!({"size": [w, h], "screen": text})), false)

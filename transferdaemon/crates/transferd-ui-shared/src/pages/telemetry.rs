@@ -8,8 +8,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::design::{self, DesignTokens};
 use egui::{Color32, RichText, ScrollArea, Ui, Vec2};
 use tokio::sync::mpsc;
-use transferd_api::{Empty, TelemetryEventMsg, TelemetryServiceClient};
 use tonic::transport::Channel;
+use transferd_api::{Empty, TelemetryEventMsg, TelemetryServiceClient};
 
 const MAX_EVENTS: usize = 200;
 const SPARKLINE_SECS: usize = 60;
@@ -126,7 +126,10 @@ impl TelemetryPage {
                     self.ate_timestamps.push_back(a.ts);
                     let summary = format!(
                         "lane {}  gsn {}  rtt {:.2}ms  bw {}",
-                        a.selected_lane, a.gsn, a.rtt_ms, fmt_bps(a.bandwidth_bps),
+                        a.selected_lane,
+                        a.gsn,
+                        a.rtt_ms,
+                        fmt_bps(a.bandwidth_bps),
                     );
                     self.push_log(a.ts, EventKind::Ate, summary);
                 }
@@ -138,11 +141,7 @@ impl TelemetryPage {
         if self.events.len() >= MAX_EVENTS {
             self.events.pop_front();
         }
-        self.events.push_back(LogEntry {
-            ts,
-            kind,
-            summary,
-        });
+        self.events.push_back(LogEntry { ts, kind, summary });
     }
 
     pub fn show(&mut self, ui: &mut Ui, daemon_addr: Option<&str>, ctx: &egui::Context) {
@@ -197,24 +196,9 @@ impl TelemetryPage {
                             self.cpu_pct / 100.0,
                             "⚡",
                         ),
-                        (
-                            "Memory",
-                            fmt_kib(self.mem_rss_kb),
-                            -1.0_f32,
-                            "💾",
-                        ),
-                        (
-                            "Sessions",
-                            self.active_sessions.to_string(),
-                            -1.0_f32,
-                            "🔗",
-                        ),
-                        (
-                            "Uptime",
-                            fmt_duration(self.uptime_secs),
-                            -1.0_f32,
-                            "⏱",
-                        ),
+                        ("Memory", fmt_kib(self.mem_rss_kb), -1.0_f32, "💾"),
+                        ("Sessions", self.active_sessions.to_string(), -1.0_f32, "🔗"),
+                        ("Uptime", fmt_duration(self.uptime_secs), -1.0_f32, "⏱"),
                     ] {
                         design::card_frame(&tokens).show(ui, |ui| {
                             ui.set_width(card_w);
@@ -268,19 +252,11 @@ impl TelemetryPage {
                             let t = count as f32 / max_val;
                             let bar_h = t * rect.height();
                             let bar_rect = egui::Rect::from_min_size(
-                                egui::pos2(
-                                    rect.left() + i as f32 * bar_w,
-                                    rect.bottom() - bar_h,
-                                ),
+                                egui::pos2(rect.left() + i as f32 * bar_w, rect.bottom() - bar_h),
                                 Vec2::new((bar_w - 1.0).max(0.5), bar_h.max(0.5)),
                             );
-                            let color = Color32::from_rgb(
-                                0,
-                                (t * 180.0) as u8,
-                                255,
-                            );
-                            ui.painter()
-                                .rect_filled(bar_rect, 0.0, color);
+                            let color = Color32::from_rgb(0, (t * 180.0) as u8, 255);
+                            ui.painter().rect_filled(bar_rect, 0.0, color);
                         }
                     }
                 });
@@ -308,12 +284,7 @@ impl TelemetryPage {
                                 .monospace(),
                         );
                         ui.add_space(tokens.spacing.xxs);
-                        ui.label(
-                            RichText::new(tag)
-                                .color(tag_color)
-                                .size(11.0)
-                                .monospace(),
-                        );
+                        ui.label(RichText::new(tag).color(tag_color).size(11.0).monospace());
                         ui.add_space(tokens.spacing.xxs);
                         ui.label(
                             RichText::new(&entry.summary)

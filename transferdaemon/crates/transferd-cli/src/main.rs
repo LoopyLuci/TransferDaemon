@@ -115,7 +115,9 @@ fn pretty(v: &Value, indent: usize) -> String {
             .iter()
             .filter(|(k, _)| k.as_str() != "base64")
             .map(|(k, v)| match v {
-                Value::Object(_) | Value::Array(_) if !is_small(v) => format!("{pad}{k}:\n{}", pretty(v, indent + 1)),
+                Value::Object(_) | Value::Array(_) if !is_small(v) => {
+                    format!("{pad}{k}:\n{}", pretty(v, indent + 1))
+                }
                 _ => format!("{pad}{k}: {}", inline(v)),
             })
             .collect::<Vec<_>>()
@@ -123,7 +125,13 @@ fn pretty(v: &Value, indent: usize) -> String {
         Value::Array(a) if a.is_empty() => format!("{pad}(none)"),
         Value::Array(a) => a
             .iter()
-            .map(|x| if is_small(x) { format!("{pad}- {}", inline(x)) } else { format!("{pad}-\n{}", pretty(x, indent + 1)) })
+            .map(|x| {
+                if is_small(x) {
+                    format!("{pad}- {}", inline(x))
+                } else {
+                    format!("{pad}-\n{}", pretty(x, indent + 1))
+                }
+            })
             .collect::<Vec<_>>()
             .join("\n"),
         other => format!("{pad}{}", inline(other)),
@@ -132,8 +140,12 @@ fn pretty(v: &Value, indent: usize) -> String {
 
 fn is_small(v: &Value) -> bool {
     match v {
-        Value::Object(o) => o.values().all(|x| !x.is_object() && !x.is_array()) && inline(v).len() < 100,
-        Value::Array(a) => a.iter().all(|x| !x.is_object() && !x.is_array()) && inline(v).len() < 100,
+        Value::Object(o) => {
+            o.values().all(|x| !x.is_object() && !x.is_array()) && inline(v).len() < 100
+        }
+        Value::Array(a) => {
+            a.iter().all(|x| !x.is_object() && !x.is_array()) && inline(v).len() < 100
+        }
         _ => true,
     }
 }
@@ -159,8 +171,11 @@ fn parse_args(rest: &[String]) -> Result<Value, String> {
     }
     let mut m = Map::new();
     for kv in rest {
-        let (k, v) = kv.split_once('=').ok_or_else(|| format!("expected key=value, got {kv:?}"))?;
-        let parsed = serde_json::from_str::<Value>(v).unwrap_or_else(|_| Value::String(v.to_string()));
+        let (k, v) = kv
+            .split_once('=')
+            .ok_or_else(|| format!("expected key=value, got {kv:?}"))?;
+        let parsed =
+            serde_json::from_str::<Value>(v).unwrap_or_else(|_| Value::String(v.to_string()));
         let parts: Vec<&str> = k.split('.').collect();
         let mut cur = &mut m;
         for (i, p) in parts.iter().enumerate() {
@@ -189,15 +204,29 @@ fn contact_id(c: &Client, r: &str) -> Result<String, String> {
     let rl = r.to_lowercase();
     let hit = list
         .iter()
-        .find(|x| x["id"] == r || x["name"].as_str().map(str::to_lowercase).as_deref() == Some(rl.as_str()))
+        .find(|x| {
+            x["id"] == r
+                || x["name"].as_str().map(str::to_lowercase).as_deref() == Some(rl.as_str())
+        })
         .or_else(|| {
-            let prefix: Vec<&Value> = list.iter().filter(|x| x["id"].as_str().unwrap_or_default().starts_with(r)).collect();
+            let prefix: Vec<&Value> = list
+                .iter()
+                .filter(|x| x["id"].as_str().unwrap_or_default().starts_with(r))
+                .collect();
             (prefix.len() == 1).then(|| prefix[0])
         });
-    hit.and_then(|x| x["id"].as_str().map(str::to_string)).ok_or_else(|| {
-        let names: Vec<&str> = list.iter().filter_map(|x| x["name"].as_str()).collect();
-        format!("no contact {r:?} (contacts: {})", if names.is_empty() { "none".into() } else { names.join(", ") })
-    })
+    hit.and_then(|x| x["id"].as_str().map(str::to_string))
+        .ok_or_else(|| {
+            let names: Vec<&str> = list.iter().filter_map(|x| x["name"].as_str()).collect();
+            format!(
+                "no contact {r:?} (contacts: {})",
+                if names.is_empty() {
+                    "none".into()
+                } else {
+                    names.join(", ")
+                }
+            )
+        })
 }
 
 fn group_id(c: &Client, r: &str) -> Result<String, String> {
@@ -208,14 +237,19 @@ fn group_id(c: &Client, r: &str) -> Result<String, String> {
         .cloned()
         .unwrap_or_default()
         .iter()
-        .find(|g| g["group_id"] == r || g["name"].as_str().map(str::to_lowercase).as_deref() == Some(rl.as_str()))
+        .find(|g| {
+            g["group_id"] == r
+                || g["name"].as_str().map(str::to_lowercase).as_deref() == Some(rl.as_str())
+        })
         .and_then(|g| g["group_id"].as_str().map(str::to_string))
         .ok_or_else(|| format!("no group {r:?}"))
 }
 
 fn sibling(name: &str) -> Option<std::path::PathBuf> {
     let exe = std::env::current_exe().ok()?;
-    let p = exe.parent()?.join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
+    let p = exe
+        .parent()?
+        .join(format!("{name}{}", std::env::consts::EXE_SUFFIX));
     p.is_file().then_some(p)
 }
 
@@ -227,7 +261,9 @@ fn daemon_start(wait: f64) -> Result<Value, String> {
     }
     let exe = sibling("transferd").ok_or("transferd is not next to transferd-cli")?;
     let mut cmd = std::process::Command::new(exe);
-    cmd.stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+    cmd.stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt as _;
@@ -243,11 +279,17 @@ fn daemon_start(wait: f64) -> Result<Value, String> {
             }
         }
     }
-    Err(format!("transferd (pid {}) did not come up in {wait}s", child.id()))
+    Err(format!(
+        "transferd (pid {}) did not come up in {wait}s",
+        child.id()
+    ))
 }
 
 fn mcp_stdio(mode: mcp::Mode) -> Result<(), String> {
-    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| e.to_string())?;
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| e.to_string())?;
     let stdin = std::io::stdin();
     let mut stdout = std::io::stdout();
     let mut ops: Option<Vec<Value>> = None;
@@ -283,7 +325,10 @@ fn mcp_stdio(mode: mcp::Mode) -> Result<(), String> {
 }
 
 fn flag_value(rest: &[String], flag: &str) -> Option<String> {
-    rest.iter().position(|a| a == flag).and_then(|i| rest.get(i + 1)).cloned()
+    rest.iter()
+        .position(|a| a == flag)
+        .and_then(|i| rest.get(i + 1))
+        .cloned()
 }
 
 /// `rest` without `flag` and the value after it.
@@ -310,14 +355,22 @@ fn run(args: Vec<String>, out: &Out) -> Result<Option<Value>, String> {
         return Ok(None);
     };
     let rest = &args[1..];
-    let need = |n: usize, usage: &str| if rest.len() < n { Err(format!("usage: transferd-cli {usage}")) } else { Ok(()) };
+    let need = |n: usize, usage: &str| {
+        if rest.len() < n {
+            Err(format!("usage: transferd-cli {usage}"))
+        } else {
+            Ok(())
+        }
+    };
     match cmd {
         "help" | "-h" | "--help" => {
             println!("{HELP}");
             Ok(None)
         }
         "mcp" => {
-            let mode = flag_value(rest, "--tools").map(|m| mcp::Mode::parse(&m)).unwrap_or(mcp::Mode::All);
+            let mode = flag_value(rest, "--tools")
+                .map(|m| mcp::Mode::parse(&m))
+                .unwrap_or(mcp::Mode::All);
             mcp_stdio(mode)?;
             Ok(None)
         }
@@ -330,9 +383,20 @@ fn run(args: Vec<String>, out: &Out) -> Result<Option<Value>, String> {
         }),
         "dns" => dns::run(rest).map(Some),
         "daemon" => match rest.first().map(String::as_str) {
-            Some("start") => daemon_start(flag_value(rest, "--wait").and_then(|w| w.parse().ok()).unwrap_or(60.0)).map(Some),
-            Some("stop") => Client::connect().and_then(|c| c.call("daemon.stop", json!({}))).map(Some).map_err(fail),
-            Some("status") | None => Client::connect().and_then(|c| c.call("daemon.status", json!({}))).map(Some).map_err(fail),
+            Some("start") => daemon_start(
+                flag_value(rest, "--wait")
+                    .and_then(|w| w.parse().ok())
+                    .unwrap_or(60.0),
+            )
+            .map(Some),
+            Some("stop") => Client::connect()
+                .and_then(|c| c.call("daemon.stop", json!({})))
+                .map(Some)
+                .map_err(fail),
+            Some("status") | None => Client::connect()
+                .and_then(|c| c.call("daemon.status", json!({})))
+                .map(Some)
+                .map_err(fail),
             Some(other) => Err(format!("daemon start|stop|status, not {other}")),
         },
         _ => {
@@ -340,33 +404,54 @@ fn run(args: Vec<String>, out: &Out) -> Result<Option<Value>, String> {
             let call = |op: &str, a: Value| c.call(op, a).map(Some).map_err(fail);
             match cmd {
                 "status" => call("daemon.status", json!({})),
-                "id" => call("account.get_public_key_hex", json!({})).map(|v| v.map(|v| v["hex"].clone())),
-                "contacts" => call("contacts.get_contacts", json!({})).map(|v| v.map(|v| v["contacts"].clone())),
+                "id" => call("account.get_public_key_hex", json!({}))
+                    .map(|v| v.map(|v| v["hex"].clone())),
+                "contacts" => call("contacts.get_contacts", json!({}))
+                    .map(|v| v.map(|v| v["contacts"].clone())),
                 "add" => {
                     need(2, "add <public-key> <name> [address]")?;
-                    call("contacts.add_contact", json!({"public_key": rest[0], "name": rest[1], "address": rest.get(2).cloned().unwrap_or_default()}))
+                    call(
+                        "contacts.add_contact",
+                        json!({"public_key": rest[0], "name": rest[1], "address": rest.get(2).cloned().unwrap_or_default()}),
+                    )
                 }
                 "address" => {
                     need(2, "address <contact> <host:port | ->")?;
                     let id = contact_id(&c, &rest[0])?;
-                    let addr = if rest[1] == "-" { String::new() } else { rest[1].clone() };
-                    call("contacts.set_contact_address", json!({"contact_id": id, "address": addr}))
+                    let addr = if rest[1] == "-" {
+                        String::new()
+                    } else {
+                        rest[1].clone()
+                    };
+                    call(
+                        "contacts.set_contact_address",
+                        json!({"contact_id": id, "address": addr}),
+                    )
                 }
                 "send" => {
                     need(2, "send <contact> <text...>")?;
                     let id = contact_id(&c, &rest[0])?;
-                    call("messages.send_text", json!({"contact_id": id, "text": rest[1..].join(" ")}))
+                    call(
+                        "messages.send_text",
+                        json!({"contact_id": id, "text": rest[1..].join(" ")}),
+                    )
                 }
                 "send-file" => {
                     need(2, "send-file <contact> <path>")?;
                     let id = contact_id(&c, &rest[0])?;
-                    call("transfers.send_file", json!({"contact_id": id, "file_path": rest[1]}))
+                    call(
+                        "transfers.send_file",
+                        json!({"contact_id": id, "file_path": rest[1]}),
+                    )
                 }
                 "messages" => {
                     need(1, "messages <contact> [query]")?;
                     let id = contact_id(&c, &rest[0])?;
                     let v = if rest.len() > 1 {
-                        c.call("messages.search_messages", json!({"contact_id": id, "query": rest[1..].join(" ")}))
+                        c.call(
+                            "messages.search_messages",
+                            json!({"contact_id": id, "query": rest[1..].join(" ")}),
+                        )
                     } else {
                         c.call("messages.get_messages", json!({"contact_id": id}))
                     }
@@ -376,23 +461,37 @@ fn run(args: Vec<String>, out: &Out) -> Result<Option<Value>, String> {
                     }
                     for m in v["messages"].as_array().cloned().unwrap_or_default() {
                         let who = if m["outbound"] == true { "you" } else { "them" };
-                        let body = if m["content_type"] == "file" { format!("[file] {}", inline(&m["file_name"])) } else { inline(&m["text"]) };
+                        let body = if m["content_type"] == "file" {
+                            format!("[file] {}", inline(&m["file_name"]))
+                        } else {
+                            inline(&m["text"])
+                        };
                         println!("{who:>4}  {body}  [{}]", inline(&m["status"]));
                     }
                     Ok(None)
                 }
-                "transfers" => call("transfers.get_transfers", json!({})).map(|v| v.map(|v| v["transfers"].clone())),
+                "transfers" => call("transfers.get_transfers", json!({}))
+                    .map(|v| v.map(|v| v["transfers"].clone())),
                 "pause" | "resume" | "cancel" => {
                     need(1, &format!("{cmd} <transfer-id>"))?;
-                    call(&format!("transfers.{cmd}_transfer"), json!({"transfer_id": rest[0]}))
+                    call(
+                        &format!("transfers.{cmd}_transfer"),
+                        json!({"transfer_id": rest[0]}),
+                    )
                 }
-                "groups" => call("groups.get_groups", json!({})).map(|v| v.map(|v| v["groups"].clone())),
+                "groups" => {
+                    call("groups.get_groups", json!({})).map(|v| v.map(|v| v["groups"].clone()))
+                }
                 "group-send" => {
                     need(2, "group-send <group> <text...>")?;
                     let id = group_id(&c, &rest[0])?;
-                    call("groups.send_group_text", json!({"group_id": id, "text": rest[1..].join(" ")}))
+                    call(
+                        "groups.send_group_text",
+                        json!({"group_id": id, "text": rest[1..].join(" ")}),
+                    )
                 }
-                "connections" => call("connections.list_connections", json!({})).map(|v| v.map(|v| v["connections"].clone())),
+                "connections" => call("connections.list_connections", json!({}))
+                    .map(|v| v.map(|v| v["connections"].clone())),
                 "settings" => match rest.first().map(String::as_str) {
                     Some("get") => {
                         need(2, "settings get <key>")?;
@@ -400,7 +499,10 @@ fn run(args: Vec<String>, out: &Out) -> Result<Option<Value>, String> {
                     }
                     Some("set") => {
                         need(3, "settings set <key> <value>")?;
-                        call("settings.set_setting", json!({"key": rest[1], "value": rest[2..].join(" ")}))
+                        call(
+                            "settings.set_setting",
+                            json!({"key": rest[1], "value": rest[2..].join(" ")}),
+                        )
                     }
                     _ => Err("settings get <key> | settings set <key> <value>".into()),
                 },
@@ -410,18 +512,29 @@ fn run(args: Vec<String>, out: &Out) -> Result<Option<Value>, String> {
                 }
                 "audit" => {
                     let n: usize = rest.first().and_then(|s| s.parse().ok()).unwrap_or(30);
-                    c.get(&format!("/v1/audit?limit={n}")).map(Some).map_err(fail)
+                    c.get(&format!("/v1/audit?limit={n}"))
+                        .map(Some)
+                        .map_err(fail)
                 }
                 "ops" => {
                     let group = flag_value(rest, "--group");
-                    let words: Vec<String> = without_flag(rest, "--group").iter().map(|a| a.to_lowercase()).collect();
+                    let words: Vec<String> = without_flag(rest, "--group")
+                        .iter()
+                        .map(|a| a.to_lowercase())
+                        .collect();
                     let hits: Vec<Value> = c
                         .operations()
                         .map_err(fail)?
                         .into_iter()
-                        .filter(|o| group.as_ref().map(|g| o["group"] == g.as_str()).unwrap_or(true))
                         .filter(|o| {
-                            let hay = format!("{} {}", inline(&o["id"]), inline(&o["summary"])).to_lowercase();
+                            group
+                                .as_ref()
+                                .map(|g| o["group"] == g.as_str())
+                                .unwrap_or(true)
+                        })
+                        .filter(|o| {
+                            let hay = format!("{} {}", inline(&o["id"]), inline(&o["summary"]))
+                                .to_lowercase();
                             words.iter().all(|w| hay.contains(w.as_str()))
                         })
                         .collect();
@@ -429,7 +542,13 @@ fn run(args: Vec<String>, out: &Out) -> Result<Option<Value>, String> {
                         return Ok(Some(Value::Array(hits)));
                     }
                     for o in hits {
-                        let mark = if o["destructive"] == true { "!" } else if o["mutating"] == true { "*" } else { " " };
+                        let mark = if o["destructive"] == true {
+                            "!"
+                        } else if o["mutating"] == true {
+                            "*"
+                        } else {
+                            " "
+                        };
                         println!("{mark} {:<36} {}", inline(&o["id"]), inline(&o["summary"]));
                     }
                     println!("\n  * changes something   ! cannot be undone");
@@ -437,7 +556,9 @@ fn run(args: Vec<String>, out: &Out) -> Result<Option<Value>, String> {
                 }
                 "op" => {
                     need(1, "op <id>")?;
-                    c.get(&format!("/v1/operations/{}", rest[0])).map(Some).map_err(fail)
+                    c.get(&format!("/v1/operations/{}", rest[0]))
+                        .map(Some)
+                        .map_err(fail)
                 }
                 "call" => {
                     need(1, "call <id> [JSON | key=value...]")?;
@@ -447,14 +568,20 @@ fn run(args: Vec<String>, out: &Out) -> Result<Option<Value>, String> {
                     need(1, &format!("{cmd} <action> [JSON | key=value...]"))?;
                     let out_file = flag_value(rest, "--out");
                     let plain = without_flag(&rest[1..], "--out");
-                    let v = c.call(&format!("{cmd}.{}", rest[0]), parse_args(&plain)?).map_err(fail)?;
+                    let v = c
+                        .call(&format!("{cmd}.{}", rest[0]), parse_args(&plain)?)
+                        .map_err(fail)?;
                     if cmd == "tui" && rest[0] == "screen" && !out.json {
                         println!("{}", v["text"].as_str().unwrap_or_default());
                         return Ok(None);
                     }
-                    if let (Some(path), Some(b64)) = (out_file, v.get("base64").and_then(Value::as_str)) {
+                    if let (Some(path), Some(b64)) =
+                        (out_file, v.get("base64").and_then(Value::as_str))
+                    {
                         std::fs::write(&path, decode_base64(b64)?).map_err(|e| e.to_string())?;
-                        return Ok(Some(json!({"saved": path, "width": v["width"], "height": v["height"]})));
+                        return Ok(Some(
+                            json!({"saved": path, "width": v["width"], "height": v["height"]}),
+                        ));
                     }
                     Ok(Some(v))
                 }
@@ -601,9 +728,21 @@ mod tests {
 
     #[test]
     fn key_values_become_arguments() {
-        let v = parse_args(&["target.text=Send".into(), "double=true".into(), "n=3".into(), "s=hi there".into()]).unwrap_or_default();
-        assert_eq!(v, json!({"target": {"text": "Send"}, "double": true, "n": 3, "s": "hi there"}));
-        assert_eq!(parse_args(&[r#"{"a": 1}"#.into()]).unwrap_or_default(), json!({"a": 1}));
+        let v = parse_args(&[
+            "target.text=Send".into(),
+            "double=true".into(),
+            "n=3".into(),
+            "s=hi there".into(),
+        ])
+        .unwrap_or_default();
+        assert_eq!(
+            v,
+            json!({"target": {"text": "Send"}, "double": true, "n": 3, "s": "hi there"})
+        );
+        assert_eq!(
+            parse_args(&[r#"{"a": 1}"#.into()]).unwrap_or_default(),
+            json!({"a": 1})
+        );
         assert!(parse_args(&["novalue".into()]).is_err());
     }
 
@@ -614,9 +753,15 @@ mod tests {
 
     #[test]
     fn flags_are_taken_out() {
-        let a: Vec<String> = ["x", "--out", "f.png", "y"].iter().map(|s| s.to_string()).collect();
+        let a: Vec<String> = ["x", "--out", "f.png", "y"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
         assert_eq!(flag_value(&a, "--out").as_deref(), Some("f.png"));
-        assert_eq!(without_flag(&a, "--out"), vec!["x".to_string(), "y".to_string()]);
+        assert_eq!(
+            without_flag(&a, "--out"),
+            vec!["x".to_string(), "y".to_string()]
+        );
     }
 
     #[test]

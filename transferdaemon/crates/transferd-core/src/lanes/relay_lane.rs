@@ -104,16 +104,27 @@ impl RelayLane {
 
 #[async_trait]
 impl TransportLane for RelayLane {
-    fn id(&self) -> u32 { self.id }
-    fn metrics(&self) -> Arc<LaneMetrics> { self.metrics.clone() }
-    fn capacity(&self) -> usize { if self.alive.load(Ordering::Relaxed) { 64 } else { 0 } }
-    fn is_alive(&self) -> bool { self.alive.load(Ordering::Relaxed) }
+    fn id(&self) -> u32 {
+        self.id
+    }
+    fn metrics(&self) -> Arc<LaneMetrics> {
+        self.metrics.clone()
+    }
+    fn capacity(&self) -> usize {
+        if self.alive.load(Ordering::Relaxed) {
+            64
+        } else {
+            0
+        }
+    }
+    fn is_alive(&self) -> bool {
+        self.alive.load(Ordering::Relaxed)
+    }
 
     async fn send(&self, chunk: Chunk) -> Result<(), TransportError> {
         // Serialize + pad the chunk plaintext to the next power-of-two grid.
         let wire = WireChunk::from(&chunk);
-        let raw = bincode::serialize(&wire)
-            .map_err(|_| TransportError::ProtocolViolation)?;
+        let raw = bincode::serialize(&wire).map_err(|_| TransportError::ProtocolViolation)?;
         let plaintext = pad_plaintext(&raw);
 
         let gsn = chunk.gsn.0;
@@ -172,9 +183,13 @@ async fn recv_task(
 ) {
     let mut buf = vec![0u8; 65536];
     while alive.load(Ordering::Relaxed) {
-        let Ok((len, _)) = socket.recv_from(&mut buf).await else { break };
+        let Ok((len, _)) = socket.recv_from(&mut buf).await else {
+            break;
+        };
         let frame = &buf[..len];
-        let Some((&tag, body)) = frame.split_first() else { continue };
+        let Some((&tag, body)) = frame.split_first() else {
+            continue;
+        };
         if tag != relayd::protocol::Tag::Ack as u8 {
             continue;
         }
@@ -193,8 +208,12 @@ async fn recv_task(
         if raw.len() < 1 + 32 + 28 {
             continue;
         }
-        let Ok(nonce) = <[u8; 12]>::try_from(&raw[33..45]) else { continue };
-        let Ok(gcm_tag) = <[u8; 16]>::try_from(&raw[45..61]) else { continue };
+        let Ok(nonce) = <[u8; 12]>::try_from(&raw[33..45]) else {
+            continue;
+        };
+        let Ok(gcm_tag) = <[u8; 16]>::try_from(&raw[45..61]) else {
+            continue;
+        };
         let mut ct = raw[61..].to_vec();
 
         let dec_result = {
@@ -207,8 +226,12 @@ async fn recv_task(
             continue;
         }
 
-        let Some(plaintext) = unpad_plaintext(&ct) else { continue };
-        let Ok(wire) = bincode::deserialize::<WireChunk>(&plaintext) else { continue };
+        let Some(plaintext) = unpad_plaintext(&ct) else {
+            continue;
+        };
+        let Ok(wire) = bincode::deserialize::<WireChunk>(&plaintext) else {
+            continue;
+        };
         let chunk = Chunk::from(wire);
 
         if tx.send(chunk).await.is_err() {
@@ -256,7 +279,11 @@ mod tests {
         for size in [1, 10, 28, 100, 512, 2000, 100_000] {
             let data: Vec<u8> = (0..size).map(|i| i as u8).collect();
             let padded = pad_plaintext(&data);
-            assert!(padded.len().is_power_of_two(), "len {} must be power of two", padded.len());
+            assert!(
+                padded.len().is_power_of_two(),
+                "len {} must be power of two",
+                padded.len()
+            );
             assert_eq!(unpad_plaintext(&padded).unwrap(), data);
         }
     }

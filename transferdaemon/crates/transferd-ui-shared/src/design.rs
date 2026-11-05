@@ -532,9 +532,9 @@ impl Animator {
 /// Window size breakpoints for responsive layout.
 #[derive(Clone)]
 pub struct Breakpoints {
-    pub compact: f32,    // < 600px  (phone portrait)
-    pub medium: f32,     // 600-900px (phone landscape / small tablet)
-    pub expanded: f32,   // > 900px  (tablet / desktop)
+    pub compact: f32,  // < 600px  (phone portrait)
+    pub medium: f32,   // 600-900px (phone landscape / small tablet)
+    pub expanded: f32, // > 900px  (tablet / desktop)
 }
 
 impl Default for Breakpoints {
@@ -714,7 +714,12 @@ impl UiPreferences {
 
     /// Load preferences from a `LocalDb`-backed settings map (already-read
     /// `get_setting` results). Missing keys keep their defaults.
-    pub fn from_settings(theme: Option<String>, accent: Option<String>, ui_scale: Option<f32>, font_scale: Option<f32>) -> Self {
+    pub fn from_settings(
+        theme: Option<String>,
+        accent: Option<String>,
+        ui_scale: Option<f32>,
+        font_scale: Option<f32>,
+    ) -> Self {
         let mut prefs = Self::default();
         if let Some(t) = theme.and_then(|s| theme_from_name(&s)) {
             prefs.theme = t;
@@ -855,7 +860,8 @@ pub fn apply_prefs(ctx: &egui::Context, prefs: &UiPreferences) {
     // Widget styling
     visuals.widgets.noninteractive.rounding = tokens.spacing.button_rounding.into();
     visuals.widgets.noninteractive.bg_fill = tokens.palette.surface;
-    visuals.widgets.noninteractive.fg_stroke = egui::Stroke::new(1.0_f32, tokens.palette.text_secondary);
+    visuals.widgets.noninteractive.fg_stroke =
+        egui::Stroke::new(1.0_f32, tokens.palette.text_secondary);
     visuals.widgets.noninteractive.bg_stroke = egui::Stroke::NONE;
 
     visuals.widgets.inactive.rounding = tokens.spacing.button_rounding.into();
@@ -939,7 +945,8 @@ pub fn font_definitions() -> egui::FontDefinitions {
     });
     let mut defs = egui::FontDefinitions::default();
     for (name, bytes) in fallbacks {
-        defs.font_data.insert(name.clone(), egui::FontData::from_owned(bytes.clone()));
+        defs.font_data
+            .insert(name.clone(), egui::FontData::from_owned(bytes.clone()));
         for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
             defs.families.entry(family).or_default().push(name.clone());
         }

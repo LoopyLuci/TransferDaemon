@@ -11,13 +11,13 @@
 mod daemon_thread;
 pub mod file_picker;
 pub mod grpc_bridge;
-pub mod notifications;
-pub mod share_bridge;
-#[cfg(target_os = "android")]
-mod keyboard_input;
 #[cfg(target_os = "ios")]
 pub mod ios_app;
+#[cfg(target_os = "android")]
+mod keyboard_input;
+pub mod notifications;
 pub mod platform;
+pub mod share_bridge;
 
 // ---------------------------------------------------------------------------
 // Android NativeActivity entry point

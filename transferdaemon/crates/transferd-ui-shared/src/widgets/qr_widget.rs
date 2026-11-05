@@ -29,18 +29,12 @@ impl QrWidget {
         match &self.texture {
             Some(tex) => {
                 // Draw QR code with a white background and rounded corners
-                let (rect, _) = ui.allocate_exact_size(Vec2::splat(size + 16.0), egui::Sense::hover());
-                let qr_rect = egui::Rect::from_center_size(
-                    rect.center(),
-                    Vec2::splat(size),
-                );
+                let (rect, _) =
+                    ui.allocate_exact_size(Vec2::splat(size + 16.0), egui::Sense::hover());
+                let qr_rect = egui::Rect::from_center_size(rect.center(), Vec2::splat(size));
 
                 // White background for QR code
-                ui.painter().rect_filled(
-                    qr_rect,
-                    8.0,
-                    Color32::WHITE,
-                );
+                ui.painter().rect_filled(qr_rect, 8.0, Color32::WHITE);
 
                 // QR code image
                 ui.painter().image(
@@ -51,10 +45,7 @@ impl QrWidget {
                 );
             }
             None => {
-                ui.label(
-                    egui::RichText::new("⚠ QR unavailable")
-                        .color(tokens.palette.error),
-                );
+                ui.label(egui::RichText::new("⚠ QR unavailable").color(tokens.palette.error));
             }
         }
     }
@@ -83,9 +74,5 @@ fn build_texture(ctx: &Context, data: &str, _tokens: &DesignTokens) -> Option<Te
         size: [side, side],
         pixels,
     };
-    Some(ctx.load_texture(
-        "qr-code",
-        img,
-        TextureOptions::NEAREST,
-    ))
+    Some(ctx.load_texture("qr-code", img, TextureOptions::NEAREST))
 }
