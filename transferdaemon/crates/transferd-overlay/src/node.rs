@@ -542,7 +542,7 @@ impl OverlayNode {
             if have == RouteKind::Relay || have == RouteKind::HolePunch {
                 for addr in node.known_direct(&node_id) {
                     let kind = classify_addr(&addr);
-                    if let Ok((link, _, _, _)) = lanes::dial_tcp(
+                    if let Ok((link, _, _, hybrid)) = lanes::dial_tcp(
                         node.next_link_id(),
                         kind,
                         &addr,
@@ -551,6 +551,11 @@ impl OverlayNode {
                     )
                     .await
                     {
+                        // The address must present the key the invite named, as on every other dial.
+                        if !node.admit_presented_key(&node_id, &hybrid) {
+                            link.mark_down();
+                            continue;
+                        }
                         node.attach(&node_id, link as Arc<dyn Link>, kind).await;
                         node.emit(OverlayEvent::new(
                             "route.change",

@@ -542,6 +542,74 @@ mod tests {
         );
     }
 
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_direct_address_presenting_another_key_is_not_added_as_a_route() {
+        let relay = a_relay().await;
+        // a and the impostor share their Ed25519 half, so they share a node id, and differ only in
+        // the post-quantum half. That is the case the fingerprint exists for: a classical key that
+        // has been broken, with no way to forge the rest.
+        let mut seed = [0u8; 64];
+        rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut seed);
+        let a = OverlayNode::start(crate::OverlayConfig {
+            relays: vec![relay.clone()],
+            ..crate::OverlayConfig::local(crate::NodeIdentity::from_seed(&seed, "a"))
+        })
+        .await
+        .expect("a node");
+        let mut impostor_seed = seed;
+        rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut impostor_seed[32..]);
+        let impostor = OverlayNode::start(crate::OverlayConfig {
+            listen: Some("127.0.0.1:0".parse().expect("an address")),
+            ..crate::OverlayConfig::local(crate::NodeIdentity::from_seed(
+                &impostor_seed,
+                "impostor",
+            ))
+        })
+        .await
+        .expect("a node");
+        let b = relayed_node("b", &relay).await;
+        assert_eq!(impostor.node_id(), a.node_id());
+
+        // a's invite publishes the impostor's address as a's direct address.
+        a.set_direct(
+            impostor
+                .listener_addr()
+                .expect("the impostor listens")
+                .to_string(),
+        );
+        b.invite_accept(&a.invite_create(600), None)
+            .expect("b pairs with a");
+        a.invite_accept(&b.invite_create(600), None)
+            .expect("a pairs with b");
+        // b dials a. Only the dialling node widens a session, so b is the one that would add the
+        // impostor's address as a route.
+        b.ensure_session(&a.node_id())
+            .await
+            .expect("b reaches a through the relay");
+
+        // b widens its session to the direct address. The impostor is refused, and no route is added.
+        let mut refused = false;
+        for _ in 0..100 {
+            if b.events()
+                .recent(200)
+                .iter()
+                .any(|event| event.kind == "peer.denied" && event.node_id == a.node_id())
+            {
+                refused = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        assert!(refused, "b refuses the impostor's address");
+        assert!(
+            !b.events()
+                .recent(200)
+                .iter()
+                .any(|event| event.kind == "route.change" && event.detail.ends_with("added")),
+            "no direct route is added"
+        );
+    }
+
     #[tokio::test]
     async fn every_published_operation_is_runnable_or_explicitly_about_the_network() {
         // The catalog must not drift from the dispatcher: anything published has to exist.
