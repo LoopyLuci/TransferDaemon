@@ -52,7 +52,7 @@ pub use events::{Audit, AuditRecord, EventLog, OverlayEvent};
 pub use identity::{Acl, ExposedService, Invite, NodeIdentity, NodeRecord, ServiceRate};
 pub use link::{Link, LinkRegistry, LinkTransport, RouteKind, RouteMetrics, RouteStats};
 pub use mux::{Mux, OutFrame, RecvSide, SendSide, StreamId, DEFAULT_WINDOW, MAX_FRAME};
-pub use node::{OverlayConfig, OverlayNode, ProxyAddrs};
+pub use node::{OverlayConfig, OverlayNode, PairedNode, ProxyAddrs};
 pub use protocol::{Frame, ServiceInfo, VERSION_CURRENT, VERSION_MIN};
 pub use relay::RelayHub;
 pub use session::{PeerInfo, SessionHandle};

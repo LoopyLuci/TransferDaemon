@@ -163,7 +163,7 @@ struct Inner {
     loads: parking_lot::Mutex<HashMap<String, usize>>,
     /// The nodes this node is paired with: it accepted their invite, or they accepted ours.
     /// `*paired` means these, never merely a node that opened a session.
-    paired: parking_lot::Mutex<std::collections::HashSet<String>>,
+    paired: parking_lot::Mutex<std::collections::BTreeMap<String, PairedNode>>,
     /// Nonces of the invites we accepted, by the node that issued them: presented in our hello.
     presented: parking_lot::Mutex<HashMap<String, [u8; 16]>>,
     /// Invites issued and not used yet: nonce -> expiry.
@@ -215,6 +215,26 @@ impl RateWindow {
     }
 }
 
+/// A node this node is paired with, as the overlay remembers the pairing. It does not say whether
+/// the node is reachable now: `overlay.peers` shows that.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PairedNode {
+    pub node_id: String,
+    /// The name this node is known by here.
+    pub name: String,
+    pub paired_at: u64,
+}
+
+impl From<&StoredNode> for PairedNode {
+    fn from(node: &StoredNode) -> Self {
+        Self {
+            node_id: node.node_id.clone(),
+            name: node.name.clone(),
+            paired_at: node.paired_at,
+        }
+    }
+}
+
 impl OverlayNode {
     /// Start a node: load its state, register with its relays, and start listening.
     pub async fn start(config: OverlayConfig) -> Result<Arc<Self>> {
@@ -241,7 +261,13 @@ impl OverlayNode {
                 next_link: std::sync::atomic::AtomicU32::new(1),
                 dialing: parking_lot::Mutex::new(HashMap::new()),
                 loads: parking_lot::Mutex::new(HashMap::new()),
-                paired: parking_lot::Mutex::new(state.nodes.keys().cloned().collect()),
+                paired: parking_lot::Mutex::new(
+                    state
+                        .nodes
+                        .values()
+                        .map(|n| (n.node_id.clone(), PairedNode::from(n)))
+                        .collect(),
+                ),
                 presented: parking_lot::Mutex::new(
                     state
                         .nodes
@@ -660,7 +686,7 @@ impl OverlayNode {
 
     /// The live session with a paired peer, when hole punching may be tried over it.
     fn punch_session(&self, peer: &str) -> Option<SessionHandle> {
-        if !self.inner.config.punch || !self.inner.paired.lock().contains(peer) {
+        if !self.inner.config.punch || !self.inner.paired.lock().contains_key(peer) {
             return None;
         }
         self.inner
@@ -1035,7 +1061,7 @@ impl OverlayNode {
         let Some(nonce) = protocol::HelloExt::decode(ext).pairing else {
             return;
         };
-        if self.inner.paired.lock().contains(peer) {
+        if self.inner.paired.lock().contains_key(peer) {
             return;
         }
         let valid = {
@@ -1048,12 +1074,20 @@ impl OverlayNode {
         if !valid {
             return;
         }
-        self.inner.paired.lock().insert(peer.to_string());
         let label = if name.trim().is_empty() {
             identity::short_name(peer)
         } else {
             name.trim().to_string()
         };
+        let paired_at = now_secs();
+        self.inner.paired.lock().insert(
+            peer.to_string(),
+            PairedNode {
+                node_id: peer.to_string(),
+                name: label.clone(),
+                paired_at,
+            },
+        );
         let mut state = self.load_state();
         state
             .nodes
@@ -1064,7 +1098,7 @@ impl OverlayNode {
                 hybrid_public_key: Vec::new(),
                 relays: Vec::new(),
                 direct: Vec::new(),
-                paired_at: now_secs(),
+                paired_at,
                 last_name: label.clone(),
                 pairing: String::new(),
             });
@@ -1129,7 +1163,7 @@ impl OverlayNode {
             refuse(self.clone(), "no such service");
             return;
         };
-        let paired = self.inner.paired.lock().contains(peer);
+        let paired = self.inner.paired.lock().contains_key(peer);
         if !expose.allow.permits(peer, paired) {
             drop(exposes);
             refuse(self.clone(), "not in the access list");
@@ -1727,7 +1761,14 @@ impl OverlayNode {
             },
         );
         self.save_state_with(&state);
-        self.inner.paired.lock().insert(record.node_id.clone());
+        self.inner.paired.lock().insert(
+            record.node_id.clone(),
+            PairedNode {
+                node_id: record.node_id.clone(),
+                name: label.clone(),
+                paired_at: record.paired_at,
+            },
+        );
         if let Some(nonce) = identity::invite_nonce(invite) {
             self.inner
                 .presented
@@ -1948,6 +1989,12 @@ impl OverlayNode {
             .collect()
     }
 
+    /// Every node this node is paired with, in node-id order. Unlike `peer_list` this does not
+    /// depend on whether a node is connected, so it is the list to show as "your devices".
+    pub fn paired_nodes(&self) -> Vec<PairedNode> {
+        self.inner.paired.lock().values().cloned().collect()
+    }
+
     /// Every peer, with its routes and services, for `overlay.peers`.
     pub fn peer_list(&self) -> Vec<serde_json::Value> {
         let peers = self.inner.peers.lock();
@@ -2041,5 +2088,57 @@ mod tests {
             w.charge(rate, 10, 1_060).is_ok(),
             "the next minute starts a fresh window"
         );
+    }
+
+    #[tokio::test]
+    async fn a_node_lists_the_nodes_it_accepted_an_invite_from() {
+        let a = OverlayNode::start(OverlayConfig::local(NodeIdentity::generate("a")))
+            .await
+            .expect("a node");
+        let b = OverlayNode::start(OverlayConfig::local(NodeIdentity::generate("b")))
+            .await
+            .expect("b node");
+        assert!(
+            b.paired_nodes().is_empty(),
+            "a new node is paired with nobody"
+        );
+        b.invite_accept(&a.invite_create(600), Some("laptop".into()))
+            .expect("pair");
+        let paired = b.paired_nodes();
+        assert_eq!(paired.len(), 1);
+        assert_eq!(paired[0].node_id, a.node_id());
+        assert_eq!(paired[0].name, "laptop");
+        assert!(paired[0].paired_at > 0);
+    }
+
+    #[tokio::test]
+    async fn a_pairing_is_listed_again_after_a_restart() {
+        let dir = std::env::temp_dir().join(format!("tdov-paired-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let state_path = dir.join("overlay.json");
+        let with_state = |name: &str| OverlayConfig {
+            state_path: Some(state_path.clone()),
+            ..OverlayConfig::local(NodeIdentity::generate(name))
+        };
+        let a = OverlayNode::start(OverlayConfig::local(NodeIdentity::generate("a")))
+            .await
+            .expect("a node");
+        let b = OverlayNode::start(with_state("b")).await.expect("b node");
+        b.invite_accept(&a.invite_create(600), Some("laptop".into()))
+            .expect("pair");
+        drop(b);
+
+        let b = OverlayNode::start(with_state("b"))
+            .await
+            .expect("b restarts");
+        let paired = b.paired_nodes();
+        assert_eq!(
+            paired.len(),
+            1,
+            "the pairing was saved, so it is loaded again"
+        );
+        assert_eq!(paired[0].node_id, a.node_id());
+        assert_eq!(paired[0].name, "laptop");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
