@@ -9,6 +9,9 @@
   listing after an Android app restart work without restarting the desktop daemon.
 - **Fix:** saving the overlay's state no longer fails with "No such file or directory" when several saves run at once,
   as they do while a fresh node brings its first routes up. Each save writes its own temporary file.
+- **Congestion control:** a partial acknowledgement marks the frame at the gap as lost only once a later frame has
+  arrived and that frame has been out for a round trip. An acknowledgement is a snapshot, and a frame still on its way
+  was being counted as lost: the window was cut and the data resent for nothing.
 
 ## 2.3.0 — 2026-10-10
 

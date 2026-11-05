@@ -29,6 +29,28 @@ pub use shaper::{Shaped, ShaperStats};
 /// How long an integration test waits for something that should already have happened.
 pub const PATIENCE: Duration = Duration::from_secs(20);
 
+/// Windows wakes a sleeping thread only on its default timer tick, about 15.6 ms, so a 1 ms sleep
+/// there takes about 16 ms. A shaped path is timed by those sleeps, and its round trips and timeouts
+/// are measured from them, so a test that times a path asks for 1 ms timers first. The period lasts
+/// for the life of the test process.
+#[cfg(windows)]
+pub fn fine_timers() {
+    #[link(name = "winmm")]
+    extern "system" {
+        fn timeBeginPeriod(period: u32) -> u32;
+    }
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        // SAFETY: a plain Win32 call with no pointers. It only changes the timer resolution.
+        unsafe {
+            timeBeginPeriod(1);
+        }
+    });
+}
+
+#[cfg(not(windows))]
+pub fn fine_timers() {}
+
 /// A relay running `relayd`'s own logic on a real UDP socket.
 ///
 /// Difficulty 0 keeps the tests fast; everything else about the relay is the production path

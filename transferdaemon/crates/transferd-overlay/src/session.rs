@@ -1143,6 +1143,14 @@ impl Session {
         true
     }
 
+    /// Whether the frame at `key` has been out for longer than its route's smoothed round trip.
+    fn older_than_round_trip(&self, key: (u64, u64), now: Instant) -> bool {
+        self.inflight.get(&key).is_some_and(|e| {
+            let srtt = self.cc.get(&e.route).and_then(RouteCc::srtt);
+            now.duration_since(e.sent_at) > srtt.unwrap_or_default()
+        })
+    }
+
     /// Frames that outlived their route's timeout are lost: the route's window shrinks, its
     /// timeout doubles, and the frames go out again, on another route where there is one.
     fn expire(&mut self) {
@@ -1267,8 +1275,12 @@ impl Session {
             self.recover.remove(&stream);
         } else if cumulative > 0 && self.recover.contains_key(&stream) {
             // A partial acknowledgement: what it stops at was lost along with the frame just repaired.
+            // That needs a later frame to have arrived: with nothing above the gap, the frame in it
+            // may only be on its way, and an acknowledgement is a snapshot of what had arrived.
             let key = (stream, next);
-            if self.inflight.get(&key).is_some_and(|e| !e.retx) {
+            let original = self.inflight.get(&key).is_some_and(|e| !e.retx);
+            let overtaken = self.high_sack.get(&stream).is_some_and(|h| *h > next);
+            if original && overtaken && self.older_than_round_trip(key, now) {
                 self.mark_lost(key, now, "partial");
             }
         }
@@ -1306,11 +1318,7 @@ impl Session {
             entry.1 += 1;
             if entry.1 == DUP_ACKS {
                 let key = (stream, next);
-                let old_enough = self.inflight.get(&key).is_some_and(|e| {
-                    let srtt = self.cc.get(&e.route).and_then(RouteCc::srtt);
-                    now.duration_since(e.sent_at) > srtt.unwrap_or_default()
-                });
-                if old_enough {
+                if self.older_than_round_trip(key, now) {
                     self.mark_lost(key, now, "dupack");
                 }
             }
@@ -2052,5 +2060,132 @@ mod tests {
             Some(b"second".to_vec()),
             "the desktop reads the restarted peer's bytes"
         );
+    }
+
+    const STREAM: u64 = 1;
+
+    /// The route's round trip, set by the test rather than measured.
+    const ROUND_TRIP: Duration = Duration::from_secs(10);
+
+    /// A session with no links, for driving the acknowledgement logic on its own. Ages are set
+    /// by the tests, so no result depends on how fast the machine runs.
+    fn session() -> Session {
+        let (events, _rx) = mpsc::unbounded_channel();
+        Session {
+            peer_node_id: "peer".to_owned(),
+            links: Vec::new(),
+            wake: Arc::new(tokio::sync::Notify::new()),
+            mux: Mux::with_parity(false),
+            last_probe: HashMap::new(),
+            cc: HashMap::new(),
+            inflight: std::collections::BTreeMap::new(),
+            outbox: std::collections::VecDeque::new(),
+            retx_queue: std::collections::VecDeque::new(),
+            retx_pending: std::collections::HashSet::new(),
+            dup_acks: HashMap::new(),
+            recover: HashMap::new(),
+            last_ack: HashMap::new(),
+            high_sack: HashMap::new(),
+            pace_at: None,
+            pings: HashMap::new(),
+            misses: HashMap::new(),
+            pending_reads: HashMap::new(),
+            write_queue: HashMap::new(),
+            pending_opens: HashMap::new(),
+            awaiting_open: HashMap::new(),
+            services: Vec::new(),
+            local: Hello {
+                min_version: 0,
+                max_version: 0,
+                node_id: String::new(),
+                name: String::new(),
+                services: Vec::new(),
+                ext: Vec::new(),
+                nonce: [0; 16],
+            },
+            ctrl_unacked: std::collections::BTreeMap::new(),
+            ctrl_seen: std::collections::BTreeSet::new(),
+            version: 0,
+            frame_seq: 0,
+            ready: false,
+            stopped: false,
+            events,
+            handle_services: Arc::new(parking_lot::RwLock::new(Vec::new())),
+            handle_name: parking_lot::RwLock::new(String::new()),
+            handle_routes: Arc::new(parking_lot::RwLock::new(Vec::new())),
+            handle_version: Arc::new(parking_lot::RwLock::new(0)),
+        }
+    }
+
+    /// Puts a frame of stream 1 on the wire on route 0, sent `age` ago.
+    fn put(s: &mut Session, seq: u64, age: Duration, retx: bool) {
+        let sent_at = Instant::now() - age;
+        s.inflight.insert(
+            (STREAM, seq),
+            InFlight {
+                route: 0,
+                cost: 1,
+                sent_at,
+                retx,
+            },
+        );
+    }
+
+    /// Stream 1 after a loss: frame 3 was the newest on the wire when frame 2 was lost, so the
+    /// stream is in recovery up to 4. Frames 0 and 1 are resends that the next acknowledgement
+    /// covers. A resend gives no round-trip sample, so the route keeps the round trip set here.
+    fn gap_at_two(edge_age: Duration, edge_resent: bool) -> Session {
+        let mut s = session();
+        s.cc.entry(0).or_default().on_rtt(ROUND_TRIP);
+        s.recover.insert(STREAM, 4);
+        put(&mut s, 0, Duration::ZERO, true);
+        put(&mut s, 1, Duration::ZERO, true);
+        put(&mut s, 2, edge_age, edge_resent);
+        put(&mut s, 3, Duration::ZERO, false);
+        s
+    }
+
+    /// The partial acknowledgement stops at a frame that is still on its way: it is younger than
+    /// a round trip, so the peer may simply not have it yet.
+    #[test]
+    fn a_partial_ack_does_not_give_up_on_a_young_frame() {
+        let mut s = gap_at_two(Duration::ZERO, false);
+
+        s.on_ack(STREAM, 2, &[(3, 4)]);
+
+        assert!(s.inflight.contains_key(&(STREAM, 2)));
+    }
+
+    /// Nothing above the gap has arrived, so the acknowledgement may be a snapshot taken before
+    /// the frames behind it did. An old frame is not lost on that evidence.
+    #[test]
+    fn a_partial_ack_with_no_later_frame_does_not_give_up_on_an_old_frame() {
+        let mut s = gap_at_two(Duration::from_secs(20), false);
+
+        s.on_ack(STREAM, 2, &[]);
+
+        assert!(s.inflight.contains_key(&(STREAM, 2)));
+    }
+
+    /// A later frame has arrived and the gap frame has been out for longer than a round trip, so
+    /// it was lost, and it is given up on now rather than at its timeout.
+    #[test]
+    fn a_partial_ack_gives_up_on_an_old_frame_that_a_later_one_overtook() {
+        let mut s = gap_at_two(Duration::from_secs(20), false);
+
+        s.on_ack(STREAM, 2, &[(3, 4)]);
+
+        assert!(!s.inflight.contains_key(&(STREAM, 2)));
+    }
+
+    /// A resent frame's acknowledgement could be for either copy, so the partial rule leaves it
+    /// to its own timeout. Its age is past a round trip, so only the resend check keeps it.
+    #[test]
+    fn a_partial_ack_leaves_a_resent_frame_to_its_timeout() {
+        let mut s = gap_at_two(Duration::from_secs(15), true);
+
+        s.on_ack(STREAM, 2, &[(3, 4)]);
+
+        assert!(s.inflight.contains_key(&(STREAM, 2)));
     }
 }

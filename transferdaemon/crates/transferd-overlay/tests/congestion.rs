@@ -64,6 +64,7 @@ struct Run {
 /// Send `total` bytes from `a` to a sink on `b` over a shaped path and measure it.
 async fn transfer(rate: u64, buffer: usize, delay_ms: u64, total: u64) -> Run {
     common::trace();
+    common::fine_timers();
     let relay = TestRelay::start().await;
     let path = Shaped::start(relay.addr, rate, buffer, Duration::from_millis(delay_ms)).await;
     let a = TestNode::inbound_only("a", &[path.addr]).await;
