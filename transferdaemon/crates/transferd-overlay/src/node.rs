@@ -97,6 +97,21 @@ impl OverlayConfig {
     }
 }
 
+/// What a pairing records about the node it paired with, whichever method made the pairing.
+pub(crate) struct PairedPeer {
+    pub node_id: String,
+    /// The name this node knows the peer by: the operator's choice, or the peer's own name.
+    pub name: String,
+    /// The name the peer gives itself.
+    pub own_name: String,
+    pub hybrid_public_key: Vec<u8>,
+    pub key_fingerprint: [u8; 32],
+    pub direct: Vec<String>,
+    pub relays: Vec<String>,
+    /// The invite nonce a signed invite carried, in hex. Empty for a short code.
+    pub pairing: String,
+}
+
 /// A hole punch this node started and has not had an answer to yet.
 struct PunchAttempt {
     id: u64,
@@ -186,6 +201,8 @@ struct Inner {
     punching: parking_lot::Mutex<HashMap<String, PunchAttempt>>,
     /// When a peer last asked us for one, to hold them to a reasonable rate.
     punch_asked: parking_lot::Mutex<HashMap<String, std::time::Instant>>,
+    /// The short code this node will accept, if one is open (see `pairing`).
+    pending_code: parking_lot::Mutex<Option<crate::pairing::PendingCode>>,
 }
 
 /// A simple per-minute rate window.
@@ -279,6 +296,7 @@ impl OverlayNode {
                 mesh_dns: parking_lot::Mutex::new(None),
                 punching: parking_lot::Mutex::new(HashMap::new()),
                 punch_asked: parking_lot::Mutex::new(HashMap::new()),
+                pending_code: parking_lot::Mutex::new(None),
                 mesh_dns_config: parking_lot::Mutex::new(state.mesh_dns.clone()),
                 direct: parking_lot::Mutex::new(config.direct.clone()),
                 hubs: parking_lot::Mutex::new(Vec::new()),
@@ -443,6 +461,22 @@ impl OverlayNode {
                         let node = node.clone();
                         let identity = identity.clone();
                         tokio::spawn(async move {
+                            if let Some(method) = crate::pairing::inbound_method(&stream).await {
+                                match method.answer(&node, stream).await {
+                                    Ok(peer) => {
+                                        tracing::info!(
+                                            "[overlay] paired with {} from {from}",
+                                            peer.node_id
+                                        )
+                                    }
+                                    Err(e) => {
+                                        tracing::debug!(
+                                            "[overlay] pairing from {from} refused: {e}"
+                                        )
+                                    }
+                                }
+                                return;
+                            }
                             match lanes::accept_tcp(
                                 node.next_link_id(),
                                 RouteKind::Direct,
@@ -1764,7 +1798,7 @@ impl OverlayNode {
     /// we already hold a key for must keep it, so an invite that fingerprints another key is refused.
     pub fn invite_accept(&self, invite: &str, name: Option<String>) -> Result<NodeRecord> {
         let verified = identity::accept_invite(invite)?;
-        let mut state = self.load_state();
+        let state = self.load_state();
         let known_key = state
             .nodes
             .get(&verified.node_id)
@@ -1788,61 +1822,113 @@ impl OverlayNode {
             .unwrap_or_else(|| record.name.clone())
             .trim()
             .to_string();
-        state.nodes.insert(
-            record.node_id.clone(),
-            StoredNode {
-                node_id: record.node_id.clone(),
-                name: label.clone(),
-                hybrid_public_key: record.hybrid_public_key.clone(),
-                key_fingerprint: hex::encode(verified.key_fingerprint),
-                relays: reach.relays.clone(),
-                direct: reach.direct.clone(),
-                paired_at: record.paired_at,
-                last_name: record.name.clone(),
-                pairing: identity::invite_nonce(invite)
-                    .map(hex::encode)
-                    .unwrap_or_default(),
-            },
-        );
-        self.save_state_with(&state);
-        self.inner.paired.lock().insert(record.node_id.clone());
-        self.inner
-            .fingerprints
-            .lock()
-            .insert(record.node_id.clone(), verified.key_fingerprint);
-        if let Some(nonce) = identity::invite_nonce(invite) {
+        let nonce = identity::invite_nonce(invite);
+        // The name we know this node by is the one the operator gave us, not the one it calls
+        // itself: `overlay.connect` and the proxies both key off this.
+        let record = self.pair_with(PairedPeer {
+            node_id: record.node_id.clone(),
+            name: label,
+            own_name: record.name.clone(),
+            hybrid_public_key: record.hybrid_public_key.clone(),
+            key_fingerprint: verified.key_fingerprint,
+            direct: reach.direct,
+            relays: reach.relays,
+            pairing: nonce.map(hex::encode).unwrap_or_default(),
+        });
+        if let Some(nonce) = nonce {
             self.inner
                 .presented
                 .lock()
                 .insert(record.node_id.clone(), nonce);
         }
+        Ok(record)
+    }
+
+    /// Record a node we have paired with, however the pairing was made. The key it presents is
+    /// kept, so a later first contact must present the same one.
+    pub(crate) fn pair_with(&self, peer: PairedPeer) -> NodeRecord {
+        let record = NodeRecord::new(
+            peer.node_id.clone(),
+            peer.own_name.clone(),
+            peer.hybrid_public_key.clone(),
+        );
+        let mut state = self.load_state();
+        state.nodes.insert(
+            peer.node_id.clone(),
+            StoredNode {
+                node_id: peer.node_id.clone(),
+                name: peer.name.clone(),
+                hybrid_public_key: peer.hybrid_public_key.clone(),
+                key_fingerprint: hex::encode(peer.key_fingerprint),
+                relays: peer.relays.clone(),
+                direct: peer.direct.clone(),
+                paired_at: record.paired_at,
+                last_name: peer.own_name.clone(),
+                pairing: peer.pairing.clone(),
+            },
+        );
+        self.save_state_with(&state);
+        self.inner.paired.lock().insert(peer.node_id.clone());
+        self.inner
+            .fingerprints
+            .lock()
+            .insert(peer.node_id.clone(), peer.key_fingerprint);
         self.inner.peers.lock().insert(
-            record.node_id.clone(),
+            peer.node_id.clone(),
             Peer {
                 record: NodeRecord {
-                    name: label.clone(),
+                    name: peer.name.clone(),
                     ..record.clone()
                 },
-                session: detached_session(&record.node_id),
+                session: detached_session(&peer.node_id),
                 route: RouteKind::Relay,
-                reachable: reach.direct.clone(),
+                reachable: peer.direct.clone(),
             },
         );
         self.emit(OverlayEvent::new(
             "peer.paired",
-            &record.node_id,
-            label.clone(),
+            &peer.node_id,
+            peer.name.clone(),
         ));
         let mut audit = AuditRecord::new("pair");
-        audit.peer = record.node_id.clone();
-        audit.service = label.clone();
+        audit.peer = peer.node_id.clone();
+        audit.service = peer.name.clone();
         self.audit(audit);
-        // The name we know this node by is the one the operator gave us, not the one it calls
-        // itself: `overlay.connect` and the proxies both key off this.
-        Ok(NodeRecord {
-            name: label,
+        NodeRecord {
+            name: peer.name,
             ..record
-        })
+        }
+    }
+
+    /// The short code this node will accept, if one is open.
+    pub(crate) fn pending_code(&self) -> &parking_lot::Mutex<Option<crate::pairing::PendingCode>> {
+        &self.inner.pending_code
+    }
+
+    /// Whether this node is paired with `node_id`.
+    pub(crate) fn is_paired(&self, node_id: &str) -> bool {
+        self.inner.paired.lock().contains(node_id)
+    }
+
+    /// The pairing methods this build offers, by name.
+    pub fn pairing_methods(&self) -> Vec<&'static str> {
+        crate::pairing::methods().iter().map(|m| m.id()).collect()
+    }
+
+    /// Make an offer with the named pairing method, valid for `ttl_s` seconds.
+    pub fn pair_offer(&self, method: &str, ttl_s: u64) -> Result<String> {
+        let method = crate::pairing::by_id(method).ok_or_else(|| {
+            OverlayError::protocol(format!("there is no pairing method called {method}"))
+        })?;
+        method.offer(self, ttl_s)
+    }
+
+    /// Pair with an offer, whichever pairing method made it.
+    pub async fn pair_accept(&self, offer: &str, name: Option<String>) -> Result<NodeRecord> {
+        let method = crate::pairing::by_offer(offer).ok_or_else(|| {
+            OverlayError::protocol("this is not an offer from a pairing method this build knows")
+        })?;
+        method.accept(self, offer, name).await
     }
 
     /// Publish addresses a peer may try to dial us on directly.
