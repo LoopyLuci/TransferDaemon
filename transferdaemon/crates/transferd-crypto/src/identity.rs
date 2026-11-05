@@ -172,6 +172,27 @@ impl HybridSigningKey {
             ml_sig: ml_encoded.as_slice().to_vec(),
         }
     }
+
+    /// Sign `msg` with the Ed25519 half alone. Its public key is the node id, so anyone can check
+    /// the result against a node id without holding the hybrid key.
+    pub fn sign_ed25519(&self, msg: &[u8]) -> [u8; ED25519_SIG_LEN] {
+        use ed25519_dalek::Signer as _;
+        self.ed.sign(msg).to_bytes()
+    }
+}
+
+/// Check an Ed25519 signature made by [`HybridSigningKey::sign_ed25519`] against the Ed25519
+/// public key (the node id's 32 bytes).
+pub fn verify_ed25519(
+    public_key: &[u8; ED25519_PK_LEN],
+    msg: &[u8],
+    signature: &[u8; ED25519_SIG_LEN],
+) -> bool {
+    let Ok(vk) = Ed25519VerifyingKey::from_bytes(public_key) else {
+        return false;
+    };
+    vk.verify_strict(msg, &ed25519_dalek::Signature::from_bytes(signature))
+        .is_ok()
 }
 
 impl Drop for HybridSigningKey {

@@ -8,6 +8,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 /// The format this build writes.
 pub const STATE_VERSION: u32 = 1;
@@ -21,6 +22,10 @@ pub struct StoredNode {
     /// The hybrid public key verified on first contact (trust on first use).
     #[serde(default)]
     pub hybrid_public_key: Vec<u8>,
+    /// The key fingerprint its invite named (hex): the key it presents on first contact must
+    /// hash to this. Empty for a node that was not paired by invite.
+    #[serde(default)]
+    pub key_fingerprint: String,
     /// Relays this node published, as `host:port`.
     #[serde(default)]
     pub relays: Vec<String>,
@@ -141,13 +146,22 @@ impl StoredState {
     }
 
     /// Write the state, atomically.
+    ///
+    /// Each save writes its own temporary file, so saves that run at once cannot move each other's:
+    /// a shared temporary name made one rename find the file already gone.
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
+        static SAVES: AtomicU64 = AtomicU64::new(0);
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
         }
-        let tmp = path.with_extension("json.tmp");
-        std::fs::write(&tmp, serde_json::to_vec_pretty(self).unwrap_or_default())?;
-        std::fs::rename(&tmp, path)
+        let n = SAVES.fetch_add(1, Ordering::Relaxed);
+        let tmp = path.with_extension(format!("json.{}.{n}.tmp", std::process::id()));
+        let result = std::fs::write(&tmp, serde_json::to_vec_pretty(self).unwrap_or_default())
+            .and_then(|()| std::fs::rename(&tmp, path));
+        if result.is_err() {
+            let _ = std::fs::remove_file(&tmp);
+        }
+        result
     }
 
     /// Where the overlay keeps its state, next to the daemon's other files.
@@ -190,6 +204,34 @@ mod tests {
         state = state.migrated();
         assert_eq!(state.version, STATE_VERSION);
         assert_eq!(state.nodes["aa"].name, "laptop");
+    }
+
+    #[test]
+    fn saves_from_several_threads_to_one_file_all_land() {
+        // Each save writes a temporary file and renames it over the state. Saves that run at once
+        // share that temporary file, so one rename can find it already moved by another.
+        let dir = std::env::temp_dir().join(format!("tdov-state-race-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let path = dir.join("overlay.json");
+        let start = std::sync::Barrier::new(8);
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                scope.spawn(|| {
+                    start.wait();
+                    for _ in 0..200 {
+                        let state = StoredState {
+                            version: STATE_VERSION,
+                            ..Default::default()
+                        };
+                        state
+                            .save(&path)
+                            .expect("a save that runs alongside others still lands");
+                    }
+                });
+            }
+        });
+        assert_eq!(StoredState::load(&path).version, STATE_VERSION);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

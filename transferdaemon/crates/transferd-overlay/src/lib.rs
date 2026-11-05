@@ -39,6 +39,7 @@ pub mod link;
 pub mod mux;
 pub mod node;
 pub mod ops;
+pub mod pairing;
 pub mod protocol;
 pub mod proxy;
 pub mod punch;

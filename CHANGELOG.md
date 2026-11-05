@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+- **Fix:** a peer that restarts and reconnects to a session still open on this side is heard. Its control frames
+  were numbered from the start again, so they matched numbers the old process had used and were acknowledged but
+  dropped. Each session now starts its frame numbers at a random point. Its stream ids start at a random point too, so
+  a restarted peer's first stream is not taken for resends of the old process's data. This makes the first share
+  listing after an Android app restart work without restarting the desktop daemon.
+- **Fix:** saving the overlay's state no longer fails with "No such file or directory" when several saves run at once,
+  as they do while a fresh node brings its first routes up. Each save writes its own temporary file.
+- **Congestion control:** a partial acknowledgement marks the frame at the gap as lost only once a later frame has
+  arrived and that frame has been out for a round trip. An acknowledgement is a snapshot, and a frame still on its way
+  was being counted as lost: the window was cut and the data resent for nothing.
+
 ## 2.3.0 — 2026-10-10
 
 ### The overlay: a private network between your devices

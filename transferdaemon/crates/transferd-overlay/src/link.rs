@@ -206,7 +206,7 @@ impl RouteStats {
     pub fn record_acked(&self, n: u64) {
         let _ = self
             .active
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |a| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |a| {
                 Some(a.saturating_sub(n))
             });
     }

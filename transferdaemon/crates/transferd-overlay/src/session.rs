@@ -160,6 +160,12 @@ pub enum SessionCommand {
     Shutdown,
 }
 
+/// Whether any of these routes is up. Nothing measured yet counts as usable: the session has only
+/// just been made.
+pub(crate) fn routes_usable(routes: &[protocol::RouteReport]) -> bool {
+    routes.is_empty() || routes.iter().any(|r| r.active)
+}
+
 /// The sending half of a session: the handle the rest of the node uses to talk to it.
 pub struct SessionHandle {
     pub peer_node_id: String,
@@ -289,6 +295,13 @@ impl SessionHandle {
     /// Whether the session can still carry traffic.
     pub fn is_live(&self) -> bool {
         !self.commands.is_closed()
+    }
+
+    /// Whether the session can carry traffic now: its loop runs and a route is up. A session whose
+    /// routes have all closed is over for the peer even while its loop still runs, so a call dials
+    /// again instead of waiting on it.
+    pub fn is_usable(&self) -> bool {
+        self.is_live() && routes_usable(&self.routes.read())
     }
 
     /// A handle that was never connected: used for peers we know but have not dialled yet.
@@ -510,7 +523,7 @@ pub async fn spawn(
             ctrl_unacked: std::collections::BTreeMap::new(),
             ctrl_seen: std::collections::BTreeSet::new(),
             version: max_version,
-            frame_seq: 0,
+            frame_seq: fresh_frame_seq(),
             ready: false,
             stopped: false,
             events,
@@ -562,6 +575,13 @@ pub async fn spawn(
         });
     });
     handle
+}
+
+/// Where a session's frame numbers start. A random start, as TCP picks its sequence numbers, so a
+/// restarted peer never reuses a number the other end still remembers from the process before it.
+/// Control frames are told apart by these numbers, so a reused one would be taken for a resend.
+fn fresh_frame_seq() -> u64 {
+    rand::random::<u64>() >> 2
 }
 
 fn random_nonce() -> [u8; 16] {
@@ -1123,6 +1143,14 @@ impl Session {
         true
     }
 
+    /// Whether the frame at `key` has been out for longer than its route's smoothed round trip.
+    fn older_than_round_trip(&self, key: (u64, u64), now: Instant) -> bool {
+        self.inflight.get(&key).is_some_and(|e| {
+            let srtt = self.cc.get(&e.route).and_then(RouteCc::srtt);
+            now.duration_since(e.sent_at) > srtt.unwrap_or_default()
+        })
+    }
+
     /// Frames that outlived their route's timeout are lost: the route's window shrinks, its
     /// timeout doubles, and the frames go out again, on another route where there is one.
     fn expire(&mut self) {
@@ -1247,8 +1275,12 @@ impl Session {
             self.recover.remove(&stream);
         } else if cumulative > 0 && self.recover.contains_key(&stream) {
             // A partial acknowledgement: what it stops at was lost along with the frame just repaired.
+            // That needs a later frame to have arrived: with nothing above the gap, the frame in it
+            // may only be on its way, and an acknowledgement is a snapshot of what had arrived.
             let key = (stream, next);
-            if self.inflight.get(&key).is_some_and(|e| !e.retx) {
+            let original = self.inflight.get(&key).is_some_and(|e| !e.retx);
+            let overtaken = self.high_sack.get(&stream).is_some_and(|h| *h > next);
+            if original && overtaken && self.older_than_round_trip(key, now) {
                 self.mark_lost(key, now, "partial");
             }
         }
@@ -1286,11 +1318,7 @@ impl Session {
             entry.1 += 1;
             if entry.1 == DUP_ACKS {
                 let key = (stream, next);
-                let old_enough = self.inflight.get(&key).is_some_and(|e| {
-                    let srtt = self.cc.get(&e.route).and_then(RouteCc::srtt);
-                    now.duration_since(e.sent_at) > srtt.unwrap_or_default()
-                });
-                if old_enough {
+                if self.older_than_round_trip(key, now) {
                     self.mark_lost(key, now, "dupack");
                 }
             }
@@ -1814,4 +1842,350 @@ pub type StreamBytes = Arc<AtomicU64>;
 /// Increase a shared byte counter.
 pub fn count(bytes: &StreamBytes, n: u64) {
     bytes.fetch_add(n, Ordering::Relaxed);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::identity::NodeIdentity;
+    use crate::link::{Link, Pipe, PipeLink, RouteKind};
+
+    type Queue = Arc<parking_lot::Mutex<std::collections::VecDeque<Vec<u8>>>>;
+
+    /// Two ends of an in-memory link: each end writes into the queue the other end reads.
+    fn link_pair(id: u32) -> (Arc<PipeLink>, Arc<PipeLink>) {
+        let a_to_b: Queue = Default::default();
+        let b_to_a: Queue = Default::default();
+        let end = |out: Queue, inbox: Queue| Pipe {
+            write: Box::new(move |bytes| {
+                out.lock().push_back(bytes);
+                Ok(())
+            }),
+            incoming: Box::new(move || Ok(inbox.lock().pop_front())),
+            close: Box::new(|| {}),
+        };
+        (
+            PipeLink::new(id, RouteKind::Direct, "pipe", end(a_to_b.clone(), b_to_a.clone())),
+            PipeLink::new(id, RouteKind::Direct, "pipe", end(b_to_a, a_to_b)),
+        )
+    }
+
+    fn setup(me: &NodeIdentity, peer: &NodeIdentity) -> SessionSetup {
+        SessionSetup {
+            peer_node_id: peer.node_id().to_string(),
+            peer_name: peer.name().to_string(),
+            identity: me.clone(),
+            services: Vec::new(),
+            max_version: protocol::VERSION_CURRENT as u8,
+            ext: Vec::new(),
+        }
+    }
+
+    /// Waits for the next stream the peer asks to open, accepts it, and returns its id.
+    async fn accept_next_open(
+        desk: &SessionHandle,
+        events: &mut mpsc::UnboundedReceiver<SessionEvent>,
+    ) -> Option<StreamId> {
+        while let Some(event) = events.recv().await {
+            if let SessionEvent::OpenRequest {
+                stream, service, ..
+            } = event
+            {
+                return desk
+                    .authorize(stream, service, true, String::new())
+                    .await
+                    .ok()
+                    .map(|_| stream);
+            }
+        }
+        None
+    }
+
+    /// Reads the next bytes the desktop gets on a stream, or gives up after a few seconds.
+    async fn next_bytes(desk: &SessionHandle, stream: StreamId) -> Option<Vec<u8>> {
+        tokio::time::timeout(Duration::from_secs(5), desk.recv(stream))
+            .await
+            .ok()?
+            .ok()?
+    }
+
+    /// A peer process restarts and its new session comes up on a fresh route, while the desktop
+    /// keeps the session it had with the old process. The new process numbers its control frames
+    /// from the start again, so its open must not be taken for a resend of the old one.
+    #[tokio::test]
+    async fn a_restarted_peer_is_heard_on_the_session_it_comes_back_to() {
+        let desk_id = NodeIdentity::generate("desktop");
+        let phone_id = NodeIdentity::generate("phone");
+
+        let (desk_events_tx, mut desk_events) = mpsc::unbounded_channel();
+        let (old_route, phone_old_end) = link_pair(1);
+        let desk = spawn(
+            setup(&desk_id, &phone_id),
+            vec![old_route.clone() as Arc<dyn Link>],
+            desk_events_tx,
+        )
+        .await;
+
+        // The first phone process opens a stream, and the desktop accepts it.
+        let (phone_old_tx, _phone_old_events) = mpsc::unbounded_channel();
+        let phone_first = spawn(
+            setup(&phone_id, &desk_id),
+            vec![phone_old_end as Arc<dyn Link>],
+            phone_old_tx,
+        )
+        .await;
+        let first = tokio::spawn(async move { phone_first.open("cfs").await });
+        let accepted = tokio::time::timeout(
+            Duration::from_secs(5),
+            accept_next_open(&desk, &mut desk_events),
+        )
+        .await;
+        assert!(
+            accepted.is_ok_and(|id| id.is_some()),
+            "the first open reaches the desktop"
+        );
+        assert!(first.await.expect("join").is_ok(), "the first open is accepted");
+
+        // The old process is gone, so its route carries nothing more. The desktop's session
+        // stays up and takes the restarted phone on a new route.
+        old_route.mark_down();
+        let (new_route, phone_new_end) = link_pair(2);
+        desk.add_link(new_route as Arc<dyn Link>).await;
+        let (phone_new_tx, _phone_new_events) = mpsc::unbounded_channel();
+        let phone_restarted = spawn(
+            setup(&phone_id, &desk_id),
+            vec![phone_new_end as Arc<dyn Link>],
+            phone_new_tx,
+        )
+        .await;
+        let second = tokio::spawn(async move { phone_restarted.open("cfs").await });
+
+        let heard = tokio::time::timeout(
+            Duration::from_secs(5),
+            accept_next_open(&desk, &mut desk_events),
+        )
+        .await;
+        assert!(
+            heard.is_ok_and(|id| id.is_some()),
+            "the desktop hears the restarted peer's open"
+        );
+        assert!(second.await.expect("join").is_ok(), "the restarted peer's open is accepted");
+    }
+
+    /// A peer process restarts and numbers its streams from the start again. The desktop still
+    /// holds the streams of the process it replaced, so the new process's first stream must not
+    /// land on one of them: its bytes would be taken for resends of data the desktop already has.
+    #[tokio::test]
+    async fn a_restarted_peer_first_stream_delivers_its_bytes() {
+        let desk_id = NodeIdentity::generate("desktop");
+        let phone_id = NodeIdentity::generate("phone");
+
+        let (desk_events_tx, mut desk_events) = mpsc::unbounded_channel();
+        let (old_route, phone_old_end) = link_pair(1);
+        let desk = spawn(
+            setup(&desk_id, &phone_id),
+            vec![old_route.clone() as Arc<dyn Link>],
+            desk_events_tx,
+        )
+        .await;
+
+        // The first phone process opens a stream and sends on it.
+        let (phone_old_tx, _phone_old_events) = mpsc::unbounded_channel();
+        let phone_first = spawn(
+            setup(&phone_id, &desk_id),
+            vec![phone_old_end as Arc<dyn Link>],
+            phone_old_tx,
+        )
+        .await;
+        let open = tokio::spawn(async move {
+            let stream = phone_first.open("cfs").await;
+            (phone_first, stream)
+        });
+        let accepted = tokio::time::timeout(
+            Duration::from_secs(5),
+            accept_next_open(&desk, &mut desk_events),
+        )
+        .await;
+        let first = accepted
+            .expect("the first open reaches the desktop")
+            .expect("the desktop accepts it");
+        let (phone_first, opened) = open.await.expect("join");
+        assert_eq!(opened.expect("the first open is accepted"), first);
+        phone_first
+            .send(first, b"first".to_vec(), false)
+            .await
+            .expect("the first send goes out");
+        assert_eq!(
+            next_bytes(&desk, first).await,
+            Some(b"first".to_vec()),
+            "the desktop reads the first stream"
+        );
+
+        // The old process is gone. The desktop keeps its session and takes the restarted phone
+        // on a new route.
+        phone_first.shutdown().await;
+        old_route.mark_down();
+        let (new_route, phone_new_end) = link_pair(2);
+        desk.add_link(new_route as Arc<dyn Link>).await;
+        let (phone_new_tx, _phone_new_events) = mpsc::unbounded_channel();
+        let phone_restarted = spawn(
+            setup(&phone_id, &desk_id),
+            vec![phone_new_end as Arc<dyn Link>],
+            phone_new_tx,
+        )
+        .await;
+        let open = tokio::spawn(async move {
+            let stream = phone_restarted.open("cfs").await;
+            (phone_restarted, stream)
+        });
+        let accepted = tokio::time::timeout(
+            Duration::from_secs(5),
+            accept_next_open(&desk, &mut desk_events),
+        )
+        .await;
+        let second = accepted
+            .expect("the desktop hears the restarted peer's open")
+            .expect("the desktop accepts it");
+        let (phone_restarted, opened) = open.await.expect("join");
+        assert_eq!(
+            opened.expect("the restarted peer's open is accepted"),
+            second
+        );
+        phone_restarted
+            .send(second, b"second".to_vec(), false)
+            .await
+            .expect("the restarted send goes out");
+        assert_eq!(
+            next_bytes(&desk, second).await,
+            Some(b"second".to_vec()),
+            "the desktop reads the restarted peer's bytes"
+        );
+    }
+
+    const STREAM: u64 = 1;
+
+    /// The route's round trip, set by the test rather than measured.
+    const ROUND_TRIP: Duration = Duration::from_secs(10);
+
+    /// A session with no links, for driving the acknowledgement logic on its own. Ages are set
+    /// by the tests, so no result depends on how fast the machine runs.
+    fn session() -> Session {
+        let (events, _rx) = mpsc::unbounded_channel();
+        Session {
+            peer_node_id: "peer".to_owned(),
+            links: Vec::new(),
+            wake: Arc::new(tokio::sync::Notify::new()),
+            mux: Mux::with_parity(false),
+            last_probe: HashMap::new(),
+            cc: HashMap::new(),
+            inflight: std::collections::BTreeMap::new(),
+            outbox: std::collections::VecDeque::new(),
+            retx_queue: std::collections::VecDeque::new(),
+            retx_pending: std::collections::HashSet::new(),
+            dup_acks: HashMap::new(),
+            recover: HashMap::new(),
+            last_ack: HashMap::new(),
+            high_sack: HashMap::new(),
+            pace_at: None,
+            pings: HashMap::new(),
+            misses: HashMap::new(),
+            pending_reads: HashMap::new(),
+            write_queue: HashMap::new(),
+            pending_opens: HashMap::new(),
+            awaiting_open: HashMap::new(),
+            services: Vec::new(),
+            local: Hello {
+                min_version: 0,
+                max_version: 0,
+                node_id: String::new(),
+                name: String::new(),
+                services: Vec::new(),
+                ext: Vec::new(),
+                nonce: [0; 16],
+            },
+            ctrl_unacked: std::collections::BTreeMap::new(),
+            ctrl_seen: std::collections::BTreeSet::new(),
+            version: 0,
+            frame_seq: 0,
+            ready: false,
+            stopped: false,
+            events,
+            handle_services: Arc::new(parking_lot::RwLock::new(Vec::new())),
+            handle_name: parking_lot::RwLock::new(String::new()),
+            handle_routes: Arc::new(parking_lot::RwLock::new(Vec::new())),
+            handle_version: Arc::new(parking_lot::RwLock::new(0)),
+        }
+    }
+
+    /// Puts a frame of stream 1 on the wire on route 0, sent `age` ago.
+    fn put(s: &mut Session, seq: u64, age: Duration, retx: bool) {
+        let sent_at = Instant::now() - age;
+        s.inflight.insert(
+            (STREAM, seq),
+            InFlight {
+                route: 0,
+                cost: 1,
+                sent_at,
+                retx,
+            },
+        );
+    }
+
+    /// Stream 1 after a loss: frame 3 was the newest on the wire when frame 2 was lost, so the
+    /// stream is in recovery up to 4. Frames 0 and 1 are resends that the next acknowledgement
+    /// covers. A resend gives no round-trip sample, so the route keeps the round trip set here.
+    fn gap_at_two(edge_age: Duration, edge_resent: bool) -> Session {
+        let mut s = session();
+        s.cc.entry(0).or_default().on_rtt(ROUND_TRIP);
+        s.recover.insert(STREAM, 4);
+        put(&mut s, 0, Duration::ZERO, true);
+        put(&mut s, 1, Duration::ZERO, true);
+        put(&mut s, 2, edge_age, edge_resent);
+        put(&mut s, 3, Duration::ZERO, false);
+        s
+    }
+
+    /// The partial acknowledgement stops at a frame that is still on its way: it is younger than
+    /// a round trip, so the peer may simply not have it yet.
+    #[test]
+    fn a_partial_ack_does_not_give_up_on_a_young_frame() {
+        let mut s = gap_at_two(Duration::ZERO, false);
+
+        s.on_ack(STREAM, 2, &[(3, 4)]);
+
+        assert!(s.inflight.contains_key(&(STREAM, 2)));
+    }
+
+    /// Nothing above the gap has arrived, so the acknowledgement may be a snapshot taken before
+    /// the frames behind it did. An old frame is not lost on that evidence.
+    #[test]
+    fn a_partial_ack_with_no_later_frame_does_not_give_up_on_an_old_frame() {
+        let mut s = gap_at_two(Duration::from_secs(20), false);
+
+        s.on_ack(STREAM, 2, &[]);
+
+        assert!(s.inflight.contains_key(&(STREAM, 2)));
+    }
+
+    /// A later frame has arrived and the gap frame has been out for longer than a round trip, so
+    /// it was lost, and it is given up on now rather than at its timeout.
+    #[test]
+    fn a_partial_ack_gives_up_on_an_old_frame_that_a_later_one_overtook() {
+        let mut s = gap_at_two(Duration::from_secs(20), false);
+
+        s.on_ack(STREAM, 2, &[(3, 4)]);
+
+        assert!(!s.inflight.contains_key(&(STREAM, 2)));
+    }
+
+    /// A resent frame's acknowledgement could be for either copy, so the partial rule leaves it
+    /// to its own timeout. Its age is past a round trip, so only the resend check keeps it.
+    #[test]
+    fn a_partial_ack_leaves_a_resent_frame_to_its_timeout() {
+        let mut s = gap_at_two(Duration::from_secs(15), true);
+
+        s.on_ack(STREAM, 2, &[(3, 4)]);
+
+        assert!(s.inflight.contains_key(&(STREAM, 2)));
+    }
 }

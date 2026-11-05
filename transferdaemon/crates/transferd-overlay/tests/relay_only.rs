@@ -184,15 +184,20 @@ async fn a_relay_that_stops_being_reachable_is_reported_not_hung() {
     stream.write_all(b"alive").await.expect("write");
     assert_eq!(&read_exact(&mut stream, 6).await, b"\xE5alive");
 
-    // When the relay is gone the session stops carrying traffic, and `overlay.peers` says so
-    // instead of the node pretending it is fine.
+    // When the relay is gone, `overlay.peers` reports the route through it as down instead of
+    // the node pretending it is fine. A direct path the nodes punched can still be up, and it
+    // keeps the session alive, so only the relayed route is required to be down.
     relay.stop();
     eventually("the relayed route to be reported down", || async {
         let peers = a.node.peer_list();
         peers.len() == 1
             && peers[0]["routes"]
                 .as_array()
-                .map(|routes| !routes.is_empty() && routes.iter().all(|r| r["active"] == false))
+                .map(|routes| {
+                    routes
+                        .iter()
+                        .any(|r| r["kind"] == "relay" && r["active"] == false)
+                })
                 .unwrap_or(false)
     })
     .await;

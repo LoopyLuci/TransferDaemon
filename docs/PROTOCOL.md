@@ -171,13 +171,26 @@ as the application reads. A sender with no credit waits; it never drops data.
 ## 6. Invites
 
 ```
-invite := "tdov1:" base64url(JSON {version: 1, node_id, name, hybrid_public_key, relays, direct, expires_at, nonce, signature})
+invite := "tdov2:" base64url(JSON {version: 2, node_id, name, key_fingerprint, relays, direct, expires_at, nonce, signature})
 ```
 
-- The signature (Ed25519 + ML-DSA-87) covers a BLAKE3 hash of every other field, under the context
-  `"TransferDaemon-overlay-invite-v1"`.
+- `node_id` is the inviting node's id: 64 lowercase hex characters, its Ed25519 public key.
+- `key_fingerprint` is 64 hex characters: BLAKE3 under the context `"TransferDaemon-overlay-key-fingerprint-v1"`, over
+  the inviting node's 2624-byte hybrid public key. The key itself is not in the invite.
+- `nonce` is 32 hex characters. `signature` is 128 hex characters.
+- The signature is Ed25519 by the key of `node_id`, checked with `verify_strict`. It covers a BLAKE3 digest of every
+  other field, under the context `"TransferDaemon-overlay-invite-v2"`. Each variable-length field is length-prefixed in
+  the digest.
+- An invite is a few hundred bytes, short enough for a QR code. A build refuses an invite over 4 KB.
 - An invite lives 30 s to 24 h.
 - Its `nonce` is the one-time pairing secret described in §5.
+- **First contact.** A node dialled from an invite must present a hybrid public key that hashes to `key_fingerprint`.
+  This is checked on the direct path and on the relay path, in both directions, before any link is attached. A key
+  that does not match closes the link, and the dial moves on to the next route. A relayed flight that does not match
+  gets no answer, so the dialler's handshake times out.
+- **Trust.** The Ed25519 signature is classical, so the invite is only as trusted as the channel it arrives on. The
+  fingerprint is what binds the post-quantum key: a dialled node must present the key the invite fingerprinted.
+- An invite of version 1 (`tdov1:`) is refused.
 
 ## 7. Compatibility and evolution
 

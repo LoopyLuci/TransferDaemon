@@ -78,3 +78,8 @@ lto = "fat"
 codegen-units = 1
 panic = "abort"
 strip = "symbols"
+
+# The link tests time a shaped path, so the code must keep up with it. Unoptimized, the sender is the
+# bottleneck and the tests measure the debug build, not the path.
+[profile.test]
+opt-level = 1
