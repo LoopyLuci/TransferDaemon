@@ -1,22 +1,14 @@
-# The overlay: paired devices reach each other's services, on any network
+# The overlay in TransferDaemon
 
-The overlay lets an application on one paired device reach a service on another, without:
+The overlay lets an application on one paired device reach a service on another, without an open firewall port, a router port-forward or a VPN. It works across a LAN, behind NAT or CGNAT, on IPv4 or IPv6, with or without Tailscale.
 
-- an open firewall port;
-- a router port-forward;
-- a VPN.
+This page describes how the overlay runs in TransferDaemon: the commands, the settings, where its files live, what has been measured, and which tests cover it. What the overlay *is*, its pairing rules, path selection, stream semantics and wire format are specified in the protocol repository:
 
-It works across a LAN, behind NAT or CGNAT, on IPv4 or IPv6, and with or without Tailscale.
+- [Transferd overlay semantics](https://github.com/LoopyLuci/Transferd/blob/main/docs/OVERLAY.md)
+- [Transferd wire protocol](https://github.com/LoopyLuci/Transferd/blob/main/docs/PROTOCOL.md), in particular §8 for hole punching
+- [How this build maps onto the protocol](PROTOCOL.md)
 
-Every node keeps only **outbound** connections:
-
-- to a relay (`relayd`, which anyone can host);
-- to a peer directly, when there is a path.
-
-Traffic is end-to-end encrypted with TransferDaemon's hybrid post-quantum identity. The relay sees only ciphertext.
-
-It runs inside the daemon (`transferd`) as one node per installation. Its operations are on the control hub (see
-CONTROL.md), so `transferd-cli`, MCP clients and scripts all use it the same way. The wire format is in PROTOCOL.md.
+The daemon (`transferd`) runs one overlay node per installation. Its operations are on the control hub (see [CONTROL.md](CONTROL.md)), so `transferd-cli`, MCP clients and scripts all use it the same way.
 
 ## Using it
 
@@ -31,101 +23,48 @@ transferd-cli overlay connect <node-id> web       # -> {"local_addr": "127.0.0.1
 curl http://127.0.0.1:50123/
 ```
 
-**Pairing:**
-- An invite is signed, carries the node's identity and how to reach it, and expires.
-- Accepting one pairs both ways. The accepting node presents the invite's one-time nonce in its first hello, and the
-  inviting node then knows the pairing is mutual.
-- A node is paired only through an invite. Merely opening a session does not count, so `*paired` never includes a node
-  that just happened to learn a node id.
-- Trust on first use: a node that later presents a different key for the same id is refused.
+**Pairing in this build:**
+- Merely opening a session does not count as pairing, so `*paired` never includes a node that only learned a node id.
+- Trust on first use is enforced: a node that later presents a different key for the same id is refused.
 
-**Services:**
+**Services in this build:**
 - Nothing is exposed until `overlay.expose`.
-- Each service has an access list: node ids, and/or `*paired`.
-- An open from anyone else is refused before it reaches the local socket, and the refusal goes in the audit trail
-  (`overlay.audit`).
+- Refused opens are recorded in the audit trail (`overlay.audit`).
 - Each service is also rate-limited per node.
 
 **Endpoints:**
-- `overlay.connect` gives a stable local address for a peer's service: idempotent, and listening until
-  `overlay.disconnect`.
-- A target can be a node id, the name the node was paired under, a unique id prefix (8+ characters), or a service
-  group (`overlay.group_set`). A group is spread over its members by route quality and the streams already open to each.
+- `overlay.connect` gives a stable local address for a peer's service. It is idempotent and keeps listening until `overlay.disconnect`.
+- A target can be a node id, the name the node was paired under, a unique id prefix (8+ characters), or a service group (`overlay.group_set`). A group is spread over its members by route quality and by the streams already open to each.
 
 **Proxies:**
 - `overlay.proxies_start` runs a local SOCKS5 proxy and an HTTP-CONNECT proxy.
-- Any application can then reach `<service>.<node>.td` with no per-service setup. `<node>` is the paired name or an
-  id prefix (a whole id is longer than a DNS label allows).
+- Any application can then reach `<service>.<node>.td` with no per-service setup. `<node>` is the paired name or an id prefix, since a whole id is longer than a DNS label allows.
 - Only CONNECT is proxied.
 
-## How a path is found
+## How a path is found, in this build
 
-1. **Direct.** The addresses a peer published (its listener, `TRANSFERD_OVERLAY_DIRECT`: LAN, tailnet, a public
-   address) are dialled first, each with a short timeout.
-2. **Relay.** Both nodes register an identity-derived token on the same relay. The relay forwards opaque datagrams
-   between the mappings their own outbound registrations created, so nothing has to be opened anywhere. Registrations
-   are renewed every 30 s, so a restarted relay gets its nodes back within a minute. A relay that is down at start is
-   retried in the background.
-3. Once a session is up on one kind of path, the node adds the other kind beside it. The session then has a second
-   route to fail over to, and the cheaper one carries the traffic.
-4. **Hole punch.** When the dialling node holds a session over the relay (and the peer is paired and speaks protocol
-   version 3 or later), it asks the peer for a direct UDP path. The relay stays; the punch only adds a route.
+1. **Direct.** The addresses a peer published (its listener, set by `TRANSFERD_OVERLAY_DIRECT`: LAN, tailnet, or a public address) are dialed first, each with a short timeout.
+2. **Relay.** The node registers on the relays in `TRANSFERD_OVERLAY_RELAYS`, renewing every 30 s, so a restarted relay gets its nodes back within a minute. A relay that is down at start is retried in the background.
+3. Once a session is up on one kind of path, the node adds the other kind beside it, and the cheaper route carries the traffic.
+4. **Hole punch.** Attempted once, when a session comes up over the relay, if the peer is paired and speaks protocol version 3 or later. It is not retried when a NAT mapping changes later, and the session keeps using the relay in that case. The exchange is in [PROTOCOL.md §8](https://github.com/LoopyLuci/Transferd/blob/main/docs/PROTOCOL.md#8-hole-punching) of the protocol repository.
 
-**UDP hole punching.**
+### Hole punching results
 
-How it goes:
-- Each node asks the relay (`Locate`) which address it sees for its registration socket. That is the NAT mapping a peer
-  can be sure to find. The question goes out on the same socket the node registered with.
-- A node also names its own address towards the relay, when that is not loopback, for a peer on the same network.
-- The dialler sends its candidates over the existing session (frame CANDIDATE, see PROTOCOL.md section 8). The peer
-  answers with its own. Both add a random nonce. The nonces never leave the encrypted session, so only the two nodes can
-  derive the probe key.
-- Both then send authenticated probes **from the registration socket** to every address the other named: ten rounds,
-  200 ms apart, so about two seconds. A port-restricted cone NAT lets a probe in once the inside has sent to that
-  address, which is exactly what the two nodes' own probes arrange.
-- The first authenticated reply wins. The session gains a `holepunch` route (marked down until its first ping is
-  answered, so nothing is sent into a hole that is one-way), and the cheaper route carries the traffic.
+What has been observed in tests and on real networks with this build:
 
-What keeps it safe:
-- A probe is a 33-byte datagram with a MAC under the attempt's key. Anything else is dropped without an answer, from the
-  wrong role, from an address the peer did not name, or after the attempt is over (two seconds).
-- Probes go only to addresses the peer named, at most eight, and never to loopback, link-local, multicast or
-  unspecified ones (loopback only when the relay itself is on loopback). A stranger who replays a captured probe from
-  another address gets nothing back.
-- Replies are rate-limited per address and per attempt. A request is accepted from a paired peer, at most once in
-  three seconds.
-- If it fails, nothing changes: the relay route is untouched, and the node logs a `route.change` event
-  "holepunch failed".
+- **Works:** two nodes behind cone NATs, tested with the strictest, port-restricted, and the more permissive full and restricted cone NATs as well; a node with a public address and no NAT; two nodes on the same network, through the private candidate.
+- **Does not work:** a symmetric NAT on either side, since it gives each destination a different port and the address the relay saw is useless to the peer; a NAT or firewall that drops unsolicited UDP from a new address even after the inside has sent to it; a network that blocks UDP. These stay on the relay, which loses nothing.
+- **Not implemented:** guessing ports (birthday punching), IPv6 candidates, UPnP, NAT-PMP or PCP, and a punch toward a relay that is not the node's first reachable relay.
+- A route that goes quiet stays alive through the session's own one-second pings, which also keep the NAT mapping open.
 
-What works and what does not:
-- **Works:** two nodes behind cone NATs (tested with the strictest, port-restricted; full and restricted are more
-  permissive), a node with a public address behind
-  nothing, two nodes on the same network (the private candidate).
-- **Does not:** a symmetric NAT on either side (it gives each destination a different port, so the address the relay
-  saw is useless to the peer), a NAT or firewall that drops unsolicited UDP from a new address even after the inside
-  sent to it, and a network that blocks UDP. These stay on the relay, which loses nothing.
-- Not tried: guessing ports (birthday punching), IPv6 candidates, UPnP / NAT-PMP / PCP, or a punch toward a relay that
-  is not on the node's first reachable relay. The punch is tried once, when the session comes up over the relay; it is
-  not retried when a NAT mapping changes later (the session then keeps using the relay).
-- A route that goes quiet stays alive by the session's own one-second pings, which also keep the NAT mapping open.
-- `OverlayConfig::punch` turns it off. `OverlayConfig::udp_gateway` sends every datagram that is not for the relay
-  through a UDP-aware proxy, wrapped with its real destination (a NAT emulator in the tests is one).
+**Switches:** `OverlayConfig::punch` turns hole punching off. `OverlayConfig::udp_gateway` sends every datagram that is not for the relay through a UDP-aware proxy, wrapped with its real destination. A NAT emulator in the tests is one such proxy.
 
-## Inside a session
+## Inside a session, in this build
 
-- **One session per peer, many routes.** A new link to a peer joins its live session as another route.
-- **Probing.** Every route is probed once a second for RTT, loss and throughput. A route is down after three missed
-  probes in a row, and up again as soon as an authenticated frame arrives on it. A session never stops sending just
-  because its only route looks down.
-- **Streams.** Streams are multiplexed, flow-controlled with a per-stream window, and sequenced. Acknowledgements are
-  cumulative. Unacknowledged data is resent on another route after the route's retransmission timeout (400 ms until a round trip is measured), so a route dying mid-stream does not break
-  the TCP connection the application sees (a test cuts a LAN path under a live stream).
-- **Control frames.** Hello, open, accept, window and close carry receipts and are resent until one comes back.
-  Pings and route reports are best effort.
-- **Loss.** A test runs streams through a relay path that drops 20% of datagrams each way, and every byte arrives in
-  order.
-- **Wake-ups.** Sessions are woken when a frame arrives, not on a timer: a DNS query over a relay on loopback takes
-  about 2 ms.
+- **Probing.** Every route is probed once a second for RTT, loss and throughput.
+- **Wake-ups.** Sessions are woken when a frame arrives rather than on a timer. A mesh DNS query over a relay on loopback takes about 2 ms.
+- **Loss.** A test runs streams through a relay path that drops 20% of datagrams each way, and every byte arrives in order.
+- **Route loss.** A test cuts a LAN path under a live stream, and the TCP connection the application sees survives.
 
 ## Mesh DNS
 
@@ -137,30 +76,20 @@ app ── UDP/TCP ──► 127.0.0.1:53053 (mesh DNS forwarder) ══ overlay
 
 **Setting it up:**
 - **The node that shares a resolver** exposes it as the service `dns`:
-  `transferd-cli overlay expose dns 127.0.0.1:53` (any resolver that speaks DNS over TCP, for example a filtering or
-  validating one).
-- **The node that uses it:** `transferd-cli overlay dns set <node-id|group ...>`. Or set `TRANSFERD_MESH_DNS` (and
-  `TRANSFERD_MESH_DNS_LISTEN`) for the daemon.
+  `transferd-cli overlay expose dns 127.0.0.1:53` (any resolver that speaks DNS over TCP, for example a filtering or validating one).
+- **The node that uses it:** `transferd-cli overlay dns set <node-id|group ...>`, or set `TRANSFERD_MESH_DNS` (and `TRANSFERD_MESH_DNS_LISTEN`) for the daemon.
 - The setting is kept across restarts. `overlay dns off` turns it off.
 
-**Behaviour:**
-- **Failover.** Upstreams are tried in order. One that fails is set aside for 30 s, and when all fail the client gets
-  SERVFAIL rather than silence.
-- **Connections.** Each upstream gets one DNS-over-TCP connection with queries pipelined on it. Query ids are rewritten
-  on the way out, so two clients that chose the same id never see each other's answers.
-- **UDP clients.** A UDP client gets a truncated answer (TC set) when the response is too big for it, and asks again
-  over TCP.
-- **Counters.** `overlay.dns_status` reports, per upstream: health, queries, answers, NXDOMAIN, SERVFAIL, timeouts,
-  errors, the average round trip, and *blocked*. Blocked counts answers whose addresses are all `0.0.0.0` or `::`,
-  which is how filtering resolvers answer a name they block. It also shows which resolver this node shares.
-- **TransferDaemon's own lookups** can go through it too: add `mesh` to `TRANSFERD_DNS`, for example
-  `TRANSFERD_DNS=mesh,quad9,system` (address: `TRANSFERD_DNS_MESH`). It is not in the default order: a node must be
-  able to reach its relays before the mesh exists.
+**Behaviour in this build:**
+- **Failover.** Upstreams are tried in order. One that fails is set aside for 30 s. When all fail, the client gets SERVFAIL rather than silence.
+- **Connections.** Each upstream gets one DNS-over-TCP connection, with queries pipelined on it. Query ids are rewritten on the way out.
+- **UDP clients.** A UDP client gets a truncated answer (TC set) when the response is too big for it, and asks again over TCP.
+- **Counters.** `overlay.dns_status` reports, per upstream: health, queries, answers, NXDOMAIN, SERVFAIL, timeouts, errors, the average round trip, and *blocked*. Blocked counts answers whose addresses are all `0.0.0.0` or `::`, which is how filtering resolvers answer a name they block. It also shows which resolver this node shares.
+- **TransferDaemon's own lookups** can go through it too: add `mesh` to `TRANSFERD_DNS`, for example `TRANSFERD_DNS=mesh,quad9,system` (address: `TRANSFERD_DNS_MESH`). It is not in the default order, because a node must be able to reach its relays before the mesh exists.
 
-Nothing in mesh DNS knows what the resolver at the other end is. The overlay carries DNS; that resolver decides the
-answers.
+Mesh DNS does not know what the resolver at the other end is. The overlay carries the queries; that resolver decides the answers.
 
-## Settings (the daemon)
+## Settings
 
 | Setting | Default | |
 |---|---|---|
@@ -174,19 +103,16 @@ answers.
 
 **Where its files live** (all under the data folder's `overlay/`):
 - The node's key is a 64-byte seed, kept like the recovery-phrase cache: DPAPI on Windows, an owner-only file elsewhere.
-- Paired nodes, exposed services, groups, outstanding invites and the mesh DNS setting are in `state.json`
-  (versioned, migrated on load).
+- Paired nodes, exposed services, groups, outstanding invites and the mesh DNS setting are in `state.json` (versioned, migrated on load).
 - The audit trail is in `audit.jsonl`.
 
-**A relay that carries overlay traffic:** relayd's per-source limit (`RELAYD_RATE_PER_30S`, default 300 datagrams per
-30 s) is sized for messaging. A relay that carries overlay streams wants it raised. `RELAYD_BIND` puts relayd on one
-address (for example loopback, for a test) instead of every interface.
+**A relay that carries overlay traffic.** `relayd`'s per-source limit (`RELAYD_RATE_PER_30S`, default 300 datagrams per 30 s) is sized for messaging. A relay that carries overlay streams needs it raised. `RELAYD_BIND` puts `relayd` on one address (for example loopback, for a test) instead of every interface.
 
 ## Measured
 
-Debug builds, loopback, one machine: about 2 ms per mesh DNS query through a relay (median of 20), and every stream
-intact through a relay path losing 20% of its datagrams each way. Release-build throughput and latency, direct and
-relayed:
+Debug builds, loopback, one machine: about 2 ms per mesh DNS query through a relay (median of 20), and every stream intact through a relay path losing 20% of its datagrams each way.
+
+Release-build throughput and latency, direct and relayed, can be reproduced with:
 
 ```
 cargo test --release -p transferd-overlay --test bench -- --ignored --nocapture
@@ -199,33 +125,19 @@ Release build, Windows, one machine, loopback (2026-10). 64 MiB one way, then 20
 | direct (LAN listener) | 143 MB/s (1.1 Gbit/s) | 0.15 ms / 13.9 ms |
 | relayed (relayd's logic, in process) | 96 MB/s (770 Mbit/s) | 0.23 ms / 0.41 ms |
 
-With per-route congestion control (below) the same bench, medians of 6 runs on the same machine: direct 128 MB/s,
-relayed 90 MB/s, against 134 MB/s and 84 MB/s for the previous build measured in the same session (run-to-run spread
-is about 15%, so no regression shows). Loopback numbers are an upper bound: on a real network the path's own
-bandwidth and RTT decide. The relay client and relayd ask for 4 MiB socket buffers.
+With per-route congestion control, the same bench, medians of 6 runs on the same machine: direct 128 MB/s, relayed 90 MB/s, against 134 MB/s and 84 MB/s for the previous build measured in the same session. Run-to-run spread is about 15%, so no regression shows. Loopback numbers are an upper bound: on a real network, the path's own bandwidth and RTT decide. The relay client and `relayd` ask for 4 MiB socket buffers.
 
-### Congestion control and retransmission timing
+### Congestion control in this build
 
-Every route of a session has its own state (`src/cc.rs`):
-- **RTT and RTO** as in RFC 6298: SRTT and RTTVAR from the time between sending a data frame and the ACK that covers it
-  and from probe round trips; `rto = srtt + max(4 * rttvar, 100 ms)`, clamped to 200 ms .. 5 s, 400 ms before the
-  first sample, doubled per timeout until a new sample arrives. A frame unacknowledged for the RTO is resent, on
-  another route when one is up.
-- **Window** in bytes in flight, NewReno style (slow start from 10 full frames, one frame per round trip afterwards),
-  cut to 0.7 on a loss and at most once per window of data. AIMD was chosen over CUBIC: frames are large, paths are
-  short, and AIMD plus pacing is small enough to test exactly. A gap reported by the receiver (SACK ranges in the ACK)
-  counts as a loss without waiting for the timer.
-- **Pacing**: a window is spread over the smoothed round trip (twice as fast in slow start) instead of leaving as a burst.
-- The sender needs room in both the stream window and the route's window; data that does not fit waits and is sent
-  when an ACK frees room. Nothing is dropped.
-- `overlay.peers`, the probe output and the route report carry `cwnd`, `in_flight`, `srtt_ms`, `rto_ms`, `sent_bytes`
-  and `retx_bytes` per route (older peers omit them; they default to 0).
+Each route has its own state in `src/cc.rs`. The protocol recommends this approach; the parameters below are this build's choices.
 
-Measured with `tests/congestion.rs` (a token-bucket link emulator with a drop-tail queue and a delay, through a relay,
-debug build): a 16 MiB transfer over 2 MB/s with 40 ms each way and a 96 KiB queue arrives intact at 76-78% of the
-link, resending 1.3-1.5% of the bytes sent, 0.6-0.7% of the bytes offered to the queue dropped, the queue nearly full
-for 1% of the bytes. With plenty of bandwidth the RTO settles at about 220-270 ms for 40 ms each way and about 700 ms
-for 300 ms each way.
+- **RTO.** As in RFC 6298: `rto = srtt + max(4 * rttvar, 100 ms)`, clamped to 200 ms to 5 s, 400 ms before the first sample, doubled per timeout until a new sample arrives.
+- **Window.** NewReno style: slow start from 10 full frames, one frame per round trip afterwards, cut to 0.7 on a loss and at most once per window of data. AIMD was chosen over CUBIC: frames are large, paths are short, and AIMD plus pacing is small enough to test exactly.
+- **Pacing.** A window is spread over the smoothed round trip (twice as fast in slow start) instead of leaving as a burst.
+- **SACK.** A gap reported by the receiver counts as a loss without waiting for the timer.
+- `overlay.peers`, the probe output and the route report carry `cwnd`, `in_flight`, `srtt_ms`, `rto_ms`, `sent_bytes` and `retx_bytes` per route. Older peers omit them, and they default to 0.
+
+Measured with `tests/congestion.rs`, a token-bucket link emulator with a drop-tail queue and a delay, through a relay, debug build: a 16 MiB transfer over 2 MB/s with 40 ms each way and a 96 KiB queue arrives intact at 76-78% of the link. It resends 1.3-1.5% of the bytes sent, and 0.6-0.7% of the bytes offered to the queue are dropped. The queue is nearly full for 1% of the bytes. With plenty of bandwidth, the RTO settles at about 220-270 ms for 40 ms each way, and about 700 ms for 300 ms each way.
 
 ## Tests
 
@@ -238,7 +150,5 @@ for 300 ms each way.
 - older and newer peers agreeing on a version;
 - a service exposed after the session came up;
 - a 20%-loss relay path;
-- hole punching through userspace NAT emulators: two port-restricted cone NATs give a punched route that carries a
-  stream with the relay gone, a symmetric NAT fails cleanly and the relay carries the stream, and a stranger's replayed
-  probe is ignored and never answered;
-- mesh DNS: answers, blocked and NXDOMAIN counted, failover, SERVFAIL, the setting surviving a restart.
+- hole punching through userspace NAT emulators: two port-restricted cone NATs give a punched route that carries a stream with the relay gone; a symmetric NAT fails cleanly and the relay carries the stream; a stranger's replayed probe is ignored and never answered;
+- mesh DNS: answers, blocked and NXDOMAIN counted, failover, SERVFAIL, and the setting surviving a restart.

@@ -6,9 +6,27 @@
 [![Pentest](https://img.shields.io/badge/pentest-22%20scenarios%2C%200%20critical-brightgreen)](#)
 [![Post-Quantum](https://img.shields.io/badge/identity-Ed25519%20%2B%20ML--DSA--87-blueviolet)](#)
 
-**A truly next-generation, production-grade messaging and file-transfer platform that unifies every existing protocol into a single, secure, zero-knowledge Universal Data Transfer Protocol.**
+**A production-grade messaging and file-transfer application for secure, zero-knowledge transfer between your devices and your contacts' devices, built on the [Transferd protocol](https://github.com/LoopyLuci/Transferd).**
 
 TransferDaemon lets any user, on any device, send any data — from a few bytes to multi-terabyte datasets — with absolute privacy and end-to-end security. It intelligently selects the best transport (DMI, TCP, relay, Wi-Fi Direct, Bluetooth, etc.) automatically, while the user sees only a single, simple unified interface. The entire stack is built in pure Rust with no third-party analytics, no cloud accounts, and no metadata leakage.
+
+---
+
+## Protocol and documentation
+
+TransferDaemon is the **application**. It is the production implementation and reference implementation of the **Transferd protocol**, which is a separate project with its own specification, versioning and change process:
+
+- **[Transferd](https://github.com/LoopyLuci/Transferd)** — the wire protocol and overlay semantics, specified independently of any application. Anyone can implement it, run a relay that speaks it, or build a client for it.
+- **This repository** — the daemon, the desktop GUI, the terminal UI, the CLI, mobile shells, installers, and the crates that implement Transferd.
+
+| Document | What it covers |
+|----------|----------------|
+| [docs/PROTOCOL.md](docs/PROTOCOL.md) | Which protocol versions this build speaks, and where each part of the spec lives in the code |
+| [docs/OVERLAY.md](docs/OVERLAY.md) | Running the overlay: commands, settings, file locations, measurements, tests |
+| [docs/CONTROL.md](docs/CONTROL.md) | The control hub: HTTP, MCP and CLI access to the daemon |
+| [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | Deploying relays and daemons |
+
+If the protocol specification and this implementation disagree, the specification is the reference, and the disagreement should be reported to the [Transferd repository](https://github.com/LoopyLuci/Transferd/issues).
 
 ---
 
