@@ -27,7 +27,7 @@ A node negotiates the highest version both peers speak. A peer outside `1..=3` i
 | §3 Relay encapsulation and `Locate` | `crates/transferd-overlay`, `crates/relayd` |
 | §4 Frames and kinds | `crates/transferd-overlay/src/protocol.rs` (`MAX_BODY` = 60 KiB) |
 | §5 Session, streams, flow control, routes | `crates/transferd-overlay/src/session.rs`, `mux.rs` |
-| §6 Invites | `crates/transferd-overlay` |
+| §6 Invites | `crates/transferd-overlay/src/identity.rs` (invite signature, `INVITE_CONTEXT`) |
 | §7 Compatibility | `protocol.rs` (version range), `state.json` migration in the overlay state code |
 | §8 Hole punching | `crates/transferd-overlay/src/punch.rs` (probes, `TDPB` and `TDGW` envelopes) |
 | Per-route congestion control | `crates/transferd-overlay/src/cc.rs` |
@@ -45,4 +45,4 @@ Run them with `cargo test -p transferd-overlay`.
 ## Notes for this codebase
 
 - The fixed strings `TransferDaemon-overlay-*` in the key derivation are wire-visible. They are kept unchanged. Changing them would break every existing pairing.
-- The per-route retransmission timer is adaptive in `cc.rs`. `session.rs` also defines a fixed 400 ms resend interval. Which one governs resends should be confirmed, and [the specification §5](https://github.com/LoopyLuci/Transferd/blob/main/docs/PROTOCOL.md) updated to match.
+- Resends follow the per-route RTO kept in `cc.rs`, and three duplicate acknowledgements trigger an early resend (`DUP_ACKS` in `session.rs`). The constant `RESEND_AFTER` (400 ms, `session.rs`) is not a resend interval. It is the base of the ping-miss timer, which is four times it (1.6 s). [Transferd §5](https://github.com/LoopyLuci/Transferd/blob/main/docs/PROTOCOL.md#5-the-session) states the rule.
