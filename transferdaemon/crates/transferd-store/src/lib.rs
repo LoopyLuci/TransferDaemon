@@ -27,6 +27,7 @@
 
 use std::collections::HashMap;
 use std::fs;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use aes_gcm::{
@@ -37,6 +38,8 @@ use argon2::{Algorithm, Argon2, Params, Version};
 use rand::{RngCore, rngs::OsRng};
 use serde::{Deserialize, Serialize};
 use zeroize::Zeroizing;
+
+pub mod snapshot;
 
 // ---------------------------------------------------------------------------
 // Public error type
@@ -61,6 +64,9 @@ pub enum StoreError {
 
     #[error("no data directory available on this platform")]
     NoDataDir,
+
+    #[error("a snapshot named {0} already exists")]
+    SnapshotExists(String),
 }
 
 // ---------------------------------------------------------------------------
@@ -326,11 +332,31 @@ pub fn save_with_key(path: &Path, creds: &StoreCredentials, data: &PersistedUser
     file.extend_from_slice(&nonce);
     file.extend_from_slice(&ciphertext);
 
-    // Atomic write: write to a temp file then rename.
+    // Durable atomic write. The new bytes reach the disk before the rename makes them the store, and
+    // the rename reaches the disk before the call returns. A crash then leaves either the old file or
+    // the new one. Without the first sync, a crash could keep the rename and lose the data it names.
     let tmp = path.with_extension("tmp");
-    fs::write(&tmp, &file)?;
+    {
+        let mut out = fs::File::create(&tmp)?;
+        out.write_all(&file)?;
+        out.sync_all()?;
+    }
     fs::rename(&tmp, path)?;
+    sync_parent(path)?;
 
+    Ok(())
+}
+
+/// Makes a rename inside `path`'s folder durable. Unix can flush a directory. Windows cannot, and
+/// its rename is written through by the file system.
+pub(crate) fn sync_parent(path: &Path) -> Result<(), StoreError> {
+    #[cfg(unix)]
+    {
+        if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+            fs::File::open(parent)?.sync_all()?;
+        }
+    }
+    let _ = path;
     Ok(())
 }
 
