@@ -74,6 +74,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
+    // Settings from config.json, applied while the daemon runs, and the snapshots of the encrypted
+    // store they schedule. Taking and listing snapshots, and reading the settings in effect, go on
+    // the hub as operations.
+    let data_dir = transferd_control::client::data_dir();
+    match transferd_store::default_store_path() {
+        Ok(store) => {
+            let root = transferd_lib::runtime_config::snapshot_root(&data_dir);
+            let settings = transferd_lib::runtime_config::spawn_watcher(data_dir.clone());
+            transferd_lib::runtime_config::spawn_snapshots(store.clone(), root.clone(), settings.clone());
+            if let Some(hub) = &hub {
+                let config_file = data_dir.join(transferd_lib::runtime_config::FILE_NAME);
+                let ops = transferd_lib::snapshot_ops::Ops::new(store, root, config_file, settings);
+                transferd_lib::snapshot_ops::register(hub, ops);
+            }
+        }
+        Err(e) => tracing::warn!("[snapshots] no store path ({e}); snapshots are off"),
+    }
+
     // The overlay: paired devices reach each other's services with no inbound port anywhere
     // (TRANSFERD_OVERLAY=off leaves it out). Its operations live on the control hub.
     // On a runtime worker: the node's post-quantum key derivation needs more stack than the main

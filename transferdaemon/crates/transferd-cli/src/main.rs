@@ -3,13 +3,13 @@
 //! Every command goes through the running daemon's control hub (found through `control.json`), so the CLI can do
 //! everything the daemon can: messages, files, contacts, groups, connections, settings, calls, telemetry, updates,
 //! the window (`gui ...`), the terminal UI (`tui ...`) and local relays. `transferd-cli mcp` serves all of it to MCP
-//! clients over stdio.
+//! clients over stdio, and `transferd-cli acp` serves it to editors over the Agent Client Protocol.
 
 use serde_json::{json, Map, Value};
 use std::io::{BufRead, Write};
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
-use transferd_control::{mcp, Client, ClientError};
+use transferd_control::{acp, mcp, Client, ClientError};
 
 mod cat;
 mod dns;
@@ -81,6 +81,7 @@ THE DAEMON
   daemon start [--wait s]         start transferd (next to this program) if it is not running
   daemon stop                     stop it
   mcp [--tools all|compact]       serve every operation to an MCP client over stdio
+  acp                             serve every operation to an editor over the Agent Client Protocol (stdio)
 
 Options: --json prints raw JSON. key=value values are parsed as JSON when they can be (numbers, true, {...});
 dotted keys build objects (target.text=Send).
@@ -282,6 +283,65 @@ fn mcp_stdio(mode: mcp::Mode) -> Result<(), String> {
     Ok(())
 }
 
+/// The Agent Client Protocol over a reader and a writer: one JSON message per line, in each direction.
+struct LineWire<R, W> {
+    input: R,
+    output: W,
+}
+
+impl<R: BufRead + Send, W: Write + Send> acp::Wire for LineWire<R, W> {
+    async fn send(&mut self, message: Value) -> Result<(), String> {
+        writeln!(self.output, "{message}").map_err(|e| e.to_string())?;
+        self.output.flush().map_err(|e| e.to_string())
+    }
+
+    async fn recv(&mut self) -> Option<Value> {
+        loop {
+            let mut line = String::new();
+            match self.input.read_line(&mut line) {
+                Ok(0) | Err(_) => return None,
+                Ok(_) => {}
+            }
+            if line.trim().is_empty() {
+                continue;
+            }
+            match serde_json::from_str::<Value>(&line) {
+                Ok(message) => return Some(message),
+                Err(e) => {
+                    let err = json!({"jsonrpc": "2.0", "id": null, "error": {"code": -32700, "message": e.to_string()}});
+                    if acp::Wire::send(self, err).await.is_err() {
+                        return None;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The operations, served by the running daemon's hub. Each call reaches the daemon when it is made.
+struct HubHost;
+
+impl acp::Host for HubHost {
+    async fn operations(&mut self) -> Vec<Value> {
+        Client::connect().and_then(|c| c.operations()).unwrap_or_default()
+    }
+
+    async fn call(&mut self, op: &str, args: Value) -> Result<Value, String> {
+        let c = Client::connect().map_err(fail)?;
+        c.call(op, args).map_err(fail)
+    }
+}
+
+/// `transferd-cli acp`: the editor talks over stdin and stdout.
+fn acp_stdio() -> Result<(), String> {
+    let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| e.to_string())?;
+    let mut wire = LineWire {
+        input: std::io::BufReader::new(std::io::stdin()),
+        output: std::io::stdout(),
+    };
+    rt.block_on(acp::serve(&mut wire, &mut HubHost))
+}
+
 fn flag_value(rest: &[String], flag: &str) -> Option<String> {
     rest.iter().position(|a| a == flag).and_then(|i| rest.get(i + 1)).cloned()
 }
@@ -319,6 +379,10 @@ fn run(args: Vec<String>, out: &Out) -> Result<Option<Value>, String> {
         "mcp" => {
             let mode = flag_value(rest, "--tools").map(|m| mcp::Mode::parse(&m)).unwrap_or(mcp::Mode::All);
             mcp_stdio(mode)?;
+            Ok(None)
+        }
+        "acp" => {
+            acp_stdio()?;
             Ok(None)
         }
         "ghostkey" => ghostkey::run(rest).map(Some),
@@ -623,5 +687,56 @@ mod tests {
     fn pretty_prints() {
         let s = pretty(&json!({"a": 1, "b": [1, 2], "c": {"d": "x"}}), 0);
         assert!(s.contains("a: 1") && s.contains("c: {\"d\":\"x\"}"));
+    }
+}
+
+#[cfg(test)]
+mod acp_tests {
+    use super::*;
+    use std::io::Cursor;
+
+    /// A host with no daemon behind it: an empty catalog, and every call refused.
+    struct NoHub;
+
+    impl acp::Host for NoHub {
+        async fn operations(&mut self) -> Vec<Value> {
+            vec![]
+        }
+
+        async fn call(&mut self, op: &str, _args: Value) -> Result<Value, String> {
+            Err(format!("no daemon for {op}"))
+        }
+    }
+
+    #[test]
+    fn the_bridge_frames_one_message_per_line_and_answers_bad_lines() {
+        let input = concat!(
+            r#"{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":1}}"#,
+            "\n",
+            "{not json\n",
+            "\n",
+            r#"{"jsonrpc":"2.0","id":1,"method":"session/new","params":{}}"#,
+            "\n",
+        );
+        let mut output = Vec::new();
+        {
+            let mut wire = LineWire {
+                input: Cursor::new(input.as_bytes()),
+                output: &mut output,
+            };
+            let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("runtime");
+            rt.block_on(acp::serve(&mut wire, &mut NoHub)).expect("serves");
+        }
+        let lines: Vec<Value> = String::from_utf8(output)
+            .expect("utf8")
+            .lines()
+            .map(|l| serde_json::from_str(l).expect("each line is one JSON message"))
+            .collect();
+
+        assert_eq!(lines.len(), 3, "got {lines:?}");
+        assert_eq!(lines[0]["result"]["protocolVersion"], 1);
+        assert_eq!(lines[1]["error"]["code"], -32700);
+        assert_eq!(lines[1]["id"], Value::Null);
+        assert_eq!(lines[2]["result"]["sessionId"], "session-1");
     }
 }

@@ -18,6 +18,8 @@ pub mod safety;
 pub mod phrase_cache;
 pub mod outbox;
 pub mod overlay;
+pub mod runtime_config;
+pub mod snapshot_ops;
 
 use std::sync::Arc;
 use parking_lot::Mutex;

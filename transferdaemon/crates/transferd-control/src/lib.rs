@@ -5,7 +5,9 @@
 //! * [`hub`]: the local HTTP endpoint the daemon runs (`/v1/call/{op}`, `/mcp`, UI attachment). Feature `hub`.
 //! * [`client`]: finds a running hub (`control.json`) and calls it; the GUI and TUI attach through it.
 //! * [`mcp`]: the Model Context Protocol server, used by the hub (`/mcp`) and `transferd-cli mcp` (stdio).
+//! * [`acp`]: the Agent Client Protocol agent, used by `transferd-cli acp` (stdio), so an editor can drive the daemon.
 
+pub mod acp;
 pub mod client;
 pub mod mcp;
 pub mod schema;
