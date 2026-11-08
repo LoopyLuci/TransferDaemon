@@ -1,3 +1,5 @@
+// The launcher opens the window and the daemon for the user: it must not open a console window of its own.
+#![cfg_attr(windows, windows_subsystem = "windows")]
 //! TransferDaemon Launcher — single entry point for end users.
 //!
 //! Workflow:

@@ -1,3 +1,6 @@
+// A window app, not a console app: no console window opens behind it, on any launch path (shortcut, launcher, the
+// daemon's own launch). Its log goes to transferd-ui.log and the activity log, not to a console.
+#![cfg_attr(windows, windows_subsystem = "windows")]
 //! TransferDaemon UI — egui/eframe desktop application.
 //!
 //! Daemon selection:

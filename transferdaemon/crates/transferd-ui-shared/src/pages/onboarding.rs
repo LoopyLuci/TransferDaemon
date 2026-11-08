@@ -271,41 +271,48 @@ impl OnboardingPage {
 
         ui.add_space(tokens.spacing.lg);
 
-        // Each word is a fixed-width cell. The number of columns follows the window width (1 to 4), so the
-        // words reflow instead of being cut off on a narrow window.
-        let cell_w = 124.0;
+        // The words sit in a grid as wide as the buttons below, centred under the heading. There is one column per
+        // 124 px of width (at least one, at most four) and every cell is the same width, so the words reflow on a
+        // narrow window instead of being cut off at the edge. The grid is centred by hand: a plain grid would sit at
+        // the left edge of the centred column.
         let spacing = 10.0;
-        let cols = (((ui.available_width() + spacing) / (cell_w + spacing)).floor() as usize).clamp(1, 4);
-        egui::Grid::new("phrase_grid")
-            .num_columns(cols)
-            .spacing([spacing, spacing])
-            .show(ui, |ui| {
-                for (i, word) in self.recovery_phrase.split_whitespace().enumerate() {
-                    egui::Frame::none()
-                        .fill(tokens.palette.bg_tertiary)
-                        .rounding(6.0)
-                        .inner_margin(Vec2::new(8.0, 4.0))
-                        .show(ui, |ui| {
-                            ui.set_min_width(cell_w - 16.0);
-                            ui.horizontal(|ui| {
-                                ui.label(
-                                    RichText::new(format!("{}.", i + 1))
-                                        .size(13.0)
-                                        .color(tokens.palette.text_tertiary),
-                                );
-                                ui.label(
-                                    RichText::new(word)
-                                        .size(15.0)
-                                        .monospace()
-                                        .color(tokens.palette.text_primary),
-                                );
+        let grid_w = btn_w(ui);
+        let cols = (((grid_w + spacing) / (124.0 + spacing)).floor() as usize).clamp(1, 4);
+        let cell_w = ((grid_w - spacing * (cols as f32 - 1.0)) / cols as f32).max(60.0);
+        ui.horizontal(|ui| {
+            let pad = ((ui.available_width() - grid_w) / 2.0).max(0.0);
+            ui.add_space(pad);
+            egui::Grid::new("phrase_grid")
+                .num_columns(cols)
+                .spacing([spacing, spacing])
+                .show(ui, |ui| {
+                    for (i, word) in self.recovery_phrase.split_whitespace().enumerate() {
+                        egui::Frame::none()
+                            .fill(tokens.palette.bg_tertiary)
+                            .rounding(6.0)
+                            .inner_margin(Vec2::new(8.0, 4.0))
+                            .show(ui, |ui| {
+                                ui.set_min_width(cell_w - 16.0);
+                                ui.horizontal(|ui| {
+                                    ui.label(
+                                        RichText::new(format!("{}.", i + 1))
+                                            .size(13.0)
+                                            .color(tokens.palette.text_tertiary),
+                                    );
+                                    ui.label(
+                                        RichText::new(word)
+                                            .size(15.0)
+                                            .monospace()
+                                            .color(tokens.palette.text_primary),
+                                    );
+                                });
                             });
-                        });
-                    if (i + 1) % cols == 0 {
-                        ui.end_row();
+                        if (i + 1) % cols == 0 {
+                            ui.end_row();
+                        }
                     }
-                }
-            });
+                });
+        });
 
         ui.add_space(tokens.spacing.lg);
 

@@ -151,12 +151,18 @@ fn install_prefix_dirs() -> Vec<PathBuf> {
 pub fn spawn_daemon(binary: &std::path::Path, addr: &str) -> Result<(), LaunchError> {
     use std::process::Stdio;
 
-    std::process::Command::new(binary)
-        .env("TRANSFERD_ADDR", addr)
+    let mut cmd = std::process::Command::new(binary);
+    cmd.env("TRANSFERD_ADDR", addr)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()?;
+        .stderr(Stdio::null());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // No console window, and its own process group, so the daemon keeps running after the launcher closes.
+        cmd.creation_flags(0x0800_0000 | 0x0000_0200);
+    }
+    cmd.spawn()?;
 
     Ok(())
 }

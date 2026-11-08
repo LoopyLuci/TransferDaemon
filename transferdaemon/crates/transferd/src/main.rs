@@ -1,3 +1,5 @@
+// The daemon runs in the background: started from a shortcut or by the window it must not open a console window.
+#![cfg_attr(windows, windows_subsystem = "windows")]
 //! TransferDaemon daemon binary.
 //!
 //! Starts all seven gRPC services on `[::1]:50051` (override with `TRANSFERD_ADDR`),
