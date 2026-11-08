@@ -249,7 +249,7 @@ impl GroupChatPage {
                         if self.rename_mode {
                             ui.add(
                                 egui::TextEdit::singleline(&mut self.rename_input)
-                                    .desired_width(160.0),
+                                    .desired_width(ui.available_width().min(160.0)),
                             );
                             if ui.button("Save").clicked() {
                                 let rt = tokio::runtime::Handle::current();

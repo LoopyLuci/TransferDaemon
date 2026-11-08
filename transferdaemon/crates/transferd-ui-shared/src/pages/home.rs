@@ -47,9 +47,8 @@ pub struct HomePage {
     contact_menu_for: Option<String>,
     /// Two-step confirmation for contact removal.
     confirm_remove: bool,
-    /// Tab to auto-reveal (center) in the scrollable nav bar next frame.
-    /// Set when the active tab changes so the strip scrolls it into view.
-    pending_nav_scroll: Option<Tab>,
+    /// Whether the "More" popover above the compact bottom bar is open.
+    more_open: bool,
     // Sub-pages
     settings: SettingsPage,
     telemetry: TelemetryPage,
@@ -72,12 +71,45 @@ impl Default for HomePage {
             pending_nickname_save: None,
             contact_menu_for: None,
             confirm_remove: false,
-            pending_nav_scroll: None,
+            more_open: false,
             settings: SettingsPage::default(),
             telemetry: TelemetryPage::default(),
             groups: crate::pages::groups::GroupsPage::default(),
             connections: crate::pages::connections::ConnectionsPage::default(),
         }
+    }
+}
+
+/// Height of the compact bottom bar, in points.
+const BOTTOM_BAR_H: f32 = 64.0;
+/// Inner margin between the bar's edge and its first and last slot.
+const BAR_MARGIN: f32 = 6.0;
+/// Below this slot width a label would not fit, so the slot shows its icon only.
+const MIN_LABELLED_SLOT: f32 = 60.0;
+/// Tabs shown directly in the compact bar. The rest sit behind "More".
+const PRIMARY_TABS: [Tab; 4] = [Tab::Chats, Tab::Groups, Tab::Contacts, Tab::Transfers];
+const MORE_TABS: [Tab; 3] = [Tab::Settings, Tab::Connections, Tab::Telemetry];
+/// Every tab, in the order the side rail shows them.
+const RAIL_TABS: [Tab; 7] = [
+    Tab::Chats,
+    Tab::Groups,
+    Tab::Contacts,
+    Tab::Transfers,
+    Tab::Settings,
+    Tab::Connections,
+    Tab::Telemetry,
+];
+
+/// Icon and label for a tab.
+fn tab_info(t: Tab) -> (&'static str, &'static str) {
+    match t {
+        Tab::Chats => ("💬", "Chats"),
+        Tab::Groups => ("👥", "Groups"),
+        Tab::Contacts => ("📇", "Contacts"),
+        Tab::Transfers => ("⬆⬇", "Transfers"),
+        Tab::Settings => ("⚙", "Settings"),
+        Tab::Connections => ("🌐", "Network"),
+        Tab::Telemetry => ("📊", "Metrics"),
     }
 }
 
@@ -90,60 +122,76 @@ impl HomePage {
         layout_mode: LayoutMode,
     ) {
         let tokens = DesignTokens::current();
-        let tabs = [
-            (Tab::Chats, "💬", "Chats"),
-            (Tab::Groups, "👥", "Groups"),
-            (Tab::Contacts, "📇", "Contacts"),
-            (Tab::Transfers, "⬆⬇", "Transfers"),
-            (Tab::Settings, "⚙", "Settings"),
-            (Tab::Connections, "🌐", "Network"),
-            (Tab::Telemetry, "📊", "Metrics"),
-        ];
-
+        let mut toggle_more = false;
         if layout_mode == LayoutMode::Compact {
-            // ── Phone: bottom tab bar (horizontally scrollable strip) ──────
-            // Each tab is a fixed, comfortable width; tabs that don't fit are
-            // reached by side-scrolling (touch drag, mouse drag, or shift+wheel).
-            // The active tab auto-reveals (centers itself) when it changes.
+            // ── Phone: a fixed bottom bar that always fits ──────────────────
+            // Four main tabs and "More". Every slot is the same width, so nothing is cut off at any width, and
+            // "More" opens the remaining tabs above the bar.
             egui::TopBottomPanel::bottom("bottom_tabs")
-                .min_height(64.0)
+                .exact_height(BOTTOM_BAR_H)
                 .frame(
                     egui::Frame::none()
                         .fill(tokens.palette.tab_bar_bg)
                         .stroke(egui::Stroke::new(0.5_f32, tokens.palette.border_subtle))
-                        .inner_margin(egui::Margin::symmetric(8.0, 6.0)),
+                        .inner_margin(egui::Margin::symmetric(BAR_MARGIN, 6.0)),
                 )
                 .show(ctx, |ui| {
-                    egui::ScrollArea::horizontal()
-                        .id_source("home_nav_scroll")
-                        .auto_shrink([false, false])
-                        .scroll_bar_visibility(
-                            egui::scroll_area::ScrollBarVisibility::AlwaysHidden,
-                        )
-                        .drag_to_scroll(true)
-                        .max_height(54.0)
-                        .show(ui, |ui| {
-                            ui.set_min_height(50.0);
-                            ui.horizontal(|ui| {
-                                for (t, icon, label) in tabs {
+                    let slots = PRIMARY_TABS.len() + 1;
+                    ui.columns(slots, |cols| {
+                        for (i, t) in PRIMARY_TABS.iter().enumerate() {
+                            let col = &mut cols[i];
+                            let size = egui::vec2(col.available_width(), BOTTOM_BAR_H - 12.0);
+                            let show_label = size.x >= MIN_LABELLED_SLOT;
+                            let (icon, label) = tab_info(*t);
+                            let active = self.tab == *t;
+                            if Self::nav_button(col, &tokens, icon, label, active, size, show_label).clicked() {
+                                self.select_tab(*t);
+                                self.more_open = false;
+                            }
+                        }
+                        let col = &mut cols[PRIMARY_TABS.len()];
+                        let size = egui::vec2(col.available_width(), BOTTOM_BAR_H - 12.0);
+                        let show_label = size.x >= MIN_LABELLED_SLOT;
+                        let more_active = self.more_open || MORE_TABS.contains(&self.tab);
+                        if Self::nav_button(col, &tokens, "⋯", "More", more_active, size, show_label).clicked() {
+                            toggle_more = true;
+                        }
+                    });
+                });
+
+            if self.more_open {
+                let area = egui::Area::new(egui::Id::new("more_tabs_popup"))
+                    .order(egui::Order::Foreground)
+                    .anchor(
+                        egui::Align2::RIGHT_BOTTOM,
+                        egui::vec2(-BAR_MARGIN, -(BOTTOM_BAR_H + 6.0)),
+                    )
+                    .show(ctx, |ui| {
+                        egui::Frame::popup(ui.style())
+                            .fill(tokens.palette.surface)
+                            .show(ui, |ui| {
+                                ui.set_min_width(176.0);
+                                for t in MORE_TABS {
+                                    let (icon, label) = tab_info(t);
                                     let active = self.tab == t;
-                                    let (clicked, response) =
-                                        Self::nav_button(ui, &tokens, icon, label, active, 88.0, 46.0);
-                                    if clicked {
+                                    let size = egui::vec2(170.0, 48.0);
+                                    if Self::nav_button(ui, &tokens, icon, label, active, size, true).clicked() {
                                         self.select_tab(t);
-                                    }
-                                    if active && self.pending_nav_scroll == Some(t) {
-                                        response
-                                            .scroll_to_me(Some(egui::Align::Center));
+                                        self.more_open = false;
                                     }
                                 }
                             });
-                        });
-                    // One-shot reveal has been consumed for this frame.
-                    self.pending_nav_scroll = None;
-                });
+                    });
+                // A click outside the popup closes it. The "More" click itself is excluded, so it can toggle.
+                if ctx.input(|i| i.pointer.any_click()) && !area.response.hovered() && !toggle_more {
+                    self.more_open = false;
+                }
+            }
+            if toggle_more {
+                self.more_open = !self.more_open;
+            }
         } else {
-            // ── Tablet/Desktop: left navigation rail ────────────────────────
+            // ── Tablet/Desktop: left navigation rail, every tab ─────────────
             egui::SidePanel::left("nav_rail")
                 .exact_width(96.0)
                 .frame(
@@ -160,19 +208,17 @@ impl HomePage {
                             egui::scroll_area::ScrollBarVisibility::AlwaysHidden,
                         )
                         .show(ui, |ui| {
-                            ui.set_min_height(ui.available_height());
-                            for (t, icon, label) in tabs {
+                            for t in RAIL_TABS {
+                                let (icon, label) = tab_info(t);
                                 let active = self.tab == t;
-                                let (clicked, _) =
-                                    Self::nav_button(ui, &tokens, icon, label, active, 84.0, 54.0);
-                                if clicked {
+                                let size = egui::vec2(ui.available_width(), 56.0);
+                                if Self::nav_button(ui, &tokens, icon, label, active, size, true).clicked() {
                                     self.select_tab(t);
                                 }
                             }
                         });
                 });
         }
-        self.pending_nav_scroll = None;
 
         // ── Top bar (title) ───────────────────────────────────────────────────
         if self.tab != Tab::Settings && self.tab != Tab::Telemetry {
@@ -282,48 +328,51 @@ impl HomePage {
         }
     }
 
-    /// Switch the active nav tab, cancelling any inline edit and scheduling a
-    /// reveal of the newly-active tab in the scrollable strip.
+    /// Switch the active nav tab, cancelling any inline edit.
     fn select_tab(&mut self, t: Tab) {
         if self.tab != t {
             self.tab = t;
             self.editing_nickname_for = None;
-            self.pending_nav_scroll = Some(t);
         }
     }
 
-    /// Render a single nav tab (icon + label). Returns `(clicked, response)`.
+    /// Render a nav tab: the icon and label centred in a rounded button of `size`. The label is dropped when
+    /// `show_label` is false, which is used when a slot is too narrow for it. Returns the click response.
     fn nav_button(
         ui: &mut egui::Ui,
         tokens: &DesignTokens,
         icon: &str,
         label: &str,
         active: bool,
-        w: f32,
-        h: f32,
-    ) -> (bool, egui::Response) {
-        let text_color = if active {
-            tokens.palette.text_inverse
+        size: egui::Vec2,
+        show_label: bool,
+    ) -> egui::Response {
+        let (rect, response) = ui.allocate_exact_size(size, egui::Sense::click());
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
+        let (fill, fg) = if active {
+            (tokens.palette.accent, tokens.palette.text_inverse)
+        } else if response.hovered() {
+            (tokens.palette.surface, tokens.palette.text_primary)
         } else {
-            tokens.palette.tab_inactive
+            (Color32::TRANSPARENT, tokens.palette.tab_inactive)
         };
-        let bg = if active {
-            tokens.palette.accent
+        let rounding = egui::Rounding::same(12.0);
+        let painter = ui.painter();
+        if fill != Color32::TRANSPARENT {
+            painter.rect_filled(rect, rounding, fill);
+        }
+        if !active {
+            painter.rect_stroke(rect, rounding, egui::Stroke::new(0.5_f32, tokens.palette.border_subtle));
+        }
+        if show_label {
+            let icon_pos = rect.center_top() + egui::vec2(0.0, size.y * 0.36);
+            let label_pos = rect.center_top() + egui::vec2(0.0, size.y * 0.76);
+            painter.text(icon_pos, egui::Align2::CENTER_CENTER, icon, egui::FontId::proportional(16.0), fg);
+            painter.text(label_pos, egui::Align2::CENTER_CENTER, label, egui::FontId::proportional(12.0), fg);
         } else {
-            Color32::TRANSPARENT
-        };
-        let btn = egui::Button::new(
-            RichText::new(format!("{icon}\n{label}"))
-                .size(11.0)
-                .strong()
-                .color(text_color),
-        )
-        .fill(bg)
-        .stroke(egui::Stroke::new(0.5_f32, tokens.palette.border_subtle))
-        .rounding(egui::Rounding::same(12.0))
-        .min_size(egui::vec2(w, h));
-        let response = ui.add_sized(egui::vec2(w, h), btn);
-        (response.clicked(), response)
+            painter.text(rect.center(), egui::Align2::CENTER_CENTER, icon, egui::FontId::proportional(18.0), fg);
+        }
+        response
     }
 
     fn show_chats(&mut self, ctx: &Context, state: &mut AppState, _chat: &mut ChatPage) {
@@ -531,7 +580,7 @@ impl HomePage {
                         input_frame.show(ui, |ui| {
                             ui.add(
                                 egui::TextEdit::singleline(&mut self.add_contact_address)
-                                    .hint_text("127.0.0.1:50051 (optional)")
+                                    .hint_text("their IP:port, e.g. 192.168.1.20:50052")
                                     .desired_width(ui.available_width() - 16.0)
                                     .margin(Vec2::new(8.0, 6.0)),
                             );
@@ -731,7 +780,7 @@ impl HomePage {
                                 ui.label(RichText::new("Nickname:").size(13.0));
                                 ui.add(
                                     egui::TextEdit::singleline(&mut self.nickname_input)
-                                        .desired_width(140.0),
+                                        .desired_width(ui.available_width().min(140.0)),
                                 );
                                 if ui.button("Save").clicked() {
                                     let nick = self.nickname_input.trim().to_owned();
@@ -923,5 +972,55 @@ fn format_time(ts: u64) -> String {
         format!("{}h", diff / 3600)
     } else {
         format!("{}d", diff / 86400)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const ALL_TABS: [Tab; 7] = [
+        Tab::Chats,
+        Tab::Groups,
+        Tab::Contacts,
+        Tab::Transfers,
+        Tab::Settings,
+        Tab::Connections,
+        Tab::Telemetry,
+    ];
+
+    #[test]
+    fn every_tab_is_reachable_from_the_compact_bar() {
+        for t in ALL_TABS {
+            assert!(
+                PRIMARY_TABS.contains(&t) || MORE_TABS.contains(&t),
+                "{} is not in the bottom bar or behind More",
+                tab_info(t).1
+            );
+        }
+    }
+
+    #[test]
+    fn no_tab_is_listed_twice_in_the_compact_bar() {
+        let mut seen = Vec::new();
+        for t in PRIMARY_TABS.iter().chain(MORE_TABS.iter()) {
+            assert!(!seen.contains(t), "{} is listed twice", tab_info(*t).1);
+            seen.push(*t);
+        }
+    }
+
+    #[test]
+    fn the_rail_lists_every_tab_once() {
+        for t in ALL_TABS {
+            assert_eq!(RAIL_TABS.iter().filter(|r| **r == t).count(), 1, "{}", tab_info(t).1);
+        }
+    }
+
+    #[test]
+    fn labels_fit_in_every_bar_slot_at_the_minimum_window_width() {
+        // The smallest window is 360 points wide. Each of the five slots must still hold a label.
+        let slots = (PRIMARY_TABS.len() + 1) as f32;
+        let slot = (360.0 - 2.0 * BAR_MARGIN) / slots;
+        assert!(slot >= MIN_LABELLED_SLOT, "a slot is {slot} points wide, under the label minimum");
     }
 }

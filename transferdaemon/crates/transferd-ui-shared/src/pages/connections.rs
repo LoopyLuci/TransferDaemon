@@ -101,6 +101,9 @@ impl ConnectionsPage {
             ui.label(RichText::new("Transfer policy").size(14.0).strong().color(tokens.palette.text_primary));
             ui.add_space(tokens.spacing.xs);
             ui.horizontal(|ui| {
+                // One width for all four, worked out before the first button. Measured inside the loop, each
+                // button would be a quarter of what the previous ones left, and the last labels would be clipped.
+                let btn_w = ((ui.available_width() - ui.spacing().item_spacing.x * 3.0) / 4.0).max(40.0);
                 for (key, label) in [
                     ("auto", "Auto"),
                     ("direct", "Direct only"),
@@ -112,7 +115,7 @@ impl ConnectionsPage {
                     let fg = if selected { tokens.palette.text_inverse } else { tokens.palette.text_primary };
                     if ui
                         .add_sized(
-                            [ui.available_width() / 4.2, 30.0],
+                            [btn_w, 30.0],
                             egui::Button::new(RichText::new(label).size(11.0).color(fg)).fill(bg),
                         )
                         .clicked()

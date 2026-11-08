@@ -188,59 +188,51 @@ impl TelemetryPage {
                 ui.add_space(tokens.spacing.md);
 
                 // ── Header cards ─────────────────────────────────────────────────────
-                let card_w = (ui.available_width() - tokens.spacing.sm * 3.0) / 4.0;
-                ui.horizontal(|ui| {
-                    for (label, value, bar_pct, icon) in [
-                        (
-                            "CPU",
-                            format!("{:.1}%", self.cpu_pct),
-                            self.cpu_pct / 100.0,
-                            "⚡",
-                        ),
-                        (
-                            "Memory",
-                            fmt_kib(self.mem_rss_kb),
-                            -1.0_f32,
-                            "💾",
-                        ),
-                        (
-                            "Sessions",
-                            self.active_sessions.to_string(),
-                            -1.0_f32,
-                            "🔗",
-                        ),
-                        (
-                            "Uptime",
-                            fmt_duration(self.uptime_secs),
-                            -1.0_f32,
-                            "⏱",
-                        ),
-                    ] {
-                        design::card_frame(&tokens).show(ui, |ui| {
-                            ui.set_width(card_w);
-                            ui.horizontal(|ui| {
-                                ui.label(RichText::new(icon).size(14.0));
+                // As many cards across as fit: four on a wide window, two on a phone-width one. A card's frame adds
+                // its padding on each side outside the width it is given, so that padding is taken off here.
+                let cards = [
+                    ("CPU", format!("{:.1}%", self.cpu_pct), self.cpu_pct / 100.0, "⚡"),
+                    ("Memory", fmt_kib(self.mem_rss_kb), -1.0_f32, "💾"),
+                    ("Sessions", self.active_sessions.to_string(), -1.0_f32, "🔗"),
+                    ("Uptime", fmt_duration(self.uptime_secs), -1.0_f32, "⏱"),
+                ];
+                let gap = ui.spacing().item_spacing.x;
+                let min_card_outer = 140.0_f32;
+                let avail = ui.available_width();
+                let cols = ((avail + gap) / (min_card_outer + gap))
+                    .floor()
+                    .clamp(1.0, cards.len() as f32) as usize;
+                let card_w = (avail - gap * (cols as f32 - 1.0)) / cols as f32
+                    - 2.0 * tokens.spacing.card_padding.x;
+                for row in cards.chunks(cols) {
+                    ui.horizontal(|ui| {
+                        for (label, value, bar_pct, icon) in row.iter().cloned() {
+                            design::card_frame(&tokens).show(ui, |ui| {
+                                ui.set_width(card_w);
+                                ui.horizontal(|ui| {
+                                    ui.label(RichText::new(icon).size(14.0));
+                                    ui.label(
+                                        RichText::new(label)
+                                            .color(tokens.palette.text_disabled)
+                                            .size(11.0),
+                                    );
+                                });
                                 ui.label(
-                                    RichText::new(label)
-                                        .color(tokens.palette.text_disabled)
-                                        .size(11.0),
+                                    RichText::new(&value)
+                                        .color(tokens.palette.text_primary)
+                                        .size(18.0)
+                                        .strong(),
                                 );
+                                if bar_pct >= 0.0 {
+                                    let bar = egui::ProgressBar::new(bar_pct.clamp(0.0, 1.0))
+                                        .fill(cpu_bar_color(bar_pct, &tokens));
+                                    ui.add(bar);
+                                }
                             });
-                            ui.label(
-                                RichText::new(&value)
-                                    .color(tokens.palette.text_primary)
-                                    .size(18.0)
-                                    .strong(),
-                            );
-                            if bar_pct >= 0.0 {
-                                let bar = egui::ProgressBar::new(bar_pct.clamp(0.0, 1.0))
-                                    .fill(cpu_bar_color(bar_pct, &tokens));
-                                ui.add(bar);
-                            }
-                        });
-                        ui.add_space(tokens.spacing.xs);
-                    }
-                });
+                        }
+                    });
+                    ui.add_space(gap);
+                }
 
                 ui.add_space(tokens.spacing.sm);
 

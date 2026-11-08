@@ -11,6 +11,11 @@ use egui::{Context, RichText, Ui, Vec2};
 // Minimum tap target size — comfortable on mobile, fine on desktop.
 const BTN: [f32; 2] = [280.0, 52.0];
 
+/// Width for a full-width control: the standard button width, or less when the window is narrower.
+fn btn_w(ui: &Ui) -> f32 {
+    ui.available_width().min(BTN[0])
+}
+
 #[derive(Default, PartialEq)]
 enum Step {
     #[default]
@@ -37,27 +42,38 @@ pub struct OnboardingPage {
 }
 
 impl OnboardingPage {
+    /// Whether the user is partway through creating an identity (name entered, phrase being shown). Another screen
+    /// must not take over until it is done.
+    pub fn in_flow(&self) -> bool {
+        matches!(self.step, Step::CreateName | Step::ShowPhrase)
+    }
+
     pub fn show(&mut self, ui: &mut Ui, _ctx: &Context, state: &mut AppState) {
         let tokens = DesignTokens::current();
 
-        ui.vertical_centered(|ui| {
-            ui.add_space(tokens.spacing.xl);
+        // The whole page scrolls when the window is short, so nothing at the bottom is cut off.
+        egui::ScrollArea::vertical()
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.vertical_centered(|ui| {
+                    ui.add_space(tokens.spacing.xl);
 
-            // Logo / brand area
-            ui.label(
-                RichText::new("🔒")
-                    .size(48.0)
-                    .color(tokens.palette.accent),
-            );
-            ui.add_space(tokens.spacing.sm);
+                    // Logo / brand area
+                    ui.label(
+                        RichText::new("🔒")
+                            .size(48.0)
+                            .color(tokens.palette.accent),
+                    );
+                    ui.add_space(tokens.spacing.sm);
 
-            match self.step {
-                Step::Welcome    => self.show_welcome(ui, &tokens),
-                Step::CreateName => self.show_create_name(ui, state, &tokens),
-                Step::ShowPhrase => self.show_phrase(ui, state, &tokens),
-                Step::Restore    => self.show_restore(ui, state, &tokens),
-            }
-        });
+                    match self.step {
+                        Step::Welcome    => self.show_welcome(ui, &tokens),
+                        Step::CreateName => self.show_create_name(ui, state, &tokens),
+                        Step::ShowPhrase => self.show_phrase(ui, state, &tokens),
+                        Step::Restore    => self.show_restore(ui, state, &tokens),
+                    }
+                });
+            });
     }
 
     fn show_welcome(&mut self, ui: &mut Ui, tokens: &DesignTokens) {
@@ -78,7 +94,7 @@ impl OnboardingPage {
         // Primary action
         if ui
             .add_sized(
-                BTN,
+                [btn_w(ui), 52.0],
                 egui::Button::new(
                     RichText::new("Create new identity")
                         .size(16.0)
@@ -97,7 +113,7 @@ impl OnboardingPage {
         // Secondary action
         if ui
             .add_sized(
-                BTN,
+                [btn_w(ui), 52.0],
                 egui::Button::new(
                     RichText::new("Restore from phrase")
                         .size(16.0)
@@ -120,7 +136,7 @@ impl OnboardingPage {
             .rounding(tokens.spacing.card_rounding)
             .inner_margin(Vec2::new(tokens.spacing.md, tokens.spacing.sm))
             .show(ui, |ui| {
-                ui.set_max_width(BTN[0]);
+                ui.set_max_width(btn_w(ui));
                 ui.horizontal(|ui| {
                     ui.label(RichText::new("🛡").size(14.0));
                     ui.label(
@@ -153,7 +169,7 @@ impl OnboardingPage {
             let te = egui::TextEdit::singleline(&mut self.display_name)
                 .hint_text("Display name…")
                 .font(egui::FontId::proportional(16.0))
-                .desired_width(300.0)
+                .desired_width(ui.available_width().min(300.0))
                 .margin(Vec2::new(8.0, 8.0));
             let response = ui.add(te);
 
@@ -187,7 +203,7 @@ impl OnboardingPage {
         ui.add_enabled_ui(can_continue, |ui| {
             if ui
                 .add_sized(
-                    BTN,
+                    [btn_w(ui), 52.0],
                     egui::Button::new(
                         RichText::new("Continue")
                             .size(16.0)
@@ -215,7 +231,7 @@ impl OnboardingPage {
 
         if ui
             .add_sized(
-                [BTN[0], 40.0],
+                [btn_w(ui), 40.0],
                 egui::Button::new(
                     RichText::new("← Back")
                         .size(14.0)
@@ -245,7 +261,7 @@ impl OnboardingPage {
             .rounding(tokens.spacing.card_rounding)
             .inner_margin(Vec2::new(tokens.spacing.md, tokens.spacing.sm))
             .show(ui, |ui| {
-                ui.set_max_width(BTN[0]);
+                ui.set_max_width(btn_w(ui));
                 ui.label(
                     RichText::new("⚠ Write these 12 words down in order. Anyone with this phrase can restore your identity.")
                         .size(13.0)
@@ -255,40 +271,40 @@ impl OnboardingPage {
 
         ui.add_space(tokens.spacing.lg);
 
-        // Scrollable on small screens.
-        egui::ScrollArea::vertical()
-            .max_height(250.0)
+        // Each word is a fixed-width cell. The number of columns follows the window width (1 to 4), so the
+        // words reflow instead of being cut off on a narrow window.
+        let cell_w = 124.0;
+        let spacing = 10.0;
+        let cols = (((ui.available_width() + spacing) / (cell_w + spacing)).floor() as usize).clamp(1, 4);
+        egui::Grid::new("phrase_grid")
+            .num_columns(cols)
+            .spacing([spacing, spacing])
             .show(ui, |ui| {
-                let words: Vec<&str> = self.recovery_phrase.split_whitespace().collect();
-                egui::Grid::new("phrase_grid")
-                    .num_columns(3)
-                    .spacing([16.0, 10.0])
-                    .show(ui, |ui| {
-                        for (i, word) in words.iter().enumerate() {
-                            // Word number
-                            ui.label(
-                                RichText::new(format!("{}.", i + 1))
-                                    .size(13.0)
-                                    .color(tokens.palette.text_tertiary),
-                            );
-                            // Word
-                            egui::Frame::none()
-                                .fill(tokens.palette.bg_tertiary)
-                                .rounding(6.0)
-                                .inner_margin(Vec2::new(8.0, 4.0))
-                                .show(ui, |ui| {
-                                    ui.label(
-                                        RichText::new(*word)
-                                            .size(15.0)
-                                            .monospace()
-                                            .color(tokens.palette.text_primary),
-                                    );
-                                });
-                            if (i + 1) % 3 == 0 {
-                                ui.end_row();
-                            }
-                        }
-                    });
+                for (i, word) in self.recovery_phrase.split_whitespace().enumerate() {
+                    egui::Frame::none()
+                        .fill(tokens.palette.bg_tertiary)
+                        .rounding(6.0)
+                        .inner_margin(Vec2::new(8.0, 4.0))
+                        .show(ui, |ui| {
+                            ui.set_min_width(cell_w - 16.0);
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    RichText::new(format!("{}.", i + 1))
+                                        .size(13.0)
+                                        .color(tokens.palette.text_tertiary),
+                                );
+                                ui.label(
+                                    RichText::new(word)
+                                        .size(15.0)
+                                        .monospace()
+                                        .color(tokens.palette.text_primary),
+                                );
+                            });
+                        });
+                    if (i + 1) % cols == 0 {
+                        ui.end_row();
+                    }
+                }
             });
 
         ui.add_space(tokens.spacing.lg);
@@ -314,7 +330,7 @@ impl OnboardingPage {
         };
         if ui
             .add_sized(
-                [BTN[0], 44.0],
+                [btn_w(ui), 44.0],
                 egui::Button::new(RichText::new(copy_label).size(15.0).color(tokens.palette.text_primary))
                     .fill(copy_color)
                     .rounding(tokens.spacing.button_rounding),
@@ -330,7 +346,7 @@ impl OnboardingPage {
 
         if ui
             .add_sized(
-                BTN,
+                [btn_w(ui), 52.0],
                 egui::Button::new(
                     RichText::new("I've written it down — Continue")
                         .size(16.0)
@@ -367,7 +383,7 @@ impl OnboardingPage {
                     .hint_text("word1 word2 word3 …")
                     .font(egui::FontId::monospace(14.0))
                     .desired_rows(4)
-                    .desired_width(320.0)
+                    .desired_width(ui.available_width().min(320.0))
                     .margin(Vec2::new(8.0, 8.0)),
             );
             if self.focus_requested {
@@ -399,7 +415,7 @@ impl OnboardingPage {
         ui.add_enabled_ui(can_restore, |ui| {
             if ui
                 .add_sized(
-                    BTN,
+                    [btn_w(ui), 52.0],
                     egui::Button::new(
                         RichText::new("Restore identity")
                             .size(16.0)
@@ -428,7 +444,7 @@ impl OnboardingPage {
 
         if ui
             .add_sized(
-                [BTN[0], 40.0],
+                [btn_w(ui), 40.0],
                 egui::Button::new(
                     RichText::new("← Back")
                         .size(14.0)
