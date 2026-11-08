@@ -1,5 +1,25 @@
 # Changelog
 
+## 2.4.0 — 2026-11-08
+
+### Manage the daemon, watch what happens, and update from inside the window
+
+- **Daemon page.** Start, stop, restart, read and change `config.json`, and read the logs without leaving the window.
+- **Terminal page.** Type `/help` for the commands. `/status`, `/start`, `/stop`, `/restart`, `/config`, `/activity`,
+  `/update`, `/open` and the rest work the same in the window, in `transferd-cli term`, and over the control hub.
+- **Activity page.** Every error, warning, hub call and connection is recorded, redacted where it names a secret, and
+  kept in a rotating log (`activity.jsonl`). It can be filtered by level and category.
+- **Updates.** Manual by default. The optional modes download the new release in the background, and on Windows also
+  install it silently. Settings shows the installed version and the latest release side by side, and can save the
+  Android APK to the device (save and copy-link; sending it to a contact is not in this release).
+- **Control hub.** New `activity.*` operations, and `UpdateService` gained the update state, policy, download, APK and
+  save calls. The existing calls are unchanged.
+
+### Fixes
+
+- The recovery phrase screen centres its word grid and fits narrow windows.
+- The launcher, the window and the daemon no longer open a console window.
+
 ## 2.3.0 — 2026-10-10
 
 ### The overlay: a private network between your devices
