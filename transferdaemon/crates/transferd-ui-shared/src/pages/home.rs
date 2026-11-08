@@ -18,6 +18,8 @@ pub enum Tab {
     Settings,
     Telemetry,
     Connections,
+    Activity,
+    Terminal,
 }
 
 /// Actions available from a contact's overflow menu.
@@ -54,6 +56,8 @@ pub struct HomePage {
     telemetry: TelemetryPage,
     groups: crate::pages::groups::GroupsPage,
     connections: crate::pages::connections::ConnectionsPage,
+    activity: crate::pages::activity::ActivityPage,
+    terminal: crate::pages::terminal::TerminalPage,
 }
 
 impl Default for HomePage {
@@ -76,6 +80,8 @@ impl Default for HomePage {
             telemetry: TelemetryPage::default(),
             groups: crate::pages::groups::GroupsPage::default(),
             connections: crate::pages::connections::ConnectionsPage::default(),
+            activity: crate::pages::activity::ActivityPage::default(),
+            terminal: crate::pages::terminal::TerminalPage::default(),
         }
     }
 }
@@ -88,9 +94,9 @@ const BAR_MARGIN: f32 = 6.0;
 const MIN_LABELLED_SLOT: f32 = 60.0;
 /// Tabs shown directly in the compact bar. The rest sit behind "More".
 const PRIMARY_TABS: [Tab; 4] = [Tab::Chats, Tab::Groups, Tab::Contacts, Tab::Transfers];
-const MORE_TABS: [Tab; 3] = [Tab::Settings, Tab::Connections, Tab::Telemetry];
+const MORE_TABS: [Tab; 5] = [Tab::Settings, Tab::Connections, Tab::Telemetry, Tab::Activity, Tab::Terminal];
 /// Every tab, in the order the side rail shows them.
-const RAIL_TABS: [Tab; 7] = [
+const RAIL_TABS: [Tab; 9] = [
     Tab::Chats,
     Tab::Groups,
     Tab::Contacts,
@@ -98,6 +104,8 @@ const RAIL_TABS: [Tab; 7] = [
     Tab::Settings,
     Tab::Connections,
     Tab::Telemetry,
+    Tab::Activity,
+    Tab::Terminal,
 ];
 
 /// Icon and label for a tab.
@@ -110,6 +118,8 @@ fn tab_info(t: Tab) -> (&'static str, &'static str) {
         Tab::Settings => ("⚙", "Settings"),
         Tab::Connections => ("🌐", "Network"),
         Tab::Telemetry => ("📊", "Metrics"),
+        Tab::Activity => ("📜", "Activity"),
+        Tab::Terminal => (">_", "Terminal"),
     }
 }
 
@@ -221,7 +231,7 @@ impl HomePage {
         }
 
         // ── Top bar (title) ───────────────────────────────────────────────────
-        if self.tab != Tab::Settings && self.tab != Tab::Telemetry {
+        if !matches!(self.tab, Tab::Settings | Tab::Telemetry | Tab::Activity | Tab::Terminal) {
             egui::TopBottomPanel::top("home_top_bar")
                 .frame(
                     egui::Frame::none()
@@ -323,6 +333,20 @@ impl HomePage {
                     .show(ctx, |ui| {
                         self.telemetry
                             .show(ui, state.daemon_addr.as_deref(), ctx);
+                    });
+            }
+            Tab::Activity => {
+                egui::CentralPanel::default()
+                    .frame(egui::Frame::none().fill(tokens.palette.bg_primary))
+                    .show(ctx, |ui| {
+                        self.activity.show(ui);
+                    });
+            }
+            Tab::Terminal => {
+                egui::CentralPanel::default()
+                    .frame(egui::Frame::none().fill(tokens.palette.bg_primary))
+                    .show(ctx, |ui| {
+                        self.terminal.show(ui);
                     });
             }
         }
@@ -979,7 +1003,7 @@ fn format_time(ts: u64) -> String {
 mod tests {
     use super::*;
 
-    const ALL_TABS: [Tab; 7] = [
+    const ALL_TABS: [Tab; 9] = [
         Tab::Chats,
         Tab::Groups,
         Tab::Contacts,
@@ -987,6 +1011,8 @@ mod tests {
         Tab::Settings,
         Tab::Connections,
         Tab::Telemetry,
+        Tab::Activity,
+        Tab::Terminal,
     ];
 
     #[test]

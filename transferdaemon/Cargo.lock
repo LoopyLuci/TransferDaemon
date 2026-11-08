@@ -9208,7 +9208,7 @@ dependencies = [
 
 [[package]]
 name = "transferd"
-version = "0.1.0"
+version = "2.4.0-dev"
 dependencies = [
  "aes-gcm",
  "argon2",
@@ -9229,6 +9229,7 @@ dependencies = [
  "relayd",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
  "thiserror 2.0.21",
  "tokio",
@@ -9237,6 +9238,7 @@ dependencies = [
  "tonic",
  "tracing",
  "tracing-subscriber",
+ "transferd-activity",
  "transferd-api",
  "transferd-control",
  "transferd-core",
@@ -9251,6 +9253,16 @@ dependencies = [
  "windows-sys 0.59.0",
  "x25519-dalek",
  "zeroize",
+]
+
+[[package]]
+name = "transferd-activity"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
@@ -9318,6 +9330,7 @@ dependencies = [
  "tokio-tungstenite",
  "tonic",
  "tracing",
+ "transferd-activity",
  "transferd-api",
 ]
 
@@ -9616,7 +9629,9 @@ dependencies = [
  "tokio",
  "tonic",
  "tracing",
+ "transferd-activity",
  "transferd-api",
+ "transferd-control",
  "transferd-webrtc",
 ]
 

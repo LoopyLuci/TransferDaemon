@@ -159,6 +159,8 @@ pub struct TransferDaemonApp {
     keyboard_was_wanted: bool,
     /// Toast notification manager.
     pub toasts: ToastManager,
+    /// Watches the daemon's update state, and prompts when a release is found, downloaded or installed.
+    update_watch: crate::pages::updates::UpdateWatch,
     /// Last frame time for animation updates.
     last_frame_time: Instant,
     /// Base pixels-per-point (platform density) before user scaling. Captured
@@ -235,6 +237,7 @@ impl TransferDaemonApp {
             #[cfg(target_os = "android")]
             keyboard_was_wanted: false,
             toasts: ToastManager::new(),
+            update_watch: crate::pages::updates::UpdateWatch::default(),
             last_frame_time: Instant::now(),
             base_pixels_per_point: 0.0,
             tray_tx: None,
@@ -478,6 +481,11 @@ impl TransferDaemonApp {
 
 impl eframe::App for TransferDaemonApp {
     fn update(&mut self, ctx: &Context, _frame: &mut eframe::Frame) {
+        // Prompts for updates: an in-app toast, and a desktop notification where the platform has one.
+        for (title, detail) in self.update_watch.poll(ctx) {
+            self.toasts.info(format!("{title}. {detail}"));
+            crate::notifications::send_notification(&title, &detail, crate::notifications::NotificationLevel::Info);
+        }
         // ── Handle system tray events (ShowWindow, Quit) ─────────────────────
         self.handle_tray_events(ctx);
 

@@ -6,6 +6,7 @@ pub mod db;
 pub mod design;
 pub mod encryption_utils;
 pub mod grpc_daemon;
+pub mod hub;
 pub mod image_preview;
 pub mod notifications;
 pub mod pages;

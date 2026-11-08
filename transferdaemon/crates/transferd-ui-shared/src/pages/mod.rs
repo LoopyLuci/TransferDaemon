@@ -5,3 +5,7 @@ pub mod settings;
 pub mod telemetry;
 pub mod groups;
 pub mod connections;
+pub mod activity;
+pub mod terminal;
+pub mod daemon;
+pub mod updates;

@@ -21,8 +21,10 @@ pub struct SettingsPage {
     /// Pending app-lock action: `Some(Some(hash))` sets the PIN,
     /// `Some(None)` clears it. Drained by the home page.
     pending_pin: Option<Option<String>>,
-    /// Last manual update-check result.
-    update_status: Option<crate::types::UpdateStatus>,
+    /// The daemon's own controls: start, stop, restart, and its settings file.
+    daemon: crate::pages::daemon::DaemonPanel,
+    /// The update policy, the installed and latest versions, and the Android app.
+    updates: crate::pages::updates::UpdatesPanel,
     relay_status: String,
     relay_bandwidth_input: String,
     relay_settings_loaded: bool,
@@ -661,88 +663,14 @@ impl SettingsPage {
 
             ui.add_space(tokens.spacing.sm);
 
-            // ── Updates (manual, opt-in) ───────────────────────────────────────
-            self.section_header(ui, "Updates", &tokens);
-            design::card_frame(&tokens).show(ui, |ui| {
-                ui.horizontal(|ui| {
-                    ui.label(
-                        RichText::new("Check for updates manually — TransferDaemon never phones home automatically.")
-                            .size(12.0)
-                            .color(tokens.palette.text_disabled),
-                    );
-                });
-                ui.add_space(tokens.spacing.xs);
-                if ui
-                        .add_sized(
-                            [180.0, 34.0],
-                            egui::Button::new(
-                                RichText::new("Check for updates")
-                                    .color(tokens.palette.text_inverse),
-                            )
-                            .fill(tokens.palette.accent)
-                            .rounding(tokens.spacing.button_rounding),
-                        )
-                        .clicked()
-                    {
-                        let rt = tokio::runtime::Handle::current();
-                        let status = rt.block_on(state.daemon.check_for_updates());
-                        self.update_status = Some(status);
-                    }
-                if let Some(u) = &self.update_status {
-                    ui.add_space(tokens.spacing.xs);
-                    if !u.current_version.is_empty() {
-                        ui.label(
-                            RichText::new(format!("Current version: {}", u.current_version))
-                                .size(12.0)
-                                .color(tokens.palette.text_secondary),
-                        );
-                    }
-                    if u.has_update {
-                        ui.label(
-                            RichText::new(format!("Update available: {}", u.new_version))
-                                .size(13.0)
-                                .strong()
-                                .color(tokens.palette.accent),
-                        );
-                        if !u.release_notes.is_empty() {
-                            ui.add_space(tokens.spacing.xxs);
-                            ui.label(
-                                RichText::new(&u.release_notes)
-                                    .size(11.0)
-                                    .color(tokens.palette.text_disabled),
-                            );
-                        }
-                        ui.add_space(tokens.spacing.xs);
-                        if ui
-                            .add_sized(
-                                [180.0, 34.0],
-                                egui::Button::new(
-                                    RichText::new("Download & install")
-                                        .color(tokens.palette.text_inverse),
-                                )
-                                .fill(tokens.palette.accent)
-                                .rounding(tokens.spacing.button_rounding),
-                            )
-                            .clicked()
-                        {
-                            let rt = tokio::runtime::Handle::current();
-                            let _ = rt.block_on(state.daemon.apply_update());
-                        }
-                    } else if !u.error.is_empty() {
-                        ui.label(
-                            RichText::new(format!("Update check failed: {}", u.error))
-                                .size(12.0)
-                                .color(tokens.palette.error),
-                        );
-                    } else {
-                        ui.label(
-                            RichText::new("You're up to date.")
-                                .size(12.0)
-                                .color(tokens.palette.success),
-                        );
-                    }
-                }
-            });
+            // ── Daemon ────────────────────────────────────────────────────────
+            self.section_header(ui, "Daemon", &tokens);
+            self.daemon.show(ui, &tokens);
+            ui.add_space(tokens.spacing.sm);
+
+            // ── Updates and the Android app ───────────────────────────────────
+            self.section_header(ui, "Updates and app", &tokens);
+            self.updates.show(ui, &tokens);
 
             ui.add_space(tokens.spacing.xl);
         });

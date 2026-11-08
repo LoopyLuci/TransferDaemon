@@ -31,6 +31,9 @@ dirs       = { workspace = true }
 
 transferd-api    = { path = "../transferd-api" }
 transferd-webrtc = { path = "../transferd-webrtc" }
+# The pages that talk to the daemon's control hub (activity, terminal, daemon and update controls).
+transferd-control = { path = "../transferd-control", default-features = false }
+transferd-activity = { path = "../transferd-activity" }
 
 # Desktop notifications - notify-rust supports Linux (D-Bus) and macOS (Foundation).
 [target.'cfg(not(target_os = "windows"))'.dependencies]
