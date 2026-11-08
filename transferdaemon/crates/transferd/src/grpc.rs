@@ -18,7 +18,7 @@ use transferd_api::{
     AddContactRequest, ContactReply, ContactList,
     RenameContactRequest, RemoveContactRequest, BlockContactRequest,
     SafetyNumberRequest, SetContactAddressRequest, SafetyNumberReply,
-    UpdateService, UpdateServiceServer, UpdateReply,
+    UpdateService, UpdateServiceServer, UpdateReply, UpdatePolicyRequest, ApkReply,
     // Messages
     MessageService,
     GetMessagesRequest, MessageReply, MessageList, SendTextRequest, SearchMessagesRequest,
@@ -725,62 +725,115 @@ impl MessageService for MessageServiceImpl {
 }
 
 // ---------------------------------------------------------------------------
-// UpdateServiceImpl (manual, opt-in — never runs in the background)
+// UpdateServiceImpl (the saved policy decides what runs in the background; see update.rs)
 // ---------------------------------------------------------------------------
 
 pub struct UpdateServiceImpl;
+
+/// What a window shows: this build's version, the newest release next to it, and the state of any download.
+fn update_reply(snap: &crate::update::Snapshot, error: String) -> UpdateReply {
+    let has_update = crate::update::update_available(snap);
+    UpdateReply {
+        current_version: crate::update::CURRENT_VERSION.to_string(),
+        has_update,
+        new_version: if has_update { snap.latest_version.clone() } else { String::new() },
+        release_notes: snap.release_notes.clone(),
+        download_url: snap.release_url.clone(),
+        error: if error.is_empty() { snap.error.clone() } else { error },
+        latest_version: snap.latest_version.clone(),
+        published_at: snap.published_at.clone(),
+        policy: snap.policy.as_str().to_string(),
+        staged_version: snap.staged_version.clone(),
+        restart_required: snap.restart_required,
+        asset_name: snap.asset_name.clone(),
+        asset_size: snap.asset_size,
+        checked_at: snap.checked_at,
+    }
+}
+
+/// Run a step that may use the network or the disk, and answer with the update state. A failure is reported in the
+/// reply's `error` (the window shows it next to the versions) rather than as a gRPC error.
+async fn update_step(
+    step: impl FnOnce() -> Result<crate::update::Snapshot, String> + Send + 'static,
+) -> Response<UpdateReply> {
+    let outcome = match tokio::task::spawn_blocking(step).await {
+        Ok(outcome) => outcome,
+        Err(e) => Err(format!("update task stopped: {e}")),
+    };
+    let reply = match outcome {
+        Ok(snap) => update_reply(&snap, String::new()),
+        Err(e) => update_reply(&crate::update::snapshot(), e),
+    };
+    Response::new(reply)
+}
+
+fn apk_reply(info: crate::update::ApkInfo) -> ApkReply {
+    ApkReply {
+        version: info.version,
+        asset_name: info.asset_name,
+        size: info.size,
+        url: info.url,
+        sha256: info.sha256,
+        saved_path: info.saved_path,
+    }
+}
 
 #[tonic::async_trait]
 impl UpdateService for UpdateServiceImpl {
     async fn check_for_updates(
         &self, _: Request<Empty>,
     ) -> Result<Response<UpdateReply>, Status> {
-        use crate::update::{UpdateCheckResult, CURRENT_VERSION};
-        match crate::update::check_for_updates().await {
-            UpdateCheckResult::UpToDate => Ok(Response::new(UpdateReply {
-                current_version: CURRENT_VERSION.to_string(),
-                has_update: false,
-                new_version: String::new(),
-                release_notes: String::new(),
-                download_url: String::new(),
-                error: String::new(),
-            })),
-            UpdateCheckResult::UpdateAvailable(info) => Ok(Response::new(UpdateReply {
-                current_version: CURRENT_VERSION.to_string(),
-                has_update: true,
-                new_version: info.version,
-                release_notes: info.release_notes,
-                download_url: info.download_url,
-                error: String::new(),
-            })),
-            UpdateCheckResult::Error(e) => Ok(Response::new(UpdateReply {
-                current_version: CURRENT_VERSION.to_string(),
-                has_update: false,
-                new_version: String::new(),
-                release_notes: String::new(),
-                download_url: String::new(),
-                error: e,
-            })),
-        }
+        Ok(update_step(crate::update::check_now).await)
+    }
+
+    async fn get_update_state(
+        &self, _: Request<Empty>,
+    ) -> Result<Response<UpdateReply>, Status> {
+        Ok(Response::new(update_reply(&crate::update::snapshot(), String::new())))
     }
 
     async fn apply_update(
         &self, _: Request<Empty>,
     ) -> Result<Response<Empty>, Status> {
-        match crate::update::check_for_updates().await {
-            crate::update::UpdateCheckResult::UpdateAvailable(info) => {
-                let path = crate::update::download_update(&info)
-                    .await
-                    .map_err(|e| Status::internal(format!("download failed: {e}")))?;
-                crate::update::install_update(&path)
-                    .map_err(|e| Status::internal(format!("install failed: {e}")))?;
-                Ok(Response::new(Empty {}))
-            }
-            crate::update::UpdateCheckResult::UpToDate => {
-                Err(Status::failed_precondition("already up to date"))
-            }
-            crate::update::UpdateCheckResult::Error(e) => Err(Status::unavailable(e)),
-        }
+        let outcome = tokio::task::spawn_blocking(crate::update::apply_latest)
+            .await
+            .map_err(|e| Status::internal(format!("update task stopped: {e}")))?;
+        outcome.map_err(Status::unavailable)?;
+        Ok(Response::new(Empty {}))
+    }
+
+    async fn download_update(
+        &self, _: Request<Empty>,
+    ) -> Result<Response<UpdateReply>, Status> {
+        Ok(update_step(crate::update::download_latest).await)
+    }
+
+    async fn set_update_policy(
+        &self, request: Request<UpdatePolicyRequest>,
+    ) -> Result<Response<UpdateReply>, Status> {
+        let text = request.into_inner().policy;
+        let policy = crate::update::Policy::parse(&text)
+            .ok_or_else(|| Status::invalid_argument("policy must be manual, download or install"))?;
+        crate::update::set_policy(policy).map_err(Status::internal)?;
+        Ok(Response::new(update_reply(&crate::update::snapshot(), String::new())))
+    }
+
+    async fn get_apk(
+        &self, _: Request<Empty>,
+    ) -> Result<Response<ApkReply>, Status> {
+        let info = tokio::task::spawn_blocking(crate::update::apk_info)
+            .await
+            .map_err(|e| Status::internal(format!("update task stopped: {e}")))?;
+        Ok(Response::new(apk_reply(info.map_err(Status::unavailable)?)))
+    }
+
+    async fn save_apk(
+        &self, _: Request<Empty>,
+    ) -> Result<Response<ApkReply>, Status> {
+        let info = tokio::task::spawn_blocking(crate::update::save_apk)
+            .await
+            .map_err(|e| Status::internal(format!("update task stopped: {e}")))?;
+        Ok(Response::new(apk_reply(info.map_err(Status::unavailable)?)))
     }
 }
 
@@ -1757,6 +1810,8 @@ pub fn add_all_services(
         if authorized {
             Ok(request)
         } else {
+            // The token is never logged; a caller without it is a fact worth keeping.
+            transferd_activity::record(transferd_activity::Level::Warn, "security", "grpc", "refused a gRPC call with a missing or wrong token", &[]);
             Err(tonic::Status::unauthenticated("missing or invalid auth token"))
         }
     };

@@ -82,6 +82,8 @@ THE DAEMON
   daemon stop                     stop it
   mcp [--tools all|compact]       serve every operation to an MCP client over stdio
   acp                             serve every operation to an editor over the Agent Client Protocol (stdio)
+  term /command [args]            run one terminal command, the same slash commands as the window's Terminal
+                                  (e.g. term /status, term /activity warn, term /update check)
 
 Options: --json prints raw JSON. key=value values are parsed as JSON when they can be (numbers, true, {...});
 dotted keys build objects (target.text=Send).
@@ -383,6 +385,15 @@ fn run(args: Vec<String>, out: &Out) -> Result<Option<Value>, String> {
         }
         "acp" => {
             acp_stdio()?;
+            Ok(None)
+        }
+        "term" => {
+            // The window's terminal commands, from a shell. Quote the line so the shell keeps the slash and the words.
+            let line = rest.join(" ");
+            let command = transferd_control::terminal::parse(&line)?;
+            for text in transferd_control::terminal::run(command) {
+                println!("{text}");
+            }
             Ok(None)
         }
         "ghostkey" => ghostkey::run(rest).map(Some),

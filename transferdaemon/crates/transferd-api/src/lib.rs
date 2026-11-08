@@ -56,7 +56,7 @@ pub use proto::update_service_client::UpdateServiceClient;
 
 // Connection types.
 pub use proto::{Connection, ConnectionList, ConnectionStatusMsg, SetConnectionPolicyRequest};
-pub use proto::UpdateReply;
+pub use proto::{ApkReply, UpdatePolicyRequest, UpdateReply};
 
 // Group types.
 pub use proto::{

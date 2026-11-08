@@ -84,8 +84,13 @@ pub const RPCS: &[(&str, &str, &str)] = &[
     ("CallService", "StreamCallEvents", "Call events (invites, accepts, ICE...) for a few seconds"),
     ("TelemetryService", "StreamTelemetry", "Live telemetry (system health, lane choices) for a few seconds"),
     ("TelemetryService", "GetSnapshot", "The telemetry events kept in memory"),
-    ("UpdateService", "CheckForUpdates", "Check for a newer TransferDaemon (the only time it contacts the update server)"),
-    ("UpdateService", "ApplyUpdate", "Download and apply the update found by check_for_updates"),
+    ("UpdateService", "CheckForUpdates", "The latest release and this build's version. Asks GitHub only when called (the daemon never does on its own under the manual policy)"),
+    ("UpdateService", "GetUpdateState", "The update state the daemon has now (the versions, the policy, any download waiting to be installed); no network request"),
+    ("UpdateService", "ApplyUpdate", "Install the latest release (downloads and verifies it first if needed; a restart runs it)"),
+    ("UpdateService", "DownloadUpdate", "Download the latest release's program file, verify it against GitHub's SHA-256, and keep it ready to install"),
+    ("UpdateService", "SetUpdatePolicy", "Save the update policy: manual (default: only when asked), download (fetch new releases in the background), install (fetch and install them; a restart runs them)"),
+    ("UpdateService", "GetApk", "The newest Android app: its version, size and link"),
+    ("UpdateService", "SaveApk", "Download the Android app into the Downloads folder (checked against GitHub's SHA-256) and report where it is"),
 ];
 
 fn group_of(service: &str) -> &'static str {
@@ -203,6 +208,17 @@ pub fn control_ops() -> Vec<Operation> {
         ctl("daemon.status", "The daemon: version, pid, uptime, its addresses (gRPC, peer listener, control), this identity, counts of contacts/transfers/groups, whether the GUI and TUI are attached, local relays", false, false, e.clone()),
         ctl("daemon.stop", "Stop the daemon (the GUI and TUI stay open and reconnect when it is started again)", true, true, e.clone()),
         ctl("daemon.env", "The settings the daemon was started with (TRANSFERD_* environment: relays, bind address, limits, DHT)", false, false, e.clone()),
+        ctl("activity.list", "The activity log, oldest first: every error, warning, connection, API call and other event the daemon has seen. Filters: level (debug, info, warn, error; at least this serious), category (lanes, overlay, relay, api, gui, updates, store, security, panic, system), text (in the message, category or source), since_seq (only events after this sequence number: poll with the last_seq you got), limit (newest this many, default 500)", false, false,
+            obj(json!({"level": {"type": "string", "enum": ["debug", "info", "warn", "error"]}, "category": {"type": "string"},
+                       "text": {"type": "string"}, "since_seq": {"type": "integer"}, "limit": {"type": "integer"}}), &[])),
+        ctl("activity.counts", "How many events of each level the activity log has seen, the newest sequence number, and how many could not be written to its file", false, false, e.clone()),
+        ctl("activity.record", "Add an event to the activity log: a window or tool reporting its own error, warning or action", true, false,
+            obj(json!({"message": {"type": "string"},
+                       "level": {"type": "string", "enum": ["debug", "info", "warn", "error"]},
+                       "category": {"type": "string", "description": "default gui"},
+                       "source": {"type": "string", "description": "who reports it, default client"},
+                       "fields": {"type": "object", "description": "extra details as string values; secret-looking names are stored as [redacted]"}}), &["message"])),
+        ctl("activity.clear", "Empty the activity log's in-memory view (its file keeps the history)", true, true, e.clone()),
         ctl("gui.launch", "Open the TransferDaemon window (transferd-ui) and wait until it is attached", true, false,
             obj(json!({"wait_s": {"type": "number"}}), &[])),
         ctl("gui.state", "The window: page (onboarding, home, chat, group chat), home tab, open chat, identity, counts, locked?, size", false, false, e.clone()),
@@ -416,7 +432,12 @@ pub async fn call_rpc(ch: AuthChannel, service: &str, rpc: &str, args: Value) ->
         "TelemetryService" "StreamTelemetry" => streaming(pb::Empty, pb::TelemetryEventMsg),
         "TelemetryService" "GetSnapshot" => unary(pb::Empty, pb::TelemetrySnapshot),
         "UpdateService" "CheckForUpdates" => unary(pb::Empty, pb::UpdateReply),
+        "UpdateService" "GetUpdateState" => unary(pb::Empty, pb::UpdateReply),
         "UpdateService" "ApplyUpdate" => unary(pb::Empty, pb::Empty),
+        "UpdateService" "DownloadUpdate" => unary(pb::Empty, pb::UpdateReply),
+        "UpdateService" "SetUpdatePolicy" => unary(pb::UpdatePolicyRequest, pb::UpdateReply),
+        "UpdateService" "GetApk" => unary(pb::Empty, pb::ApkReply),
+        "UpdateService" "SaveApk" => unary(pb::Empty, pb::ApkReply),
     )
 }
 

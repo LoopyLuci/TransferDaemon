@@ -1,6 +1,6 @@
 [package]
 name = "transferd"
-version = "0.1.0"
+version = "2.4.0-dev"
 edition = "2021"
 
 [[bin]]
@@ -41,6 +41,8 @@ transferd-relay      = { path = "../transferd-relay" }
 relayd               = { path = "../relayd" }
 transferd-telemetry  = { path = "../transferd-telemetry" }
 transferd-control    = { path = "../transferd-control" }
+transferd-activity   = { path = "../transferd-activity" }
+sha2 = "0.10"
 transferd-overlay    = { path = "../transferd-overlay" }
 dirs                 = { workspace = true }
 aes-gcm = { workspace = true }

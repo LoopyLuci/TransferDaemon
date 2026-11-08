@@ -7,12 +7,30 @@
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Warnings and errors to stderr; RUST_LOG for more (e.g. RUST_LOG=transferd_overlay=debug).
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
-        )
-        .with_writer(std::io::stderr)
+    // The activity log takes every warning and error from every crate, and the daemon's own debug and info, whatever
+    // RUST_LOG says: it is the record the windows show, and the one to read when something went wrong.
+    use tracing_subscriber::layer::SubscriberExt as _;
+    use tracing_subscriber::util::SubscriberInitExt as _;
+    use tracing_subscriber::Layer as _;
+    let console_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn"));
+    let _ = tracing_subscriber::registry()
+        .with(tracing_subscriber::fmt::layer().with_writer(std::io::stderr).with_filter(console_filter))
+        .with(transferd_activity::ActivityLayer)
         .try_init();
+    transferd_activity::install_panic_hook();
+    if let Err(e) = transferd_activity::open(&transferd_control::client::data_dir()) {
+        tracing::warn!("[activity] could not keep the activity log in its folder: {e}");
+    }
+    transferd_activity::record(
+        transferd_activity::Level::Info,
+        "system",
+        "daemon",
+        format!("daemon {} starting", env!("CARGO_PKG_VERSION")),
+        &[],
+    );
+    // Under the manual policy (the default) this makes no request on its own; see update.rs.
+    transferd_lib::update::start_background();
     let raw = std::env::var("TRANSFERD_ADDR").unwrap_or_else(|_| "127.0.0.1:50051".into());
     // Strip any scheme prefix (http:// or https://) — tonic serve() needs a bare SocketAddr.
     let addr_str = raw

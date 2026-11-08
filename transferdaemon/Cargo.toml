@@ -24,6 +24,7 @@ members = [
     "crates/transferd-cat",
     "crates/transferd-dns",
     "crates/transferd-replica",
+    "crates/transferd-activity",
 ]
 exclude = ["fuzz"]
 resolver = "2"

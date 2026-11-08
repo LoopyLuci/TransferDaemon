@@ -404,15 +404,53 @@ message TelemetrySnapshot {
 // ---------------------------------------------------------------------------
 
 service UpdateService {
+    // Ask GitHub for the latest release. Downloads nothing.
     rpc CheckForUpdates (Empty) returns (UpdateReply);
+    // The update state the daemon already has (no network request): what a window polls.
+    rpc GetUpdateState (Empty) returns (UpdateReply);
+    // Install the latest release (downloads it first when it is not already downloaded).
     rpc ApplyUpdate    (Empty) returns (Empty);
+    // Download the latest release's program file, verify it against GitHub's SHA-256, and keep it ready.
+    rpc DownloadUpdate (Empty) returns (UpdateReply);
+    // Save the policy: "manual" (default), "download", or "install".
+    rpc SetUpdatePolicy (UpdatePolicyRequest) returns (UpdateReply);
+    // The newest Android app (an .apk attached to a release): what it is.
+    rpc GetApk         (Empty) returns (ApkReply);
+    // Download the Android app into the Downloads folder (verified) and report where it went.
+    rpc SaveApk        (Empty) returns (ApkReply);
 }
 
 message UpdateReply {
-    string current_version = 1;
-    bool   has_update      = 2;
-    string new_version     = 3;
-    string release_notes   = 4;
-    string download_url    = 5;
-    string error           = 6;
+    string current_version  = 1;
+    bool   has_update       = 2;
+    string new_version      = 3;
+    string release_notes    = 4;
+    string download_url     = 5;
+    string error            = 6;
+    // The newest published release, whether or not it is newer than this build.
+    string latest_version   = 7;
+    string published_at     = 8;
+    // manual | download | install
+    string policy           = 9;
+    // Downloaded and verified, waiting to be installed. Empty when there is none.
+    string staged_version   = 10;
+    // Installed; the daemon must restart to run the new version.
+    bool   restart_required = 11;
+    string asset_name       = 12;
+    uint64 asset_size       = 13;
+    // Unix seconds of the last successful check; 0 when never checked.
+    uint64 checked_at       = 14;
+}
+
+message UpdatePolicyRequest {
+    string policy = 1;
+}
+
+message ApkReply {
+    string version    = 1;
+    string asset_name = 2;
+    uint64 size       = 3;
+    string url        = 4;
+    string sha256     = 5;
+    string saved_path = 6;
 }

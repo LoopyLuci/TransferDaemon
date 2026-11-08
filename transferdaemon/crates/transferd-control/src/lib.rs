@@ -9,8 +9,10 @@
 
 pub mod acp;
 pub mod client;
+pub mod daemon_ctl;
 pub mod mcp;
 pub mod schema;
+pub mod terminal;
 
 #[cfg(feature = "hub")]
 pub mod catalog;

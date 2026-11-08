@@ -226,6 +226,7 @@ impl Hub {
                 Err(e) => self.audit(op_id, &args, false, Some(&e.message)),
             }
         }
+        log_call(op_id, op.mutating, &result);
         result
     }
 
@@ -270,6 +271,17 @@ impl Hub {
             "relay.start" => self.relay_start(&args),
             "relay.stop" => self.relay_stop(&args),
             "relay.probe" => relay_probe(args.get("addr").and_then(Value::as_str).unwrap_or_default()).await,
+            "activity.list" => activity_list(&args),
+            "activity.counts" => {
+                let log = transferd_activity::global();
+                Ok(json!({"counts": log.counts(), "last_seq": log.last_seq()}))
+            }
+            "activity.record" => activity_record(&args),
+            "activity.clear" => {
+                transferd_activity::global().clear_memory();
+                transferd_activity::record(transferd_activity::Level::Info, "system", "hub", "activity view cleared", &[]);
+                Ok(json!({"cleared": true}))
+            }
             id if id.starts_with("gui.") || id.starts_with("tui.") => {
                 let (kind, action) = id.split_once('.').unwrap_or(("", ""));
                 let timeout = args.get("timeout_s").and_then(Value::as_f64).unwrap_or(60.0).clamp(1.0, 600.0) + 5.0;
@@ -616,6 +628,7 @@ async fn relay_probe(addr: &str) -> Result<Value, ApiError> {
 fn authorize(hub: &Hub, headers: &HeaderMap) -> Result<(), ApiError> {
     if let Some(origin) = headers.get("origin").and_then(|v| v.to_str().ok()) {
         if origin != "null" && !origin.is_empty() {
+            transferd_activity::record(transferd_activity::Level::Warn, "security", "hub", "refused a request from a web page", &[]);
             return Err(ApiError::new(StatusCode::FORBIDDEN, "forbidden", "requests from web pages are not accepted"));
         }
     }
@@ -628,8 +641,81 @@ fn authorize(hub: &Hub, headers: &HeaderMap) -> Result<(), ApiError> {
     if same(given, &hub.token) {
         Ok(())
     } else {
+        // The token itself is never logged, only that a caller without it knocked.
+        transferd_activity::record(transferd_activity::Level::Warn, "security", "hub", "refused a request with a missing or wrong token", &[]);
         Err(ApiError::new(StatusCode::UNAUTHORIZED, "unauthorized", "missing or wrong token (see control.json)"))
     }
+}
+
+/// Every call that reaches the hub goes in the activity log: changes at info, reads at debug, failures as warnings
+/// (errors when the daemon itself failed). Arguments are not logged, only the operation and its outcome.
+fn log_call(op: &str, mutating: bool, result: &Result<Value, ApiError>) {
+    match result {
+        Ok(_) => {
+            // The windows poll the activity log itself; logging each of those reads would bury what they are showing.
+            if op.starts_with("activity.") && !mutating {
+                return;
+            }
+            let level = if mutating { transferd_activity::Level::Info } else { transferd_activity::Level::Debug };
+            transferd_activity::record(level, "api", "hub", format!("{op} done"), &[("op", op)]);
+        }
+        Err(e) => {
+            let level = if e.status.is_server_error() { transferd_activity::Level::Error } else { transferd_activity::Level::Warn };
+            transferd_activity::record(
+                level,
+                "api",
+                "hub",
+                format!("{op} failed: {}", e.message),
+                &[("op", op), ("code", e.code.as_str())],
+            );
+        }
+    }
+}
+
+fn parse_level(args: &Value, key: &str) -> Result<Option<transferd_activity::Level>, ApiError> {
+    match args.get(key).and_then(Value::as_str) {
+        None => Ok(None),
+        Some(text) => transferd_activity::Level::parse(text).map(Some).ok_or_else(|| {
+            ApiError::new(StatusCode::BAD_REQUEST, "bad_arguments", format!("{key} must be debug, info, warn or error"))
+        }),
+    }
+}
+
+fn activity_list(args: &Value) -> Result<Value, ApiError> {
+    let text = |key: &str| args.get(key).and_then(Value::as_str).filter(|s| !s.is_empty()).map(str::to_string);
+    let filter = transferd_activity::Filter {
+        min_level: parse_level(args, "level")?,
+        category: text("category"),
+        text: text("text"),
+        since_seq: args.get("since_seq").and_then(Value::as_u64).unwrap_or(0),
+        limit: args.get("limit").and_then(Value::as_u64).map(|n| n.clamp(1, 5000) as usize).unwrap_or(0),
+    };
+    let log = transferd_activity::global();
+    Ok(json!({"events": log.list(&filter), "last_seq": log.last_seq(), "counts": log.counts()}))
+}
+
+fn activity_record(args: &Value) -> Result<Value, ApiError> {
+    let message = args
+        .get("message")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|m| !m.is_empty())
+        .ok_or_else(|| ApiError::new(StatusCode::BAD_REQUEST, "bad_arguments", "message is required"))?;
+    let level = parse_level(args, "level")?.unwrap_or(transferd_activity::Level::Info);
+    let category = args.get("category").and_then(Value::as_str).unwrap_or("gui");
+    let source = args.get("source").and_then(Value::as_str).unwrap_or("client");
+    let fields: std::collections::BTreeMap<String, String> = args
+        .get("fields")
+        .and_then(Value::as_object)
+        .map(|o| {
+            o.iter()
+                .map(|(k, v)| (k.clone(), v.as_str().map(str::to_string).unwrap_or_else(|| v.to_string())))
+                .collect()
+        })
+        .unwrap_or_default();
+    let log = transferd_activity::global();
+    log.record(level, category, source, message.chars().take(4000).collect::<String>(), fields);
+    Ok(json!({"recorded": true, "seq": log.last_seq()}))
 }
 
 async fn health(State(hub): State<Shared>) -> Json<Value> {
