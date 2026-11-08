@@ -17,6 +17,8 @@ pub enum BubbleAction {
     Reply(String),
     /// Toggle an emoji reaction on the message with this id.
     React { msg_id: String, emoji: String },
+    /// Show the received file of the message with this id in the file manager.
+    RevealFile { msg_id: String },
 }
 
 /// Render a single message bubble. Returns an optional user action when the
@@ -240,20 +242,31 @@ pub fn message_bubble(
             );
             ui.painter().galley(footer_pos, footer_galley, footer_color);
 
+            // A received file that has fully arrived can be shown in the file manager.
+            let revealable = !outbound
+                && matches!(
+                    &msg.content,
+                    MessageContent::File { size_bytes, transferred_bytes, .. } if transferred_bytes >= size_bytes
+                );
+
             // Hover menu: reply + a few reactions
             if resp.hovered() {
                 let menu_y = rect.top() - 6.0;
                 let mut mx = if outbound { rect.right() } else { rect.left() };
+                // Outbound menus grow leftwards from the bubble's right edge; inbound ones grow rightwards from its
+                // left edge, so they stay on screen.
+                let step = if outbound { -30.0 } else { 30.0 };
+                let slot = |x: f32| {
+                    let left = if outbound { x - 26.0 } else { x };
+                    egui::Rect::from_min_size(Pos2::new(left, menu_y), Vec2::new(26.0, 26.0))
+                };
                 for emoji in ["❤️", "👍", "😂"] {
                     let btn = ui.painter().layout_no_wrap(
                         emoji.to_string(),
                         FontId::proportional(13.0),
                         tokens.palette.text_primary,
                     );
-                    let btn_rect = egui::Rect::from_min_size(
-                        Pos2::new(mx - 26.0, menu_y),
-                        Vec2::new(26.0, 26.0),
-                    );
+                    let btn_rect = slot(mx);
                     ui.painter().rect_filled(
                         btn_rect,
                         Rounding::same(13.0),
@@ -273,7 +286,29 @@ pub fn message_bubble(
                             emoji: emoji.to_string(),
                         });
                     }
-                    mx -= 30.0;
+                    mx += step;
+                }
+                if revealable {
+                    let fbtn = ui.painter().layout_no_wrap(
+                        "📁".to_string(),
+                        FontId::proportional(13.0),
+                        tokens.palette.text_primary,
+                    );
+                    let fbtn_rect = slot(mx);
+                    ui.painter().rect_filled(
+                        fbtn_rect,
+                        Rounding::same(13.0),
+                        tokens.palette.surface,
+                    );
+                    ui.painter().galley(
+                        Pos2::new(fbtn_rect.center().x - fbtn.size().x / 2.0, fbtn_rect.center().y - fbtn.size().y / 2.0),
+                        fbtn,
+                        tokens.palette.text_primary,
+                    );
+                    if resp.clicked() && ui.rect_contains_pointer(fbtn_rect) {
+                        action = Some(BubbleAction::RevealFile { msg_id: msg.id.clone() });
+                    }
+                    mx += step;
                 }
                 // Reply button
                 let rbtn = ui.painter().layout_no_wrap(
@@ -281,10 +316,7 @@ pub fn message_bubble(
                     FontId::proportional(13.0),
                     tokens.palette.text_primary,
                 );
-                let rbtn_rect = egui::Rect::from_min_size(
-                    Pos2::new(mx - 26.0, menu_y),
-                    Vec2::new(26.0, 26.0),
-                );
+                let rbtn_rect = slot(mx);
                 ui.painter().rect_filled(
                     rbtn_rect,
                     Rounding::same(13.0),

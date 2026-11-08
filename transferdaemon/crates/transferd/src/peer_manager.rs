@@ -18,6 +18,9 @@ use transferd_core::ate::Ate;
 use crate::handshake_manager::HandshakeManager;
 use crate::wire::WireMsg;
 
+/// How long one direct connection attempt (TCP connect, then the handshake) may take.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
 // ---------------------------------------------------------------------------
 // PeerSession
 // ---------------------------------------------------------------------------
@@ -209,6 +212,9 @@ pub struct SessionEvents {
     pub sent_msg_ids: Vec<String>,
     /// Inbound messages from peers: `(contact_id, msg)`.
     pub inbound: Vec<(String, WireMsg)>,
+    /// Contacts whose session ended this tick because every lane had closed (the peer restarted, the network
+    /// dropped). The session is gone; its unacknowledged messages must be sent again over a new one.
+    pub lost_contacts: Vec<String>,
 }
 
 /// Manages connections to all peers.
@@ -277,6 +283,20 @@ impl PeerConnectionManager {
     /// inbound messages, apply transport acks, and retransmit stale chunks.
     pub async fn process_all_sessions(&mut self) -> SessionEvents {
         let mut events = SessionEvents::default();
+        // A session whose every lane has closed carries nothing any more. Left in place it would hold the contact's
+        // messages forever ("has_session" stayed true, so no new connection was ever made), so it is dropped here and
+        // reported, and the next retry connects again.
+        let dead: Vec<String> = self
+            .sessions
+            .iter()
+            .filter(|(_, s)| !s.lanes.is_empty() && !s.lanes.iter().any(|l| l.is_alive()))
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in dead {
+            tracing::info!("[PeerManager] session to {id} lost (its connection closed); reconnecting when needed");
+            self.sessions.remove(&id);
+            events.lost_contacts.push(id);
+        }
         for (contact_id, session) in self.sessions.iter_mut() {
             if !session.connected || session.lanes.is_empty() {
                 continue;
@@ -412,14 +432,21 @@ pub async fn establish_tcp_session(
     let addr: std::net::SocketAddr = address.parse()
         .map_err(|e| format!("Invalid address: {e}"))?;
 
-    // Connect and run the authenticated hybrid handshake.
-    let mut stream = tokio::net::TcpStream::connect(addr).await
+    // Connect and run the authenticated hybrid handshake. Both are bounded: an unreachable address otherwise waits for
+    // the operating system's connect timeout (about 20 s on Windows), and a peer that stops mid-handshake holds the
+    // attempt open indefinitely.
+    let mut stream = tokio::time::timeout(CONNECT_TIMEOUT, tokio::net::TcpStream::connect(addr))
+        .await
+        .map_err(|_| format!("Timed out connecting to {address}"))?
         .map_err(|e| format!("Failed to connect to {address}: {e}"))?;
     let handshake = HandshakeManager::new();
-    let (session_key, peer_identity) = handshake
-        .run_initiator_on(&mut stream, identity)
-        .await
-        .map_err(|e| format!("Handshake failed: {e}"))?;
+    let (session_key, peer_identity) = tokio::time::timeout(
+        CONNECT_TIMEOUT,
+        handshake.run_initiator_on(&mut stream, identity),
+    )
+    .await
+    .map_err(|_| format!("Handshake with {address} timed out"))?
+    .map_err(|e| format!("Handshake failed: {e}"))?;
     let peer_hybrid_pk = verify_peer_identity(contact_id, &peer_identity)?;
 
     let (send_key, recv_key) = directional_keys(&session_key.key);

@@ -154,13 +154,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let facts = control_facts.clone();
         let tcp_port = addr.port() + 1;
         let bind_host = std::env::var("TRANSFERD_BIND_ADDR").unwrap_or_else(|_| "127.0.0.1".into());
-        let bind_addr: std::net::SocketAddr = match format!("{bind_host}:{tcp_port}").parse() {
-            Ok(a) => a,
-            Err(e) => {
-                tracing::error!("[transport] invalid peer bind address: {e}");
-                return Ok(());
-            }
-        };
+        // A bad TRANSFERD_BIND_ADDR must not stop the daemon: it keeps running (and can still be driven and reached
+        // by relay) with the peer listener off, and says so in the log.
+        match format!("{bind_host}:{tcp_port}").parse::<std::net::SocketAddr>() {
+            Err(e) => tracing::error!("[transport] invalid peer bind address {bind_host:?}: {e}; direct peers are off"),
+            Ok(bind_addr) => spawn_peer_listener(state_clone, facts, bind_addr, bind_host),
+        }
+    }
+
+    fn spawn_peer_listener(
+        state_clone: std::sync::Arc<parking_lot::Mutex<transferd_lib::DaemonState>>,
+        facts: std::sync::Arc<std::sync::Mutex<serde_json::Map<String, serde_json::Value>>>,
+        bind_addr: std::net::SocketAddr,
+        bind_host: String,
+    ) {
         tokio::spawn(async move {
             match transferd_lib::transport::spawn_inbound_listener(state_clone.clone(), bind_addr).await {
                 Ok(listening) => {

@@ -17,38 +17,59 @@ use transferd_api::auth::{AuthChannel, resolve_token};
 
 #[derive(Clone)]
 pub struct GrpcDaemon {
-    channel: AuthChannel,
+    /// The raw channel. The token is attached per call, so every call presents the token the daemon has now.
+    channel: Channel,
+}
+
+/// The auth token a call presents: `TRANSFERD_TOKEN`, else the daemon's token file, read at call time. The daemon
+/// issues a new token each time it starts, so a token read once stops working after a restart.
+fn current_token() -> String {
+    resolve_token().unwrap_or_default()
 }
 
 impl GrpcDaemon {
+    /// Connect now, or fail.
     pub async fn connect(addr: &str) -> Result<Self, DaemonError> {
         let channel = Channel::from_shared(addr.to_owned())
             .map_err(|e| DaemonError::NotReachable(e.to_string()))?
             .connect()
             .await
             .map_err(|e| DaemonError::NotReachable(e.to_string()))?;
-        let token = resolve_token().unwrap_or_default();
-        Ok(Self { channel: AuthChannel::new(channel, &token) })
+        Ok(Self { channel })
     }
 
+    /// Connect now, if the daemon is reachable.
     pub async fn try_connect(addr: &str) -> Option<Self> {
         let channel = Channel::from_shared(addr.to_owned()).ok()?
             .connect_timeout(std::time::Duration::from_millis(500))
             .connect()
             .await
             .ok()?;
-        let token = resolve_token().unwrap_or_default();
-        Some(Self { channel: AuthChannel::new(channel, &token) })
+        Some(Self { channel })
     }
 
-    fn account(&self) -> AccountServiceClient<AuthChannel> { AccountServiceClient::new(self.channel.clone()) }
-    fn friends(&self) -> FriendServiceClient<AuthChannel> { FriendServiceClient::new(self.channel.clone()) }
-    fn messages(&self) -> MessageServiceClient<AuthChannel> { MessageServiceClient::new(self.channel.clone()) }
-    fn transfers(&self) -> TransferServiceClient<AuthChannel> { TransferServiceClient::new(self.channel.clone()) }
-    fn settings(&self) -> SettingsServiceClient<AuthChannel> { SettingsServiceClient::new(self.channel.clone()) }
-    fn groups(&self) -> GroupServiceClient<AuthChannel> { GroupServiceClient::new(self.channel.clone()) }
-    fn connections(&self) -> ConnectionServiceClient<AuthChannel> { ConnectionServiceClient::new(self.channel.clone()) }
-    fn updates(&self) -> UpdateServiceClient<AuthChannel> { UpdateServiceClient::new(self.channel.clone()) }
+    /// A handle that does not need the daemon to be running yet. It connects on the first call and reconnects after
+    /// the daemon restarts. Calls made while the daemon is down fail (the lists come back empty) until it is up.
+    pub fn lazy(addr: &str) -> Result<Self, DaemonError> {
+        let channel = Channel::from_shared(addr.to_owned())
+            .map_err(|e| DaemonError::NotReachable(e.to_string()))?
+            .connect_timeout(std::time::Duration::from_secs(2))
+            .connect_lazy();
+        Ok(Self { channel })
+    }
+
+    fn authed(&self) -> AuthChannel {
+        AuthChannel::new(self.channel.clone(), &current_token())
+    }
+
+    fn account(&self) -> AccountServiceClient<AuthChannel> { AccountServiceClient::new(self.authed()) }
+    fn friends(&self) -> FriendServiceClient<AuthChannel> { FriendServiceClient::new(self.authed()) }
+    fn messages(&self) -> MessageServiceClient<AuthChannel> { MessageServiceClient::new(self.authed()) }
+    fn transfers(&self) -> TransferServiceClient<AuthChannel> { TransferServiceClient::new(self.authed()) }
+    fn settings(&self) -> SettingsServiceClient<AuthChannel> { SettingsServiceClient::new(self.authed()) }
+    fn groups(&self) -> GroupServiceClient<AuthChannel> { GroupServiceClient::new(self.authed()) }
+    fn connections(&self) -> ConnectionServiceClient<AuthChannel> { ConnectionServiceClient::new(self.authed()) }
+    fn updates(&self) -> UpdateServiceClient<AuthChannel> { UpdateServiceClient::new(self.authed()) }
 }
 
 fn proto_to_group(r: transferd_api::GroupReply) -> Group {
@@ -353,6 +374,10 @@ impl DaemonApi for GrpcDaemon {
             .get_public_key_hex(Empty {})
             .await.ok()?.into_inner();
         if reply.hex.is_empty() { None } else { Some(reply.hex) }
+    }
+
+    async fn is_reachable(&self) -> bool {
+        self.account().get_identity(Empty {}).await.is_ok()
     }
 
     async fn get_setting(&self, key: &str) -> Option<String> {

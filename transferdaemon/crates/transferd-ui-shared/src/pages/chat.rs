@@ -7,7 +7,7 @@ use crate::design::{self, DesignTokens};
 use crate::types::{Message, MessageContent, MessageStatus};
 use crate::widgets::message_bubble::{message_bubble, DEFAULT_INBOUND_COLOR, DEFAULT_OUTBOUND_COLOR};
 use egui::{Color32, ColorImage, Key, Modifiers, RichText, ScrollArea, TextureHandle, TextureOptions, Ui, Vec2};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use transferd_webrtc::{media::MediaCapture, CallManager, CallState, MockMediaCapture};
@@ -38,14 +38,23 @@ fn now_secs() -> u64 {
 /// Messages sent in the background: (contact, text, the daemon's answer).
 type SentOutcomes = std::sync::Arc<std::sync::Mutex<Vec<(String, String, Result<Message, String>)>>>;
 
+/// File sends in the background: (contact, the daemon's answer).
+type FileOutcomes = std::sync::Arc<std::sync::Mutex<Vec<(String, Result<Message, String>)>>>;
+
 pub struct ChatPage {
     /// Sends run on the runtime, not the UI thread (reaching a peer can take seconds); the outcomes land here and
     /// are shown on the next frame.
     sent: SentOutcomes,
+    /// File sends, the same way: reading the file and reaching the peer take as long as the transfer's start.
+    sent_files: FileOutcomes,
     pub input: String,
     pub file_path: String,
     show_file_input: bool,
     file_error: Option<String>,
+    /// Why "show in folder" on a received file did not work, shown above the messages until dismissed.
+    reveal_notice: Option<String>,
+    /// A file send is on its way to the daemon (the Send button waits for it).
+    file_sending: bool,
     pub pending_file_path: Option<String>,
     pub on_attach: Option<Box<dyn Fn() + Send + Sync>>,
 
@@ -89,10 +98,13 @@ impl Default for ChatPage {
     fn default() -> Self {
         Self {
             sent: SentOutcomes::default(),
+            sent_files: FileOutcomes::default(),
             input: String::new(),
             file_path: String::new(),
             show_file_input: false,
             file_error: None,
+            reveal_notice: None,
+            file_sending: false,
             pending_file_path: None,
             on_attach: None,
             messages: Vec::new(),
@@ -167,10 +179,23 @@ impl ChatPage {
                 let rt = tokio::runtime::Handle::current();
                 let all = rt.block_on(state.daemon.get_messages(&cid));
                 let mut added = false;
+                // A message already on screen is replaced, not skipped: its delivery status (pending, sent, delivered,
+                // read), its progress and its reactions change after it was first shown.
+                let mut index: HashMap<String, usize> = self
+                    .messages
+                    .iter()
+                    .enumerate()
+                    .map(|(i, m)| (m.id.clone(), i))
+                    .collect();
                 for msg in all {
-                    if self.seen_ids.insert(msg.id.clone()) {
-                        self.messages.push(msg);
-                        added = true;
+                    match index.get(&msg.id) {
+                        Some(&i) => self.messages[i] = msg,
+                        None => {
+                            index.insert(msg.id.clone(), self.messages.len());
+                            self.seen_ids.insert(msg.id.clone());
+                            self.messages.push(msg);
+                            added = true;
+                        }
                     }
                 }
                 if added {
@@ -194,6 +219,7 @@ impl ChatPage {
     pub fn show(&mut self, ui: &mut Ui, state: &mut AppState) {
         let tokens = DesignTokens::current();
         self.drain_sent(state);
+        self.drain_sent_files(state);
 
         if let Some(path) = self.pending_file_path.take() {
             self.file_path = path;
@@ -631,12 +657,19 @@ impl ChatPage {
                                     .rounding(tokens.spacing.button_rounding),
                                 )
                                 .clicked()
+                                && !self.file_sending
                                 && !self.file_path.trim().is_empty()
                             {
                                 self.send_file(state);
                             }
                         });
-                        if let Some(e) = &self.file_error.clone() {
+                        if self.file_sending {
+                            ui.label(
+                                RichText::new("Sending…")
+                                    .color(tokens.palette.text_secondary)
+                                    .size(12.0),
+                            );
+                        } else if let Some(e) = &self.file_error.clone() {
                             ui.label(
                                 RichText::new(format!("⚠ {e}"))
                                     .color(tokens.palette.error)
@@ -826,6 +859,19 @@ impl ChatPage {
                     return;
                 }
 
+                if let Some(notice) = self.reveal_notice.clone() {
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            RichText::new(format!("⚠ {notice}"))
+                                .color(tokens.palette.error)
+                                .size(12.0),
+                        );
+                        if ui.small_button("✕").clicked() {
+                            self.reveal_notice = None;
+                        }
+                    });
+                }
+
                 let scroll = ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .stick_to_bottom(true);
@@ -863,6 +909,25 @@ impl ChatPage {
                         match action {
                             crate::widgets::message_bubble::BubbleAction::Reply(id) => {
                                 self.replying_to = Some(id);
+                            }
+                            crate::widgets::message_bubble::BubbleAction::RevealFile { msg_id } => {
+                                let rt = tokio::runtime::Handle::current();
+                                let key = crate::daemon::inbound_file_key(&msg_id);
+                                match rt.block_on(state.daemon.get_setting(&key)) {
+                                    Some(path) if std::path::Path::new(&path).exists() => {
+                                        self.reveal_notice = match crate::reveal::show_in_folder(std::path::Path::new(&path)) {
+                                            Ok(()) => None,
+                                            Err(e) => Some(format!("Could not open the folder: {e}")),
+                                        };
+                                    }
+                                    Some(_) => {
+                                        self.reveal_notice = Some("That file is no longer where it was saved.".into());
+                                    }
+                                    None => {
+                                        // Recorded by a daemon on another machine, or the file was never saved here.
+                                        self.reveal_notice = Some("This file's location is not known on this computer.".into());
+                                    }
+                                }
                             }
                             crate::widgets::message_bubble::BubbleAction::React { msg_id, emoji } => {
                                 let rt = tokio::runtime::Handle::current();
@@ -982,19 +1047,41 @@ impl ChatPage {
         if path.is_empty() {
             return;
         }
-        let rt = tokio::runtime::Handle::current();
-        match rt.block_on(state.daemon.send_file(&cid, path)) {
-            Ok(msg) => {
-                if self.seen_ids.insert(msg.id.clone()) {
-                    self.messages.push(msg);
-                    self.scroll_to_bottom = true;
-                }
-                self.file_path.clear();
-                self.file_error = None;
-                self.show_file_input = false;
-                state.transfers = rt.block_on(state.daemon.get_transfers());
+        // Reading the file and reaching the peer can take a long time: run it on the runtime and show the outcome on
+        // the next frame, so the window keeps responding (as text sends do).
+        self.file_sending = true;
+        self.file_error = None;
+        let d = state.daemon.clone();
+        let outcomes = self.sent_files.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            let result = d.send_file(&cid, path).await.map_err(|e| e.to_string());
+            if let Ok(mut v) = outcomes.lock() {
+                v.push((cid, result));
             }
-            Err(e) => self.file_error = Some(e.to_string()),
+        });
+    }
+
+    fn drain_sent_files(&mut self, state: &mut AppState) {
+        let done: Vec<_> = match self.sent_files.lock() {
+            Ok(mut v) => v.drain(..).collect(),
+            Err(_) => return,
+        };
+        for (cid, result) in done {
+            self.file_sending = false;
+            match result {
+                Ok(msg) => {
+                    // Shown in the open conversation only; the file is in the outbox and in the transfers list.
+                    if cid == self.last_contact_id && self.seen_ids.insert(msg.id.clone()) {
+                        self.messages.push(msg);
+                        self.scroll_to_bottom = true;
+                    }
+                    self.file_path.clear();
+                    self.file_error = None;
+                    self.show_file_input = false;
+                    state.rebuild_conversations();
+                }
+                Err(e) => self.file_error = Some(e),
+            }
         }
     }
 

@@ -10,6 +10,7 @@ pub mod image_preview;
 pub mod notifications;
 pub mod pages;
 pub mod platform_hooks;
+pub mod reveal;
 pub mod tray_channel;
 pub mod types;
 pub mod widgets;

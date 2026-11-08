@@ -182,7 +182,12 @@ pub async fn ensure_contact_session(state: &State, contact_id: &str, address: Op
             if !fingerprint_ok {
                 return false;
             }
-            transport.lock().await.insert_session(contact_id, s);
+            // Two sends to a contact with no session can both connect. The first session to be stored is kept: the
+            // other one would replace it and strand whatever was already queued or in flight on it.
+            let mut pm = transport.lock().await;
+            if !pm.has_session(contact_id) {
+                pm.insert_session(contact_id, s);
+            }
             true
         }
         Err(e) => {
@@ -1008,6 +1013,23 @@ impl SettingsService for SettingsServiceImpl {
                     format!("running,sessions={},port={}", st.active_sessions, st.port)
                 }
                 None => "stopped".to_string(),
+            };
+            return Ok(Response::new(SettingReply { value, found: true }));
+        }
+
+        // The addresses other machines can reach this device at: the peer listener's port on each reachable
+        // interface. A loopback-only listener reports just its own address, so the window can say why it is unreachable.
+        if key == "net.addresses" {
+            let listen = s.peer_listen;
+            drop(s);
+            let value = match listen {
+                None => String::new(),
+                Some(l) if l.ip().is_loopback() => l.to_string(),
+                Some(l) => crate::peer_discovery::reachable_ipv4()
+                    .into_iter()
+                    .map(|ip| std::net::SocketAddr::new(ip, l.port()).to_string())
+                    .collect::<Vec<_>>()
+                    .join(", "),
             };
             return Ok(Response::new(SettingReply { value, found: true }));
         }

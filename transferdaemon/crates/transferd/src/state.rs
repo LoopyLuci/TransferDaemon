@@ -286,9 +286,17 @@ impl DaemonState {
         }
     }
 
+    /// A fresh id for a message or transfer this daemon creates.
+    ///
+    /// Ids travel on the wire (acks, read receipts and reactions name them), and a peer's ids are chosen by the
+    /// peer, so a counter ("d-1", "d-2", …) collides across two daemons within seconds: an ack for our "d-1" then
+    /// marked the peer's "d-1" delivered, and our own message stayed pending. A random 128-bit id cannot collide.
     pub fn next_id(&mut self) -> String {
+        use rand::RngCore as _;
         self.next_id += 1;
-        format!("d-{}", self.next_id)
+        let mut bytes = [0u8; 16];
+        rand::rngs::OsRng.fill_bytes(&mut bytes);
+        format!("m-{}", hex::encode(bytes))
     }
 
     // ── Persistence helpers ───────────────────────────────────────────────────
@@ -626,17 +634,29 @@ if let Some(c) = self.contacts.iter_mut().find(|c| c.id == contact_id) {
         id
     }
 
-    /// Store an inbound file-transfer record from `sender` and return its local id.
+    /// Whether `sender` already delivered message `msg_id` to us (a retransmitted file must not be stored twice).
+    pub fn has_inbound_message(&self, sender: &str, msg_id: &str) -> bool {
+        self.messages
+            .get(sender)
+            .is_some_and(|thread| thread.iter().any(|m| !m.outbound && m.id == msg_id && m.sender_pk == sender))
+    }
+
+    /// Store an inbound file-transfer record from `sender`, under the sender's message id (as text is), and return
+    /// that id. A second arrival of the same file is ignored.
     pub fn store_inbound_file_meta(
         &mut self,
         sender: &str,
+        msg_id: &str,
         file_name: &str,
         file_size: u64,
         mime: &str,
         ts: u64,
     ) -> String {
         self.mark_contact_online(sender);
-        let id = self.next_id();
+        if self.has_inbound_message(sender, msg_id) {
+            return msg_id.to_string();
+        }
+        let id = msg_id.to_string();
         let msg = StoredMessage {
             id: id.clone(),
             contact_id: sender.to_string(),
@@ -670,7 +690,8 @@ status: "received".into(),
         reply_to: Option<String>,
     ) -> String {
         let thread = self.messages.entry(group_id.to_string()).or_default();
-        if thread.iter().any(|m| m.id == msg_id) {
+        // Same rule as 1:1 text: the id is only unique per sender.
+        if thread.iter().any(|m| m.id == msg_id && m.sender_pk == sender) {
             return msg_id.to_string();
         }
         let id = msg_id.to_string();
@@ -696,9 +717,31 @@ status: "received".into(),
     }
 
     /// Update the delivery status of a stored message by its local id.
+    /// The connection to `contact_id` ended. Our messages to them that were sent but never acknowledged are pending
+    /// again, so the outbox sends them over the next session. A message the peer already has is dropped on arrival,
+    /// so resending is safe.
+    pub fn requeue_unacknowledged(&mut self, contact_id: &str) {
+        let Some(thread) = self.messages.get_mut(contact_id) else { return };
+        let mut requeued: Vec<String> = Vec::new();
+        for m in thread.iter_mut().filter(|m| m.outbound && m.status == "sent") {
+            m.status = "pending".into();
+            requeued.push(m.id.clone());
+        }
+        // A file that starts again counts its progress from the beginning.
+        for t in self.transfers.iter_mut().filter(|t| t.outbound && requeued.contains(&t.id)) {
+            t.xferd_bytes = 0;
+            t.bps = 0;
+        }
+        if !requeued.is_empty() {
+            tracing::info!("[outbox] {} unacknowledged message(s) to {contact_id} will be sent again", requeued.len());
+        }
+    }
+
+    /// Only OUR outbound messages carry delivery status: an ack or read receipt names a message we sent, so it must
+    /// never touch a peer's message that happens to share the id.
     pub fn mark_status(&mut self, msg_id: &str, status: &str) {
         for msgs in self.messages.values_mut() {
-            if let Some(m) = msgs.iter_mut().find(|m| m.id == msg_id) {
+            if let Some(m) = msgs.iter_mut().find(|m| m.outbound && m.id == msg_id) {
                 m.status = status.to_string();
                 return;
             }
@@ -723,7 +766,7 @@ status: "received".into(),
             WireMsg::File { sender, msg_id, file_name, file_size, mime, ts, seq, total_chunks, .. } => {
                 // Only store the record (and ack) once the full file has arrived.
                 if seq + 1 >= *total_chunks && *total_chunks > 0 {
-                    self.store_inbound_file_meta(sender, file_name, *file_size, mime, *ts);
+                    self.store_inbound_file_meta(sender, msg_id, file_name, *file_size, mime, *ts);
                     Some(WireMsg::Ack { msg_id: msg_id.clone() })
                 } else {
                     None
@@ -883,5 +926,79 @@ mod tests {
         });
         assert!(s.record_verified_identity(&"ab".repeat(32), &"cd".repeat(1312)), "same identity ok");
         assert!(!s.record_verified_identity(&"ab".repeat(32), &"ef".repeat(1312)), "changed identity rejected");
+    }
+
+    fn outbound_text(id: &str, contact: &str, status: &str) -> StoredMessage {
+        let mut m = StoredMessage::new_text(id.into(), contact.into(), true, "mine".into());
+        m.status = status.into();
+        m
+    }
+
+    #[test]
+    fn an_ack_marks_only_our_own_message_with_that_id() {
+        // A peer's inbound message can share an id with ours (ids are chosen per daemon): the ack for ours must not
+        // touch it, and the peer's message must not be what stays pending.
+        let mut s = DaemonState::default();
+        s.store_inbound_text("peer", "d-1", "theirs", 100, None);
+        s.messages.entry("peer".into()).or_default().push(outbound_text("d-1", "peer", "pending"));
+        s.apply_inbound(&WireMsg::Ack { msg_id: "d-1".into() });
+        let thread = &s.messages["peer"];
+        assert_eq!(thread.iter().find(|m| !m.outbound).unwrap().status, "delivered");
+        assert_eq!(thread.iter().find(|m| m.outbound).unwrap().status, "delivered");
+        // And the pending outbound one is the one an ack for that id updates, not the first message with the id.
+        let mut s = DaemonState::default();
+        s.store_inbound_text("peer", "d-2", "theirs", 100, None);
+        s.messages.entry("peer".into()).or_default().push(outbound_text("d-2", "peer", "sent"));
+        s.mark_status("d-2", "read");
+        assert_eq!(s.messages["peer"].iter().find(|m| m.outbound).unwrap().status, "read");
+        assert_eq!(s.messages["peer"].iter().find(|m| !m.outbound).unwrap().status, "delivered");
+    }
+
+    #[test]
+    fn ids_we_create_are_unique() {
+        let mut s = DaemonState::default();
+        let ids: std::collections::HashSet<String> = (0..1000).map(|_| s.next_id()).collect();
+        assert_eq!(ids.len(), 1000);
+    }
+
+    #[test]
+    fn a_lost_connection_sends_unacknowledged_messages_again() {
+        let mut s = DaemonState::default();
+        s.messages.entry("peer".into()).or_default().push(outbound_text("a", "peer", "sent"));
+        s.messages.entry("peer".into()).or_default().push(outbound_text("b", "peer", "delivered"));
+        s.messages.entry("peer".into()).or_default().push(outbound_text("c", "peer", "pending"));
+        s.requeue_unacknowledged("peer");
+        let status = |id: &str| s.messages["peer"].iter().find(|m| m.id == id).unwrap().status.clone();
+        assert_eq!(status("a"), "pending", "unacknowledged goes out again");
+        assert_eq!(status("b"), "delivered", "acknowledged stays delivered");
+        assert_eq!(status("c"), "pending");
+    }
+
+    #[test]
+    fn a_file_arriving_again_is_stored_once() {
+        let mut s = DaemonState::default();
+        let file = WireMsg::File {
+            sender: "peer".into(),
+            msg_id: "f-1".into(),
+            file_name: "a.bin".into(),
+            file_size: 3,
+            mime: "application/octet-stream".into(),
+            ts: 100,
+            seq: 0,
+            total_chunks: 1,
+            data: vec![1, 2, 3],
+        };
+        assert!(s.apply_inbound(&file).is_some(), "the completed file is acknowledged");
+        assert!(s.apply_inbound(&file).is_some(), "a resend is acknowledged again");
+        let files = s.messages["peer"].iter().filter(|m| m.content_type == "file").count();
+        assert_eq!(files, 1, "but stored once");
+    }
+
+    #[test]
+    fn a_group_message_with_another_senders_id_is_kept() {
+        let mut s = DaemonState::default();
+        s.store_inbound_group_text("g", "alice", "d-1", "from alice", 100, None);
+        s.store_inbound_group_text("g", "bob", "d-1", "from bob", 101, None);
+        assert_eq!(s.messages["g"].len(), 2, "same id from two members are two messages");
     }
 }

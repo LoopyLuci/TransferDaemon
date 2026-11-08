@@ -35,6 +35,8 @@ pub struct AppState {
     pub page: Page,
     pub daemon: Arc<dyn DaemonApi>,
     pub daemon_is_live: bool,
+    /// Whether the daemon answered its last check. A window started before its daemon shows this until it connects.
+    pub daemon_reachable: bool,
     /// gRPC endpoint address used for the telemetry stream (e.g. "http://127.0.0.1:50051").
     /// `None` when running against a mock daemon.
     pub daemon_addr: Option<String>,
@@ -71,6 +73,7 @@ impl AppState {
             page: Page::Onboarding,
             daemon,
             daemon_is_live,
+            daemon_reachable: daemon_is_live,
             daemon_addr: None,
             identity: None,
             recovery_phrase: None,
@@ -127,6 +130,9 @@ const REFRESH_INTERVAL: Duration = Duration::from_secs(3);
 
 static REFRESH_RESULT: std::sync::Mutex<Option<LoadResult>> =
     std::sync::Mutex::new(None);
+
+/// Whether the daemon answered the last background refresh (read on the UI thread each frame).
+static DAEMON_REACHABLE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 
 pub struct TransferDaemonApp {
     pub state: AppState,
@@ -254,6 +260,8 @@ impl TransferDaemonApp {
         let d = Arc::clone(&self.state.daemon);
         if let Ok(rt) = tokio::runtime::Handle::try_current() {
             rt.spawn(async move {
+                let reachable = d.is_reachable().await;
+                DAEMON_REACHABLE.store(reachable, std::sync::atomic::Ordering::Relaxed);
                 let contacts  = d.get_contacts().await;
                 let transfers = d.get_transfers().await;
                 let identity  = d.get_identity().await;
@@ -773,6 +781,12 @@ impl eframe::App for TransferDaemonApp {
                     self.state.identity = identity;
                     self.save_identity_to_db();
                     self.save_recovery_phrase_to_db();
+                    // The window may have opened before its daemon was up, on the welcome screen. Once the daemon has
+                    // an identity, go to the app, unless the user is partway through creating one (the phrase must be
+                    // shown first).
+                    if self.state.page == Page::Onboarding && !self.onboarding.in_flow() {
+                        self.state.page = Page::Home;
+                    }
                 }
                 self.save_contacts_to_db();
                 self.state.rebuild_conversations();
@@ -783,7 +797,9 @@ impl eframe::App for TransferDaemonApp {
         }
 
         // ── Schedule next background refresh ──────────────────────────────────
-        if self.last_refresh.elapsed() > REFRESH_INTERVAL && self.state.page != Page::Onboarding {
+        // Refreshing continues on the welcome screen too: that is how a daemon started after the window is noticed.
+        self.state.daemon_reachable = DAEMON_REACHABLE.load(std::sync::atomic::Ordering::Relaxed);
+        if self.last_refresh.elapsed() > REFRESH_INTERVAL {
             self.last_refresh = Instant::now();
             self.spawn_refresh();
         }
@@ -793,6 +809,19 @@ impl eframe::App for TransferDaemonApp {
 
         // ── Page routing ───────────────────────────────────────────────────────
         let tokens = DesignTokens::current();
+
+        // ── Daemon status ─────────────────────────────────────────────────────
+        if self.state.daemon_is_live && !self.state.daemon_reachable && self.state.page != Page::Onboarding {
+            egui::TopBottomPanel::top("daemon_offline_banner")
+                .frame(egui::Frame::none().fill(tokens.palette.surface).inner_margin(egui::Margin::symmetric(12.0, 6.0)))
+                .show(ctx, |ui| {
+                    ui.label(
+                        egui::RichText::new("TransferDaemon is not running. Messages wait until it is started; this window reconnects by itself.")
+                            .color(tokens.palette.warning)
+                            .size(12.0),
+                    );
+                });
+        }
 
         // ── App lock ──────────────────────────────────────────────────────────
         if self.state.locked {
@@ -817,7 +846,7 @@ impl eframe::App for TransferDaemonApp {
                             egui::TextEdit::singleline(&mut self.state.lock_input)
                                 .password(true)
                                 .hint_text("Enter PIN…")
-                                .desired_width(220.0),
+                                .desired_width(ui.available_width().min(220.0)),
                         );
                         resp.request_focus();
                         let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));

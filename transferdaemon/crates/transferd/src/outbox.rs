@@ -70,7 +70,7 @@ impl DaemonState {
 
     /// The peer acknowledged `msg_id` (the whole file arrived): the transfer is complete and leaves the outbox.
     pub fn note_delivered(&mut self, msg_id: &str) {
-        if let Some(t) = self.transfers.iter_mut().find(|t| t.id == msg_id) {
+        if let Some(t) = self.transfers.iter_mut().find(|t| t.id == msg_id && t.outbound) {
             t.xferd_bytes = t.size_bytes;
             t.lanes_active = 0;
         }

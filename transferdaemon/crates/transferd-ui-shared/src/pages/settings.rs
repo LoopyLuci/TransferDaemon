@@ -26,6 +26,8 @@ pub struct SettingsPage {
     relay_status: String,
     relay_bandwidth_input: String,
     relay_settings_loaded: bool,
+    /// Addresses other machines can reach this device at (`ip:port`), from the daemon.
+    direct_addresses: String,
 }
 
 impl SettingsPage {
@@ -242,6 +244,33 @@ impl SettingsPage {
             self.section_header(ui, "Network", &tokens);
 
             design::card_frame(&tokens).show(ui, |ui| {
+                // The address a contact on another machine adds this device by.
+                ui.label(
+                    RichText::new("Direct address (the contact adds this device by it)")
+                        .size(12.0)
+                        .color(tokens.palette.text_secondary),
+                );
+                if self.direct_addresses.is_empty() {
+                    ui.label(
+                        RichText::new("Not listening for direct peers yet.")
+                            .size(12.0)
+                            .color(tokens.palette.warning),
+                    );
+                } else if self.direct_addresses.starts_with("127.") || self.direct_addresses.starts_with("[::1]") {
+                    ui.label(
+                        RichText::new(format!("{} — this computer only. To reach it from another machine, start the daemon with TRANSFERD_BIND_ADDR=0.0.0.0.", self.direct_addresses))
+                            .size(12.0)
+                            .color(tokens.palette.warning),
+                    );
+                } else {
+                    ui.label(
+                        RichText::new(&self.direct_addresses)
+                            .monospace()
+                            .size(12.0)
+                            .color(tokens.palette.text_primary),
+                    );
+                }
+                ui.add_space(tokens.spacing.sm);
                 ui.horizontal(|ui| {
                     ui.label(
                         RichText::new("Relay lanes:")
@@ -257,10 +286,16 @@ impl SettingsPage {
                         RichText::new("Daemon:")
                             .color(tokens.palette.text_secondary),
                     );
-                    if state.daemon_is_live {
+                    if state.daemon_is_live && state.daemon_reachable {
                         ui.label(
                             RichText::new("gRPC (live)")
                                 .color(tokens.palette.success)
+                                .size(12.0),
+                        );
+                    } else if state.daemon_is_live {
+                        ui.label(
+                            RichText::new("not running (reconnecting…)")
+                                .color(tokens.palette.warning)
                                 .size(12.0),
                         );
                     } else {
@@ -287,6 +322,9 @@ impl SettingsPage {
                 self.relay_status = rt
                     .block_on(state.daemon.get_setting("relay.status"))
                     .unwrap_or_else(|| "stopped".into());
+                self.direct_addresses = rt
+                    .block_on(state.daemon.get_setting("net.addresses"))
+                    .unwrap_or_default();
             }
 
             ui.add_space(tokens.spacing.sm);
@@ -331,7 +369,7 @@ impl SettingsPage {
                     input_frame.show(ui, |ui| {
                         let response = ui.add(
                             egui::TextEdit::singleline(&mut self.relay_bandwidth_input)
-                                .desired_width(80.0)
+                                .desired_width(ui.available_width().min(80.0))
                                 .margin(Vec2::new(8.0, 6.0)),
                         );
                         if response.lost_focus() {
@@ -572,7 +610,7 @@ impl SettingsPage {
                         ui.add(
                             egui::TextEdit::singleline(&mut self.pin_input)
                                 .password(true)
-                                .desired_width(140.0),
+                                .desired_width(ui.available_width().min(140.0)),
                         );
                     });
                     ui.add_space(tokens.spacing.xxs);
@@ -585,7 +623,7 @@ impl SettingsPage {
                         ui.add(
                             egui::TextEdit::singleline(&mut self.pin_input2)
                                 .password(true)
-                                .desired_width(140.0),
+                                .desired_width(ui.available_width().min(140.0)),
                         );
                     });
                     ui.add_space(tokens.spacing.xxs);

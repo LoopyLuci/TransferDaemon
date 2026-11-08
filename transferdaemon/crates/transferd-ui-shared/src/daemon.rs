@@ -15,6 +15,12 @@ fn now_ts() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()
 }
 
+/// The setting under which the daemon records where a received file was saved, for the message `msg_id`.
+/// Same format as `transferd::transport::inbound_file_key`.
+pub fn inbound_file_key(msg_id: &str) -> String {
+    format!("inbound.file.{msg_id}")
+}
+
 // ---------------------------------------------------------------------------
 // Trait
 // ---------------------------------------------------------------------------
@@ -42,6 +48,9 @@ pub trait DaemonApi: Send + Sync {
     async fn pause_transfer(&self, transfer_id: &str) -> Result<(), DaemonError>;
     async fn resume_transfer(&self, transfer_id: &str) -> Result<(), DaemonError>;
     async fn get_public_key_hex(&self) -> Option<String>;
+    /// Whether the daemon answers right now (the window shows it, and retries on its own). An in-process daemon
+    /// always does.
+    async fn is_reachable(&self) -> bool { true }
     async fn get_setting(&self, key: &str) -> Option<String>;
     async fn set_setting(&self, key: &str, value: &str) -> Result<(), DaemonError>;
     // Groups

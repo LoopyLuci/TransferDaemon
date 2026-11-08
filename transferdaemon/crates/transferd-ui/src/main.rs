@@ -1,9 +1,10 @@
 //! TransferDaemon UI — egui/eframe desktop application.
 //!
 //! Daemon selection:
-//!   - If `TRANSFERD_ADDR` env var is set, connect via gRPC to that address.
-//!   - Otherwise try `http://127.0.0.1:50051` with a 500 ms timeout.
-//!   - Fall back to `MockDaemon` when the daemon is not reachable.
+//!   - `TRANSFERD_ADDR` (default `http://127.0.0.1:50051`) is the daemon's gRPC address.
+//!   - If the daemon is not running yet, the window still uses it: calls connect as soon as it is up, so a daemon
+//!     started after the window works without a relaunch.
+//!   - `TRANSFERD_MOCK=1` runs the window on the offline `MockDaemon` (demo data) instead.
 
 mod automation;
 mod tray;
@@ -28,16 +29,24 @@ fn main() -> eframe::Result<()> {
     {
         let addr = std::env::var("TRANSFERD_ADDR")
             .unwrap_or_else(|_| "http://127.0.0.1:50051".into());
-        match rt.block_on(GrpcDaemon::try_connect(&addr)) {
-            Some(g) => {
-                tracing::info!("[ui] connected to daemon at {addr}");
-                daemon_arc = Arc::new(g);
-                daemon_is_live = true;
-            }
-            None => {
-                tracing::warn!("[ui] daemon not reachable — using MockDaemon (offline mode)");
-                daemon_arc = Arc::new(MockDaemon::new());
-                daemon_is_live = false;
+        let mock = std::env::var("TRANSFERD_MOCK").map(|v| v == "1" || v == "true").unwrap_or(false);
+        if mock {
+            tracing::warn!("[ui] TRANSFERD_MOCK set — using MockDaemon (demo data)");
+            daemon_arc = Arc::new(MockDaemon::new());
+            daemon_is_live = false;
+        } else {
+            match rt.block_on(GrpcDaemon::try_connect(&addr)) {
+                Some(g) => {
+                    tracing::info!("[ui] connected to daemon at {addr}");
+                    daemon_arc = Arc::new(g);
+                    daemon_is_live = true;
+                }
+                None => {
+                    // Not up yet: keep the handle, which connects as soon as the daemon is listening.
+                    tracing::warn!("[ui] daemon not reachable at {addr}; will connect when it is up");
+                    daemon_arc = Arc::new(GrpcDaemon::lazy(&addr).expect("daemon address"));
+                    daemon_is_live = true;
+                }
             }
         }
     }

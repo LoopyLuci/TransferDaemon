@@ -145,7 +145,7 @@ pub async fn publish_endpoint_if_ready(
 }
 
 /// Every non-loopback IPv4 address on this host (LAN + Tailscale 100.64/10).
-fn reachable_ipv4() -> Vec<std::net::IpAddr> {
+pub(crate) fn reachable_ipv4() -> Vec<std::net::IpAddr> {
     netdev::get_interfaces()
         .iter()
         .flat_map(|iface| iface.ipv4.iter())

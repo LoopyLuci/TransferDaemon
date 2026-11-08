@@ -6,8 +6,9 @@
 
 use std::collections::HashMap;
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use bytes::Bytes;
 use parking_lot::Mutex as PkMutex;
@@ -22,6 +23,10 @@ use crate::handshake_manager::HandshakeManager;
 use crate::peer_manager::directional_keys;
 use crate::state::DaemonState;
 use crate::wire::WireMsg;
+
+/// How long an inbound peer may take to finish the handshake before its connection is dropped. A peer that connects
+/// and then says nothing must not hold a task and a socket forever.
+const INBOUND_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Decode a chunk payload through the per-message ratchet.
 fn ratchet_message(payload: &[u8], ratchet: &mut DoubleRatchet) -> Option<WireMsg> {
@@ -76,19 +81,7 @@ pub fn spawn_transport_tick(state: Arc<PkMutex<DaemonState>>) {
         let mut interval = tokio::time::interval(std::time::Duration::from_millis(50));
         loop {
             interval.tick().await;
-            let transport = state.lock().transport.clone();
-            let events = transport.lock().await.process_all_sessions().await;
-            if !events.sent_msg_ids.is_empty() || !events.inbound.is_empty() {
-                let mut s = state.lock();
-                for id in &events.sent_msg_ids {
-                    s.mark_status(id, "sent");
-                    s.note_dispatched(id);
-                }
-                for (_, msg) in events.inbound {
-                    let _ = s.apply_inbound(&msg);
-                }
-                s.try_save();
-            }
+            tick_once(&state).await;
         }
     });
 
@@ -104,6 +97,30 @@ pub fn spawn_transport_tick(state: Arc<PkMutex<DaemonState>>) {
             retry_pending_sessions(&state_retry).await;
         }
     });
+}
+
+/// One pass of the transport tick: dispatch queued chunks, drop sessions whose connection closed, apply acks and
+/// inbound messages. The daemon runs it every 50 ms; tests run the same code, so they exercise the real path.
+pub async fn tick_once(state: &Arc<PkMutex<DaemonState>>) {
+    let transport = state.lock().transport.clone();
+    let events = transport.lock().await.process_all_sessions().await;
+    if events.sent_msg_ids.is_empty() && events.inbound.is_empty() && events.lost_contacts.is_empty() {
+        return;
+    }
+    let mut s = state.lock();
+    for id in &events.sent_msg_ids {
+        s.mark_status(id, "sent");
+        s.note_dispatched(id);
+    }
+    // A session whose connection died took its unacknowledged messages with it: they go back to "pending" so the
+    // outbox sends them again over the next session (the receiver drops duplicates).
+    for cid in &events.lost_contacts {
+        s.requeue_unacknowledged(cid);
+    }
+    for (_, msg) in events.inbound {
+        let _ = s.apply_inbound(&msg);
+    }
+    s.try_save();
 }
 
 /// Establish sessions for contacts that have outbound messages stuck in
@@ -153,10 +170,19 @@ pub async fn handle_inbound_connection(
         }
     };
     let handshake = HandshakeManager::new();
-    let (session_key, peer_identity) = match handshake.run_responder(&mut stream, &identity).await {
-        Ok(k) => k,
-        Err(e) => {
+    let handshake_result = tokio::time::timeout(
+        INBOUND_HANDSHAKE_TIMEOUT,
+        handshake.run_responder(&mut stream, &identity),
+    )
+    .await;
+    let (session_key, peer_identity) = match handshake_result {
+        Ok(Ok(k)) => k,
+        Ok(Err(e)) => {
             tracing::debug!("[transport] handshake rejected: {e}");
+            return;
+        }
+        Err(_) => {
+            tracing::debug!("[transport] handshake timed out; dropping the connection");
             return;
         }
     };
@@ -196,7 +222,7 @@ pub async fn handle_inbound_connection(
     let mut ack_gsn = 0u64;
     let mut files: HashMap<String, InboundFile> = HashMap::new();
     // Responder-side per-message ratchet (aligned with the initiator's).
-    let mut ratchet = transferd_crypto::ratchet::DoubleRatchet::new(&session_key.key, false);
+    let mut ratchet = DoubleRatchet::new(&session_key.key, false);
 
     while let Some(res) = lane.recv().await {
         let chunk = match res {
@@ -211,9 +237,22 @@ pub async fn handle_inbound_connection(
             }
         };
 
+        // Blocked contacts' messages are dropped before anything is stored or written to disk. They get no ack, so
+        // nothing about the block is revealed by a reply.
+        let blocked = match &msg {
+            WireMsg::Text { sender, .. } | WireMsg::File { sender, .. } => {
+                state.lock().contacts.iter().any(|c| c.id == *sender && c.blocked)
+            }
+            _ => false,
+        };
+        if blocked {
+            tracing::info!("[transport] dropped message from blocked contact");
+            continue;
+        }
+
         // Files accumulate here (TCP preserves order, so chunks are contiguous);
         // once complete they are written to disk and stored as a message.
-        if let WireMsg::File { msg_id, file_name, file_size, mime, seq, total_chunks, data, .. } = &msg {
+        if let WireMsg::File { sender, msg_id, file_name, file_size, mime, seq, total_chunks, data, .. } = &msg {
             // Inbound limit check: the RECEIVER's own limits decide what it
             // accepts. A file that exceeds the cap is dropped wholesale.
             let content_type = relayd::limits::ContentType::from_mime(mime);
@@ -229,25 +268,35 @@ pub async fn handle_inbound_connection(
                 );
                 continue;
             }
-            let entry = files.entry(msg_id.clone()).or_insert(InboundFile {
+            let entry = files.entry(msg_id.clone()).or_insert_with(|| InboundFile {
                 name: file_name.clone(),
                 size: *file_size,
                 total_chunks: *total_chunks,
                 chunks: HashMap::new(),
             });
-            entry.chunks.insert(*seq, data.clone());
+            // A chunk resent after a reconnect is already held: count it once.
+            let fresh = entry.chunks.insert(*seq, data.clone()).is_none();
             let complete = entry.chunks.len() as u32 >= entry.total_chunks;
-            if let WireMsg::File { sender, .. } = &msg {
+            if fresh {
                 state.lock().note_inbound_chunk(sender, msg_id, file_name, *file_size, data.len(), complete);
             }
 
             if complete {
                 if let Some(f) = files.remove(msg_id) {
-                    if let Some(path) = write_inbound_file(&f) {
+                    // The file was already received (its acknowledgement was lost, so the sender sent it again):
+                    // keep the copy on disk and the one message.
+                    if state.lock().has_inbound_message(sender, msg_id) {
+                        tracing::debug!("[transport] '{}' from {sender} was already received", f.name);
+                    } else if let Some(path) = write_inbound_file(&f) {
                         tracing::info!(
                             "[transport] received file '{}' ({} bytes) → {}",
                             f.name, f.size, path.display()
                         );
+                        // Keep the path it was saved under (it may differ from the name the sender used), so the
+                        // GUI can show the file.
+                        let mut s = state.lock();
+                        s.settings.insert(inbound_file_key(msg_id), path.display().to_string());
+                        s.try_save();
                     }
                 }
             }
@@ -262,23 +311,6 @@ pub async fn handle_inbound_connection(
                 tracing::warn!("[transport] rejecting inbound text ({} > cap {})", text.len(), cap);
                 continue;
             }
-        }
-
-        // Drop messages from blocked contacts (blocked peers are still served
-        // acks so they cannot infer the block by timing).
-        let blocked = {
-            let s = state.lock();
-            match &msg {
-                WireMsg::Text { sender, .. } | WireMsg::File { sender, .. } => s
-                    .contacts
-                    .iter()
-                    .any(|c| c.id == *sender && c.blocked),
-                _ => false,
-            }
-        };
-        if blocked {
-            tracing::info!("[transport] dropped message from blocked contact");
-            continue;
         }
 
         // Apply to state; reply with an ack when the message expects one.
@@ -310,13 +342,18 @@ pub async fn handle_inbound_connection(
     }
 }
 
-/// Write a fully reassembled inbound file to the downloads directory.
+/// The setting that holds the local path of a received file, keyed by the id of the message that carried it.
+/// The GUI reads this key (`transferd-ui-shared`'s file bubble uses the same format).
+pub fn inbound_file_key(msg_id: &str) -> String {
+    format!("inbound.file.{msg_id}")
+}
+
+/// Write a fully reassembled inbound file to the downloads directory, under a name that does not overwrite an
+/// existing file (`report.pdf` → `report (1).pdf`).
 fn write_inbound_file(file: &InboundFile) -> Option<PathBuf> {
     let dir = downloads_dir();
     std::fs::create_dir_all(&dir).ok()?;
-    // Avoid path traversal from untrusted file names.
-    let safe_name = file.name.replace(['/', '\\'], "_");
-    let path = dir.join(&safe_name);
+    let path = unique_path(&dir, &safe_file_name(&file.name));
 
     let mut buf = Vec::with_capacity(file.size as usize);
     for i in 0..file.total_chunks {
@@ -324,6 +361,37 @@ fn write_inbound_file(file: &InboundFile) -> Option<PathBuf> {
     }
     std::fs::write(&path, buf).ok()?;
     Some(path)
+}
+
+/// A peer's file name made safe to use as a local file name: no path separators, no Windows-reserved characters,
+/// no control characters, and never `.` or `..`.
+pub fn safe_file_name(raw: &str) -> String {
+    let cleaned: String = raw
+        .chars()
+        .map(|c| if c.is_control() || matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') { '_' } else { c })
+        .collect();
+    let trimmed = cleaned.trim().trim_end_matches(['.', ' ']).to_string();
+    if trimmed.is_empty() || trimmed == "." || trimmed == ".." {
+        "file".to_string()
+    } else {
+        trimmed
+    }
+}
+
+/// `dir/name` if it is free, otherwise `dir/stem (n).ext` for the first free `n`.
+fn unique_path(dir: &Path, name: &str) -> PathBuf {
+    let first = dir.join(name);
+    if !first.exists() {
+        return first;
+    }
+    let (stem, ext) = match name.rfind('.') {
+        Some(i) if i > 0 => (&name[..i], &name[i..]),
+        _ => (name, ""),
+    };
+    (1..10_000)
+        .map(|n| dir.join(format!("{stem} ({n}){ext}")))
+        .find(|p| !p.exists())
+        .unwrap_or(first)
 }
 
 /// Platform data dir + `transferdaemon/downloads`, or `TRANSFERD_DOWNLOADS_DIR`
@@ -366,4 +434,32 @@ pub async fn send_read_receipt(
 #[allow(dead_code)]
 async fn flush_write(stream: &mut TcpStream) {
     let _ = stream.flush().await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn peer_file_names_cannot_escape_or_reserve_devices() {
+        assert_eq!(safe_file_name("../../etc/passwd"), ".._.._etc_passwd");
+        assert_eq!(safe_file_name("a:b*c?.txt"), "a_b_c_.txt");
+        assert_eq!(safe_file_name(".."), "file");
+        assert_eq!(safe_file_name("   "), "file");
+        assert_eq!(safe_file_name("report.pdf."), "report.pdf");
+        assert_eq!(safe_file_name("line\nbreak.txt"), "line_break.txt");
+    }
+
+    #[test]
+    fn a_name_already_on_disk_is_not_overwritten() {
+        let dir = std::env::temp_dir().join(format!("td-unique-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("photo.jpg"), b"old").unwrap();
+        let second = unique_path(&dir, "photo.jpg");
+        assert_eq!(second.file_name().unwrap(), "photo (1).jpg");
+        std::fs::write(&second, b"new").unwrap();
+        assert_eq!(unique_path(&dir, "photo.jpg").file_name().unwrap(), "photo (2).jpg");
+        assert_eq!(unique_path(&dir, "fresh.bin").file_name().unwrap(), "fresh.bin");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
