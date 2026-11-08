@@ -870,8 +870,21 @@ impl TransferService for TransferServiceImpl {
 
         // Read the file into memory (bounded). Larger files will stream from
         // disk in a future iteration; this covers the common transfer size.
-        let data = std::fs::read(&r.file_path)
-            .map_err(|e| Status::not_found(format!("cannot read '{}': {e}", r.file_path)))?;
+        // A folder cannot be read as one file: say so, instead of the OS's "access denied" for a directory.
+        if std::path::Path::new(&r.file_path).is_dir() {
+            return Err(Status::invalid_argument(format!(
+                "'{}' is a folder. Folders cannot be sent yet: choose the files inside it, or zip the folder first.",
+                r.file_path
+            )));
+        }
+        let data = std::fs::read(&r.file_path).map_err(|e| match e.kind() {
+            std::io::ErrorKind::NotFound => Status::not_found(format!("no file at '{}'", r.file_path)),
+            std::io::ErrorKind::PermissionDenied => Status::permission_denied(format!(
+                "the daemon cannot read '{}' ({e}). The daemon runs as its own account: give that account read access, or copy the file somewhere it can read.",
+                r.file_path
+            )),
+            _ => Status::failed_precondition(format!("cannot read '{}': {e}", r.file_path)),
+        })?;
         if data.len() as u64 > crate::outbox::MAX_FILE {
             return Err(Status::resource_exhausted(
                 "files over 200 MB need chunked disk streaming (coming soon)",

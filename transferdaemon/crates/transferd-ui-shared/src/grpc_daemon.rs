@@ -317,6 +317,11 @@ impl DaemonApi for GrpcDaemon {
 
     async fn send_file(&self, contact_id: &str, path: String) -> Result<Message, DaemonError> {
         let p = std::path::Path::new(&path);
+        if p.is_dir() {
+            return Err(DaemonError::InvalidInput(format!(
+                "'{path}' is a folder. Folders cannot be sent yet: choose the files inside it, or zip the folder first."
+            )));
+        }
         let file_name = p.file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_default();
@@ -342,7 +347,12 @@ impl DaemonApi for GrpcDaemon {
             })
             .await
             .map(|r| proto_to_message(r.into_inner()))
-            .map_err(|e| DaemonError::NotReachable(e.to_string()))
+            // Only a dropped connection means the daemon is unreachable; a refusal (not found, no access, too big)
+            // is the daemon's answer and its message is shown as it is.
+            .map_err(|e| match e.code() {
+                tonic::Code::Unavailable => DaemonError::NotReachable(e.to_string()),
+                _ => DaemonError::InvalidInput(e.message().to_owned()),
+            })
     }
 
     async fn cancel_transfer(&self, transfer_id: &str) -> Result<(), DaemonError> {

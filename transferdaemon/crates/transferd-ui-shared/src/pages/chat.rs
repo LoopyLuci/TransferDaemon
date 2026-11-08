@@ -641,10 +641,29 @@ impl ChatPage {
                                 ui.add(
                                     egui::TextEdit::singleline(&mut self.file_path)
                                         .hint_text("File path…")
-                                        .desired_width(ui.available_width() - 72.0)
+                                        .desired_width(ui.available_width() - if cfg!(any(target_os = "android", target_os = "ios")) { 72.0 } else { 140.0 })
                                         .margin(Vec2::new(8.0, 6.0)),
                                 );
                             });
+                            // The system's file picker, on desktop. It picks files; folders cannot be sent yet.
+                            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+                            if ui
+                                .add_sized(
+                                    [64.0, 32.0],
+                                    egui::Button::new(
+                                        RichText::new("Browse…")
+                                            .size(14.0)
+                                            .color(tokens.palette.text_primary),
+                                    )
+                                    .fill(tokens.palette.surface)
+                                    .rounding(tokens.spacing.button_rounding),
+                                )
+                                .clicked()
+                            {
+                                if let Some(path) = rfd::FileDialog::new().pick_file() {
+                                    self.file_path = path.display().to_string();
+                                }
+                            }
                             if ui
                                 .add_sized(
                                     [56.0, 32.0],
