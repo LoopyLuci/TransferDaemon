@@ -1088,18 +1088,45 @@ impl OverlayNode {
     }
 
     /// What our hello to `peer` carries: the invite nonce, when we paired by accepting its invite.
+    /// It also carries the addresses we can be dialled on, so the peer can reach us again later.
     fn hello_ext(&self, peer: &str) -> Vec<u8> {
         let pairing = self.inner.presented.lock().get(peer).copied();
-        if pairing.is_none() {
+        let direct = self.published_direct();
+        if pairing.is_none() && direct.is_empty() {
             return Vec::new();
         }
-        bincode::serialize(&protocol::HelloExt { pairing }).unwrap_or_default()
+        bincode::serialize(&protocol::HelloExt { pairing, direct }).unwrap_or_default()
     }
 
     /// A peer's hello: if it presents the nonce of an invite we issued, it accepted that invite,
     /// so it is paired with us too. Each invite pairs once.
     fn note_hello(&self, peer: &str, name: &str, ext: &[u8]) {
-        let Some(nonce) = protocol::HelloExt::decode(ext).pairing else {
+        let ext = protocol::HelloExt::decode(ext);
+        self.note_pairing_hello(peer, name, ext.pairing);
+        self.note_direct(peer, &ext.direct);
+    }
+
+    /// Record the addresses a paired peer says it can be dialled on, in memory and in the saved
+    /// state, so after a restart we can dial it instead of waiting for it to dial us.
+    fn note_direct(&self, peer: &str, direct: &[String]) {
+        if direct.is_empty() || !self.inner.paired.lock().contains(peer) {
+            return;
+        }
+        let direct: Vec<String> = direct.iter().take(16).cloned().collect();
+        if let Some(p) = self.inner.peers.lock().get_mut(peer) {
+            p.reachable = direct.clone();
+        }
+        let mut state = self.load_state();
+        if let Some(node) = state.nodes.get_mut(peer) {
+            if node.direct != direct {
+                node.direct = direct;
+                self.save_state_with(&state);
+            }
+        }
+    }
+
+    fn note_pairing_hello(&self, peer: &str, name: &str, pairing: Option<[u8; 16]>) {
+        let Some(nonce) = pairing else {
             return;
         };
         if self.inner.paired.lock().contains(peer) {
@@ -2044,6 +2071,7 @@ impl OverlayNode {
                     "routes": peer.session.routes(),
                     "services": peer.session.services.read().clone(),
                     "protocol_version": peer.session.version(),
+                    "reachable": peer.reachable,
                 })
             })
             .collect()
