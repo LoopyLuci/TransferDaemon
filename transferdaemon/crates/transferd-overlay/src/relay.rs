@@ -255,9 +255,15 @@ impl RelayHub {
                 let _ = hub.send_payload(PREFIX_HANDSHAKE_REPLY, from, &reply).await;
                 return;
             }
-            let Some((keys, peer_id, reply)) = hub.answer_handshake(&flight, &hub.identity) else {
+            let Some((keys, peer_id, hybrid, reply)) = hub.answer_handshake(&flight, &hub.identity)
+            else {
                 return;
             };
+            // As on the direct listener, a first contact must present the key its invite named.
+            // A refused flight gets no answer, so the dialler's handshake times out.
+            if !hub.node.admit_presented_key(&peer_id, &hybrid) {
+                return;
+            }
             {
                 let mut answered = hub.answered.lock();
                 if answered.len() >= ANSWERS_KEPT {
@@ -272,7 +278,7 @@ impl RelayHub {
             let link = hub.link(hub.node.next_link_id(), peer_token, &keys).await;
             let _ = hub.send_payload(PREFIX_HANDSHAKE_REPLY, from, &reply).await;
             hub.node
-                .adopt_relay_link(link, peer_id, from, RouteKind::Relay)
+                .adopt_relay_link(link, peer_id, hybrid, from, RouteKind::Relay)
                 .await;
         });
     }
@@ -326,13 +332,15 @@ impl RelayHub {
     /// Run the authenticated hybrid handshake with a peer over this relay.
     ///
     /// Returns the link keys: the same derivation as a direct connection, so a relay path and
-    /// a direct path are interchangeable and either can be added to a running session.
+    /// a direct path are interchangeable and either can be added to a running session. It also
+    /// returns the peer's 2624-byte hybrid public key from its verified flight, for the caller to
+    /// check against the peer's key fingerprint.
     pub async fn handshake(
         &self,
         peer_node_id: &str,
         peer_token: [u8; 32],
         identity: &NodeIdentity,
-    ) -> Result<LinkKeys> {
+    ) -> Result<(LinkKeys, Vec<u8>)> {
         let (tx, rx) = oneshot::channel();
         self.handshakes.lock().insert(peer_token, tx);
         let init = transferd_crypto::handshake::Initiator::new();
@@ -384,18 +392,21 @@ impl RelayHub {
             });
         }
         let session = init.finalize(resp.hello);
-        Ok(LinkKeys::derive(session.as_bytes()))
+        Ok((
+            LinkKeys::derive(session.as_bytes()),
+            resp.identity_pk.to_bytes(),
+        ))
     }
 
     /// Answer an inbound handshake from a peer that dialled us through this relay.
     ///
-    /// Returns the link keys, the peer's node id (taken from the signed flight itself) and the
-    /// answer to send back.
+    /// Returns the link keys, the peer's node id and its hybrid public key (both from the signed
+    /// flight itself), and the answer to send back.
     pub fn answer_handshake(
         &self,
         flight: &[u8],
         identity: &NodeIdentity,
-    ) -> Option<(LinkKeys, String, Vec<u8>)> {
+    ) -> Option<(LinkKeys, String, Vec<u8>, Vec<u8>)> {
         let hello = transferd_crypto::auth_handshake::AuthInitiatorHello::from_wire(flight)?;
         if !hello.verify() {
             return None;
@@ -412,6 +423,7 @@ impl RelayHub {
         Some((
             LinkKeys::derive(session.as_bytes()).swapped(),
             peer_id,
+            hello.identity_pk.to_bytes(),
             reply.to_wire(),
         ))
     }

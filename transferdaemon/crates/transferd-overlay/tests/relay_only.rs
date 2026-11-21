@@ -267,3 +267,31 @@ async fn a_service_exposed_after_the_session_came_up_is_reachable() {
     })
     .await;
 }
+
+/// The node that issued the invite never sees the other side's invite, so it learns how to dial
+/// it from the hello: after a restart it can dial that peer instead of waiting to be dialled.
+#[tokio::test(flavor = "multi_thread", worker_threads = 16)]
+async fn the_inviting_node_learns_the_accepting_nodes_addresses() {
+    let inviter = TestNode::with_listener("inviter", &[]).await;
+    let accepter = TestNode::with_listener("accepter", &[]).await;
+    let published = accepter.node.published_direct();
+    assert!(!published.is_empty(), "the accepting node publishes an address");
+    accepter.pair_with(&inviter, "inviter");
+    inviter
+        .node
+        .expose("x", echo_service(9).await, vec!["*paired".into()], "")
+        .expect("expose");
+    accepter.node.connect(&inviter.id(), "x").await.expect("session up");
+    let want = serde_json::json!(published);
+    eventually("the inviter records the accepter's addresses", || {
+        let peers = inviter.node.peer_list();
+        let want = want.clone();
+        let id = accepter.id();
+        async move {
+            peers
+                .iter()
+                .any(|p| p["node_id"] == serde_json::json!(id) && p["reachable"] == want)
+        }
+    })
+    .await;
+}

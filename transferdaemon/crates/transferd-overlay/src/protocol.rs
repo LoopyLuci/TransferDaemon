@@ -142,15 +142,36 @@ pub struct HelloExt {
     /// peer that the pairing is mutual.
     #[serde(default)]
     pub pairing: Option<[u8; 16]>,
+    /// The addresses the sender can be dialled on directly. Sent on every hello, so a peer that
+    /// paired by issuing the invite (and so never saw the other side's invite) learns them, and
+    /// keeps them current when they change.
+    #[serde(default)]
+    pub direct: Vec<String>,
+}
+
+/// The extension as nodes before `direct` sent it. bincode is not self-describing, so an older
+/// extension has to be read with the older layout.
+#[derive(Deserialize)]
+struct HelloExtV1 {
+    pairing: Option<[u8; 16]>,
 }
 
 impl HelloExt {
     /// Decode an `ext`, treating anything unreadable as empty (an extension is never fatal).
+    /// Older nodes send only `pairing`; newer fields after it are ignored by them (bincode reads
+    /// a prefix), and read here when present.
     pub fn decode(ext: &[u8]) -> Self {
         if ext.is_empty() {
             return Self::default();
         }
-        bincode::deserialize(ext).unwrap_or_default()
+        bincode::deserialize::<HelloExt>(ext)
+            .or_else(|_| {
+                bincode::deserialize::<HelloExtV1>(ext).map(|v1| HelloExt {
+                    pairing: v1.pairing,
+                    direct: Vec::new(),
+                })
+            })
+            .unwrap_or_default()
     }
 }
 
@@ -831,5 +852,27 @@ mod tests {
         wire.extend_from_slice(&1u64.to_le_bytes());
         wire.extend_from_slice(&u32::MAX.to_le_bytes());
         assert_eq!(decode(&wire), Err(DecodeError::TooLarge(u32::MAX as usize)));
+    }
+
+    #[test]
+    fn hello_ext_carries_direct_and_reads_the_older_layout() {
+        let pairing = Some([7u8; 16]);
+        let new = bincode::serialize(&HelloExt { pairing, direct: vec!["192.168.1.5:7801".into()] }).unwrap();
+        let got = HelloExt::decode(&new);
+        assert_eq!(got.pairing, pairing);
+        assert_eq!(got.direct, vec!["192.168.1.5:7801".to_string()]);
+
+        #[derive(Serialize, Deserialize)]
+        struct Old {
+            pairing: Option<[u8; 16]>,
+        }
+        // What an older node sends: read without losing the pairing nonce.
+        let old = bincode::serialize(&Old { pairing }).unwrap();
+        let got = HelloExt::decode(&old);
+        assert_eq!(got.pairing, pairing);
+        assert!(got.direct.is_empty());
+        // What an older node reads from a newer one: its prefix, the pairing nonce.
+        let read: Old = bincode::deserialize(&new).unwrap();
+        assert_eq!(read.pairing, pairing);
     }
 }

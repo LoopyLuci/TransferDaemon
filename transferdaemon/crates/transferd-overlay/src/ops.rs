@@ -416,6 +416,201 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_node_paired_by_invite_is_reached_when_it_presents_the_key_its_invite_names() {
+        let a = OverlayNode::start(crate::OverlayConfig {
+            listen: Some("127.0.0.1:0".parse().expect("an address")),
+            ..crate::OverlayConfig::local(crate::NodeIdentity::generate("a"))
+        })
+        .await
+        .expect("a node");
+        let b = OverlayNode::start(crate::OverlayConfig::local(crate::NodeIdentity::generate(
+            "b",
+        )))
+        .await
+        .expect("a node");
+        b.invite_accept(&a.invite_create(600), Some("a".into()))
+            .expect("pair");
+        if let Err(e) = b.ensure_session(&a.node_id()).await {
+            panic!("the first contact presents the fingerprinted key: {e}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_node_presenting_a_key_its_invite_did_not_name_is_refused_on_first_contact() {
+        let a = OverlayNode::start(crate::OverlayConfig {
+            listen: Some("127.0.0.1:0".parse().expect("an address")),
+            ..crate::OverlayConfig::local(crate::NodeIdentity::generate("a"))
+        })
+        .await
+        .expect("a node");
+        let b = OverlayNode::start(crate::OverlayConfig::local(crate::NodeIdentity::generate(
+            "b",
+        )))
+        .await
+        .expect("a node");
+        let stranger = crate::NodeIdentity::generate("stranger");
+        // Signed by a, so it verifies, but it names the stranger's key. a presents its own.
+        let listen = a.listener_addr().expect("a listens");
+        let invite = crate::identity::invite_naming(
+            &a.identity(),
+            crate::identity::key_fingerprint(&stranger.hybrid_public_key()),
+            vec![listen.to_string()],
+            600,
+        );
+        b.invite_accept(&invite, None)
+            .expect("the signature verifies");
+        let err = match b.ensure_session(&a.node_id()).await {
+            Ok(_) => panic!("a node that presents another key must not be reached"),
+            Err(e) => e,
+        };
+        assert!(matches!(err, OverlayError::Unreachable { .. }), "{err}");
+    }
+
+    /// A relay on a real socket, running relayd's own logic, for the tests that dial through one.
+    async fn a_relay() -> String {
+        let socket = tokio::net::UdpSocket::bind("127.0.0.1:0")
+            .await
+            .expect("the relay binds");
+        let addr = socket.local_addr().expect("the relay's address");
+        let mut relay = relayd::relay::Relay::new(0, 300, 64 * 1024);
+        // Every test node is on 127.0.0.1, so the per-address budget is raised for overlay traffic.
+        relay.set_rate_limit(30, 1_000_000);
+        let core = std::sync::Arc::new(tokio::sync::Mutex::new(relay));
+        let reader = std::sync::Arc::new(socket);
+        tokio::spawn(async move {
+            relayd::server::serve(reader, core).await;
+        });
+        addr.to_string()
+    }
+
+    /// A node with no listener at all, reachable only through the relay it registers with.
+    async fn relayed_node(name: &str, relay: &str) -> std::sync::Arc<OverlayNode> {
+        OverlayNode::start(crate::OverlayConfig {
+            relays: vec![relay.to_string()],
+            ..crate::OverlayConfig::local(crate::NodeIdentity::generate(name))
+        })
+        .await
+        .expect("a node")
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_node_dialled_through_a_relay_is_answered_when_it_presents_the_key_its_invite_names()
+    {
+        let relay = a_relay().await;
+        let alice = relayed_node("alice", &relay).await;
+        let bob = relayed_node("bob", &relay).await;
+        alice
+            .invite_accept(&bob.invite_create(600), None)
+            .expect("alice pairs with bob");
+        bob.invite_accept(&alice.invite_create(600), None)
+            .expect("bob pairs with alice");
+        alice
+            .ensure_session(&bob.node_id())
+            .await
+            .expect("the relayed first contact presents the fingerprinted key");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_node_dialled_through_a_relay_is_not_answered_when_it_presents_another_key() {
+        let relay = a_relay().await;
+        let alice = relayed_node("alice", &relay).await;
+        let bob = relayed_node("bob", &relay).await;
+        let stranger = crate::NodeIdentity::generate("stranger");
+        // bob's invite for alice names the stranger's key. alice presents her own, through the relay.
+        let invite = crate::identity::invite_naming(
+            &alice.identity(),
+            crate::identity::key_fingerprint(&stranger.hybrid_public_key()),
+            Vec::new(),
+            600,
+        );
+        bob.invite_accept(&invite, None)
+            .expect("the signature verifies");
+        alice
+            .invite_accept(&bob.invite_create(600), None)
+            .expect("alice pairs with bob");
+        let err = match alice.ensure_session(&bob.node_id()).await {
+            Ok(_) => panic!("a node that presents another key must not be reached through a relay"),
+            Err(e) => e,
+        };
+        assert!(matches!(err, OverlayError::Unreachable { .. }), "{err}");
+        assert!(
+            bob.events()
+                .recent(100)
+                .iter()
+                .any(|event| event.kind == "peer.denied"),
+            "bob records the refusal"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_direct_address_presenting_another_key_is_not_added_as_a_route() {
+        let relay = a_relay().await;
+        // a and the impostor share their Ed25519 half, so they share a node id, and differ only in
+        // the post-quantum half. That is the case the fingerprint exists for: a classical key that
+        // has been broken, with no way to forge the rest.
+        let mut seed = [0u8; 64];
+        rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut seed);
+        let a = OverlayNode::start(crate::OverlayConfig {
+            relays: vec![relay.clone()],
+            ..crate::OverlayConfig::local(crate::NodeIdentity::from_seed(&seed, "a"))
+        })
+        .await
+        .expect("a node");
+        let mut impostor_seed = seed;
+        rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut impostor_seed[32..]);
+        let impostor = OverlayNode::start(crate::OverlayConfig {
+            listen: Some("127.0.0.1:0".parse().expect("an address")),
+            ..crate::OverlayConfig::local(crate::NodeIdentity::from_seed(
+                &impostor_seed,
+                "impostor",
+            ))
+        })
+        .await
+        .expect("a node");
+        let b = relayed_node("b", &relay).await;
+        assert_eq!(impostor.node_id(), a.node_id());
+
+        // a's invite publishes the impostor's address as a's direct address.
+        a.set_direct(
+            impostor
+                .listener_addr()
+                .expect("the impostor listens")
+                .to_string(),
+        );
+        b.invite_accept(&a.invite_create(600), None)
+            .expect("b pairs with a");
+        a.invite_accept(&b.invite_create(600), None)
+            .expect("a pairs with b");
+        // b dials a. Only the dialling node widens a session, so b is the one that would add the
+        // impostor's address as a route.
+        b.ensure_session(&a.node_id())
+            .await
+            .expect("b reaches a through the relay");
+
+        // b widens its session to the direct address. The impostor is refused, and no route is added.
+        let mut refused = false;
+        for _ in 0..100 {
+            if b.events()
+                .recent(200)
+                .iter()
+                .any(|event| event.kind == "peer.denied" && event.node_id == a.node_id())
+            {
+                refused = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        assert!(refused, "b refuses the impostor's address");
+        assert!(
+            !b.events()
+                .recent(200)
+                .iter()
+                .any(|event| event.kind == "route.change" && event.detail.ends_with("added")),
+            "no direct route is added"
+        );
+    }
+
+    #[tokio::test]
     async fn every_published_operation_is_runnable_or_explicitly_about_the_network() {
         // The catalog must not drift from the dispatcher: anything published has to exist.
         let node = OverlayNode::start(crate::OverlayConfig::local(crate::NodeIdentity::generate(

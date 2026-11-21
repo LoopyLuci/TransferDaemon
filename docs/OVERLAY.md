@@ -22,21 +22,24 @@ CONTROL.md), so `transferd-cli`, MCP clients and scripts all use it the same way
 
 ```
 # on the machine that offers something
-transferd-cli overlay invite                      # -> {"invite": "tdov1:..."}  (valid 15 minutes by default)
+transferd-cli overlay invite                      # -> {"invite": "tdov2:..."}  (valid 15 minutes by default)
 transferd-cli overlay expose web 127.0.0.1:8080   # only paired nodes; or list node ids instead
 
 # on the machine that wants it
-transferd-cli overlay accept tdov1:... laptop     # pair, and call it "laptop"
+transferd-cli overlay accept tdov2:... laptop     # pair, and call it "laptop"
 transferd-cli overlay connect <node-id> web       # -> {"local_addr": "127.0.0.1:50123", "route": "relay"}
 curl http://127.0.0.1:50123/
 ```
 
 **Pairing:**
-- An invite is signed, carries the node's identity and how to reach it, and expires.
+- An invite is signed by the node it names, carries that node's id, the fingerprint of its key and how to reach it,
+  and expires. It is a few hundred bytes, so it fits a QR code.
 - Accepting one pairs both ways. The accepting node presents the invite's one-time nonce in its first hello, and the
   inviting node then knows the pairing is mutual.
 - A node is paired only through an invite. Merely opening a session does not count, so `*paired` never includes a node
   that just happened to learn a node id.
+- An invited node is reached only if it presents the key its invite fingerprinted. The first contact is refused
+  otherwise, before any link is attached.
 - Trust on first use: a node that later presents a different key for the same id is refused.
 
 **Services:**
