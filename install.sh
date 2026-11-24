@@ -78,7 +78,7 @@ fi
 
 # ── 4. Build ─────────────────────────────────────────────────────────────────
 echo "► Building TransferDaemon (release)…"
-cd "${ROOT_DIR}/transferdaemon"
+cd "${ROOT_DIR}"
 cargo build --release -p transferd -p transferd-ui -p launcher 2>&1 | grep -E "^(Compiling|Finished|error)" || true
 echo "  Build complete."
 

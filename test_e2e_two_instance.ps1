@@ -12,8 +12,8 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
-$RootDir = Split-Path -Parent $PSScriptRoot
-$DaemonDir = Join-Path $RootDir "transferdaemon"
+$RootDir = $PSScriptRoot
+$DaemonDir = $RootDir
 $BinDir = Join-Path $DaemonDir "target" "release"
 
 if (-not $SkipBuild) {

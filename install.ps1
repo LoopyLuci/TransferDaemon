@@ -104,7 +104,7 @@ if (-not $protoc) {
 
 # ── 3. Build ─────────────────────────────────────────────────────────────────
 Write-Host "► Building TransferDaemon (release)…"
-Set-Location (Join-Path $RepoDir "transferdaemon")
+Set-Location $RepoDir
 cargo build --release -p transferd -p transferd-ui -p launcher
 if ($LASTEXITCODE -ne 0) { throw "cargo build failed" }
 Write-Host "  Build complete."

@@ -1,0 +1,43 @@
+# The core files. They are identical in the Transferd repo and in TransferDaemon.
+#
+# Paths are relative to the repo root. A directory entry covers every file under it, except
+# generated output: target/, node_modules/, dist/, __pycache__/, .pytest_cache/ and *.egg-info/.
+# scripts/sync-core.sh copies exactly these files, and removes any other file they leave behind.
+# Change a core file here first, then sync.
+
+core.manifest
+LICENSE
+.gitattributes
+.cargo/audit.toml
+
+crates/ring-channel
+crates/transferd-crypto
+crates/relayd
+crates/transferd-core
+crates/transferd-dns
+crates/transferd-overlay
+crates/transferd-relay
+crates/transferd-cat
+crates/transferd-conformance
+fuzz
+
+python
+typescript
+vectors
+
+deploy/relayd.Dockerfile
+deploy/docker-compose.yml
+deploy/nginx/relay-streams.conf
+deploy/cloudflare-worker
+
+docs/PROTOCOL.md
+docs/OVERLAY.md
+docs/CRYPTO.md
+docs/RELAY.md
+docs/IMPLEMENTATION.md
+docs/DEPLOYMENT.md
+
+scripts/sync-core.sh
+scripts/test-core.sh
+scripts/test-core.ps1
+.github/workflows/core-ci.yml

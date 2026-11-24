@@ -1,0 +1,113 @@
+name: core
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '0 6 * * 1'  # weekly dependency audit
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+# Everything in this workflow builds from this repository alone. No GUI toolkit,
+# no daemon, no system libraries beyond the Rust toolchain.
+jobs:
+  check:
+    name: format, clippy, tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      # Formatting is reported but not yet enforced: the repo-wide `cargo fmt` sweep is pending.
+      - run: cargo fmt --all -- --check
+        continue-on-error: true
+      # Library and binary targets. Test code is exempt from the unwrap_used lint.
+      - run: cargo clippy --workspace --all-features -- -D warnings
+      - run: cargo test --workspace --all-features
+
+  build:
+    name: build relay binaries (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release -p relayd -p transferd-relay -p transferd-cat
+      - uses: actions/upload-artifact@v4
+        with:
+          name: transferd-core-${{ matrix.os }}
+          path: |
+            target/release/relayd*
+            target/release/relayd-ws*
+            target/release/dhtd*
+            target/release/transferd-cat*
+
+  fuzz:
+    name: fuzz smoke (relay protocol parser)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@nightly
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo install cargo-fuzz --locked
+      - run: cargo +nightly fuzz run fuzz_relay_protocol -- -max_total_time=120
+
+  python:
+    name: python (tests, including interop with the reference)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build -p transferd-overlay --example interop_peer
+      - run: cargo build -p relayd --bin relayd
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: python -m pip install -e "python[test]"
+      - run: python -m pytest python/tests -q
+        env:
+          TRANSFERD_INTEROP_PEER: ${{ github.workspace }}/target/debug/examples/interop_peer
+          TRANSFERD_RELAYD: ${{ github.workspace }}/target/debug/relayd
+
+  typescript:
+    name: typescript (tests, including interop with the reference)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build -p transferd-overlay --example interop_peer
+      - run: cargo build -p relayd --bin relayd
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: typescript/package-lock.json
+      - run: npm --prefix typescript ci
+      - run: npm --prefix typescript test
+        env:
+          TRANSFERD_INTEROP_PEER: ${{ github.workspace }}/target/debug/examples/interop_peer
+          TRANSFERD_RELAYD: ${{ github.workspace }}/target/debug/relayd
+
+  audit:
+    name: dependency audit
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo install cargo-audit --locked
+        env:
+          RUSTFLAGS: ''  # third-party warnings must not fail the install
+      - run: cargo audit

@@ -1,0 +1,17 @@
+[package]
+name = "transferd-conformance"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "Transferd protocol conformance tests: the core crates exercised end to end. No public API."
+
+[dependencies]
+bytes = { workspace = true }
+tokio = { workspace = true }
+blake3 = { workspace = true }
+bincode = { workspace = true }
+ring-channel = { path = "../ring-channel" }
+transferd-core = { path = "../transferd-core" }
+transferd-crypto = { path = "../transferd-crypto" }
+relayd = { path = "../relayd" }
+transferd-relay = { path = "../transferd-relay" }

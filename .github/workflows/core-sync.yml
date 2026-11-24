@@ -1,0 +1,25 @@
+name: core-sync
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '0 5 * * *'  # daily: catches a Transferd change that was never synced here
+
+# The core files (core.manifest) must be byte-identical to the main branch of the
+# Transferd repository. This job only reads that repository; it builds nothing from it.
+jobs:
+  check:
+    name: core files match Transferd main
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: LoopyLuci/Transferd
+          ref: main
+          path: transferd-upstream
+      - name: compare core files
+        run: bash scripts/sync-core.sh transferd-upstream --check

@@ -1,0 +1,39 @@
+"""Shared helpers for the test suite.
+
+The vectors are written by the Rust reference (see `crates/transferd-crypto/examples/` and
+`crates/transferd-overlay/examples/`), so these tests check this implementation against it.
+"""
+
+import json
+from pathlib import Path
+
+import pytest
+
+REPO = Path(__file__).resolve().parents[2]
+VECTORS = REPO / "vectors"
+
+
+def _load(name: str):
+    path = VECTORS / name
+    if not path.exists():
+        pytest.skip(f"{path} is missing; regenerate it from the Rust reference examples in the repository root")
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+@pytest.fixture(scope="session")
+def crypto_vectors():
+    return _load("crypto.json")
+
+
+@pytest.fixture(scope="session")
+def wire_vectors():
+    return _load("wire.json")
+
+
+def pattern(length: int, tag: int) -> bytes:
+    """The generator's byte pattern: `i * 13 + tag` modulo 256."""
+    return bytes(((i * 13) + tag) & 0xFF for i in range(length))
+
+
+def pattern32(tag: int) -> bytes:
+    return pattern(32, tag)

@@ -85,3 +85,25 @@ ProjectData.md
 deploy/cloudflare-worker/.wrangler/
 deploy/cloudflare-worker/node_modules/
 deploy/cloudflare-worker/package-lock.json
+
+# Wrangler local state (any depth)
+.wrangler/
+
+# cargo-fuzz output for the core and application fuzz projects
+fuzz/target/
+fuzz/corpus/
+fuzz/artifacts/
+fuzz/coverage/
+fuzz-app/target/
+fuzz-app/corpus/
+fuzz-app/artifacts/
+fuzz-app/coverage/
+
+# Python and TypeScript build and test output (the core's python/ and typescript/ packages)
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.venv/
+node_modules/
+dist/

@@ -1,0 +1,33 @@
+# Application fuzz targets: the daemon's own parsers (wire messages, backup files).
+# They build against the daemon crate, so they live here rather than in the core fuzz/
+# project, which depends on the core crates only. Run with cargo-fuzz on a nightly toolchain.
+
+[package]
+name = "transferd-app-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+
+[dependencies.transferd_lib]
+package = "transferd"
+path = "../crates/transferd"
+
+[[bin]]
+name = "fuzz_wire"
+path = "fuzz_targets/fuzz_wire.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fuzz_backup"
+path = "fuzz_targets/fuzz_backup.rs"
+test = false
+doc = false
+bench = false

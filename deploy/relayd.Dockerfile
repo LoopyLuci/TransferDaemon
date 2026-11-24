@@ -14,8 +14,8 @@
 FROM rust:1-slim AS builder
 WORKDIR /build
 # Cache the dependency layer.
-COPY transferdaemon/Cargo.toml transferdaemon/Cargo.lock ./
-COPY transferdaemon/crates ./crates
+COPY Cargo.toml Cargo.lock ./
+COPY crates ./crates
 # Build only the relay stack binaries (faster than the whole workspace).
 RUN cargo build --release -p relayd -p transferd-relay --bin relayd --bin relayd-ws --bin dhtd
 

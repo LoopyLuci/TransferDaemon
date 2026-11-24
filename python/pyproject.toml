@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "transferd"
+version = "0.1.0"
+description = "Python implementation of the Transferd wire protocol: hybrid handshake, tunnel, frames, invites, relay and hole punching."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "cryptography>=50.0",
+    "blake3>=1.0",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+
+[tool.setuptools.packages.find]
+include = ["transferd*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

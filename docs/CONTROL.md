@@ -6,7 +6,7 @@ Everything TransferDaemon does can be done from outside, by a script, another pr
 - its window;
 - its terminal UI;
 - local relays;
-- the overlay, and mesh DNS over it (see OVERLAY.md).
+- the overlay, and mesh DNS over it (see OVERLAY_GUIDE.md).
 
 All of it goes through one place, the **control hub**, which runs inside the daemon.
 
@@ -68,7 +68,7 @@ The hub also has its own operations:
 - `tui.*`;
 - `relay.status`, `relay.start`, `relay.stop` and `relay.probe` (UDP challenge, WebSocket handshake, or TCP reachability).
 
-The daemon's overlay node adds its own (`TRANSFERD_OVERLAY=off` leaves them out); OVERLAY.md describes them:
+The daemon's overlay node adds its own (`TRANSFERD_OVERLAY=off` leaves them out); OVERLAY_GUIDE.md describes them:
 
 - `overlay.status`, `overlay.peers`, `overlay.services`, `overlay.probe`, `overlay.events`, `overlay.audit`;
 - `overlay.invite_create`, `overlay.invite_accept`;

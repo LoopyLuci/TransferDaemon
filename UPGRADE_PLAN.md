@@ -46,7 +46,7 @@ The "X" button renders on every transfer bar but does nothing — `transfer_bar(
 
 No `[profile.release]` section exists. Release builds use default `opt-level = 3` but lack LTO and other size/speed tuning.
 
-**File:** `transferdaemon/Cargo.toml`
+**File:** `Cargo.toml`
 
 **Changes:**
 ```toml

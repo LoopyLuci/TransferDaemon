@@ -18,7 +18,7 @@ $ErrorActionPreference = "Stop"
 
 $Root       = Split-Path -Parent $MyInvocation.MyCommand.Path
 $AndroidDir = Join-Path $Root "android"
-$CargoDir   = Join-Path $Root "transferdaemon"
+$CargoDir   = $Root
 $BinDir     = Join-Path $Root "bin"
 $LogDir     = Join-Path $Root "logs"
 $MaxLogs    = 10

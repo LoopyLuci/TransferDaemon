@@ -12,11 +12,9 @@ env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
 
-# The Cargo workspace lives in `transferdaemon/` (the repo root holds the
-# android/ + ios/ shells and tooling).
-defaults:
-  run:
-    working-directory: transferdaemon
+# The Cargo workspace is at the repo root. It holds the protocol core, which is
+# byte-identical to the Transferd repository (see core.manifest and core-sync.yml),
+# and the application crates. The repo root also holds the android/ and ios/ shells.
 
 # rfd (native dialogs, desktop) pulls the GTK/glib bindings on Linux, and
 # `--all-features` enables every crate feature (incl. transferd-core's

@@ -41,7 +41,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 $Root       = Split-Path -Parent $MyInvocation.MyCommand.Path
-$CargoDir   = Join-Path $Root "transferdaemon"
+$CargoDir   = $Root
 $AndroidDir = Join-Path $Root "android"
 $DistDir    = Join-Path $Root "dist"
 $LogDir     = Join-Path $Root "logs"

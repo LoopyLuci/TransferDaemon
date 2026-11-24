@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **Repository:** the protocol core now lives in the [Transferd](https://github.com/LoopyLuci/Transferd) repository,
+  and its files are carried here byte for byte (`core.manifest`, synced with `scripts/sync-core.sh`). The Rust
+  workspace moved from `transferdaemon/` to the repository root. The core's conformance tests moved to
+  `crates/transferd-conformance`; the daemon's fuzz targets moved to `fuzz-app/`. The `core-sync` workflow fails if
+  the two copies drift.
+- **Fix:** `run_tests.ps1` and `test_e2e_two_instance.ps1` looked for the workspace one folder above the repository.
+- **Fix:** `transferd-overlay` no longer calls the deprecated `AtomicU64::fetch_update`.
+
 - **Fix:** a peer that restarts and reconnects to a session still open on this side is heard. Its control frames
   were numbered from the start again, so they matched numbers the old process had used and were acknowledged but
   dropped. Each session now starts its frame numbers at a random point. Its stream ids start at a random point too, so
@@ -12,7 +20,7 @@
 
 ### The overlay: a private network between your devices
 
-See [docs/OVERLAY.md](docs/OVERLAY.md).
+See [docs/OVERLAY_GUIDE.md](docs/OVERLAY_GUIDE.md).
 
 - **`transferd-overlay`**, inside the daemon. Paired devices expose and reach TCP services on each other through one
   encrypted session per peer, over every route that works: LAN, Tailscale, direct, or a relay.

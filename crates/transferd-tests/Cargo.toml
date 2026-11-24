@@ -1,0 +1,28 @@
+[package]
+name = "transferd-tests"
+version = "0.1.0"
+edition = "2021"
+
+# Application integration tests: the daemon end to end. The protocol's conformance
+# tests live in crates/transferd-conformance.
+
+[dependencies]
+tokio = { workspace = true }
+bytes = { workspace = true }
+blake3 = { workspace = true }
+ring-channel = { path = "../ring-channel" }
+transferd-core = { path = "../transferd-core" }
+transferd-crypto = { path = "../transferd-crypto" }
+relayd = { path = "../relayd" }
+transferd-relay = { path = "../transferd-relay" }
+bincode = { workspace = true }
+tonic = { workspace = true }
+parking_lot = "0.12"
+tokio-stream = { version = "0.1", features = ["net", "sync"] }
+transferd-api = { path = "../transferd-api" }
+transferd = { path = "../transferd" }
+transferd-webrtc = { path = "../transferd-webrtc", features = ["grpc-signaling"] }
+
+[[test]]
+name = "e2e_full_stack"
+path = "../../tests/e2e_full_stack.rs"

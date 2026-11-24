@@ -91,7 +91,7 @@ The entire stack is written in Rust, from the low-level DMI ring to the egui des
 | macOS    | [TransferDaemon-1.0.0.dmg](https://github.com/LoopyLuci/TransferDaemon/releases/download/v1.0.0/TransferDaemon-1.0.0.dmg) |
 | Android (APK) | [TransferDaemon-1.0.0.apk](https://github.com/LoopyLuci/TransferDaemon/releases/download/v1.0.0/TransferDaemon-1.0.0.apk) |
 
-See [RELEASE_NOTES.md](transferdaemon/RELEASE_NOTES.md) for full changelog and known issues.
+See [RELEASE_NOTES.md](RELEASE_NOTES.md) for full changelog and known issues.
 
 ---
 
@@ -128,7 +128,7 @@ After installation, run `transferdaemon` or click the **TransferDaemon** shortcu
 
 ```bash
 git clone https://github.com/LoopyLuci/TransferDaemon.git
-cd TransferDaemon/transferdaemon
+cd TransferDaemon
 cargo build --release -p transferd -p transferd-ui -p transferd-tui -p transferd-cli -p launcher
 ```
 
@@ -137,7 +137,30 @@ To include real webcam/mic support in the terminal UI:
 cargo build --release -p transferd-tui   # desktop-capture feature is enabled by default
 ```
 
-Requires: Rust stable, protoc (protobuf compiler).
+Requires: Rust stable. A `protoc` on the PATH is used when present; otherwise the build uses a vendored copy.
+
+### Repository layout
+
+| Path | What it is |
+|------|------------|
+| `crates/` | The Rust workspace: the protocol core and the application |
+| `android/`, `ios/` | Mobile shells |
+| `installer/` | Windows MSI, Linux `.deb` and `.rpm` packaging |
+| `deploy/`, `docs/` | Relay deployment; protocol and application documentation |
+| `tests/`, `fuzz-app/` | Application integration tests and the daemon's fuzz targets |
+| `harbor/` | Harbor, a separate Rust workspace |
+
+### The protocol core
+
+The protocol core is the [Transferd](https://github.com/LoopyLuci/Transferd) repository. Its files, listed in `core.manifest`, are carried here byte for byte: the core crates, the conformance tests, the relay deployment, the specification and the core CI. The rest of this repository is the application built on them.
+
+Core files change in Transferd first. To bring them here, run this from the TransferDaemon root:
+
+```bash
+scripts/sync-core.sh /path/to/Transferd
+```
+
+The `core-sync` workflow fails whenever a core file here differs from Transferd's `main`.
 
 ---
 
