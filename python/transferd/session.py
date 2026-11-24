@@ -2,7 +2,7 @@
 
 The initiator sends HELLO, advertising its version range and a nonce. The responder answers HELLO_ACK
 with the single version both sides support, echoing the nonce. A session that cannot agree is refused
-with version 0 and a reason. The stream engine (OPEN, DATA, ACK, ...) runs after this and is not here.
+with version 0 and a reason. The stream engine (OPEN, DATA, ACK, ...) runs on the open session: see `stream_session`.
 """
 
 from __future__ import annotations

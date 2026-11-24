@@ -2,7 +2,8 @@
  * Transferd wire protocol, TypeScript implementation.
  *
  * Wire-compatible with the Rust reference: hybrid handshake, tunnel, overlay frames, invites,
- * relay messages and proof of work, and hole-punch probes. Verified against `vectors/*.json`.
+ * relay messages and proof of work, hole-punch probes, and the stream engine. Verified against `vectors/*.json`
+ * and live against the reference binaries.
  */
 export * from "./errors.js";
 export * from "./bytes.js";
@@ -15,6 +16,9 @@ export * from "./frames.js";
 export * from "./tunnel.js";
 export * from "./handshake.js";
 export * from "./session.js";
+export * from "./mux.js";
+export * from "./streams.js";
+export * from "./stream_session.js";
 export * from "./relay_client.js";
 export * from "./invite.js";
 export * from "./relay.js";

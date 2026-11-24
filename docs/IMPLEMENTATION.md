@@ -45,8 +45,8 @@ From the root of this repository, `cargo test -p transferd-overlay` runs them. T
 
 Two independent implementations live in this repository, and both test against the reference over the network:
 
-- [`python/`](../python/) (`python/tests/test_interop.py`, `test_relay_interop.py`) runs the session opening in both directions against `interop_peer`, and drives the reference `relayd` as a client.
-- [`typescript/`](../typescript/) (`test/interop.test.ts`, `test/relay_interop.test.ts`) does the same.
+- [`python/`](../python/) (`python/tests/test_interop.py`, `test_relay_interop.py`) runs the session opening in both directions against `interop_peer`, and drives the reference `relayd` as a client. `test_stream_interop.py` opens a stream against `interop_peer echo`, which echoes it back through the reference's own multiplexer, 600 KiB each way.
+- [`typescript/`](../typescript/) (`test/interop.test.ts`, `test/relay_interop.test.ts`, `test/stream_interop.test.ts`) does the same.
 
 Both check every frame, tunnel and proof-of-work value against the reference vectors in [`vectors/`](../vectors/), which the Rust examples in `crates/transferd-crypto` and `crates/transferd-overlay` generate. The live tests are built on `interop_peer`, an example in `crates/transferd-overlay` that speaks the handshake and HELLO exchange over TCP.
 

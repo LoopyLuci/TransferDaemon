@@ -8,6 +8,8 @@ of the Transferd repository:
 - `tunnel`: per-direction keys, sealed frames, the 4096-wide replay window;
 - `frames`, `bincode`: overlay frames and their bodies;
 - `session`: the HELLO / HELLO_ACK exchange that opens a session after the handshake;
+- `mux`, `streams`: the stream multiplexer and the stream engine (OPEN, DATA, ACK, WINDOW, CLOSE);
+- `stream_session`: the asyncio driver that runs streams over an open session;
 - `invite`: `tdov2:` invites;
 - `relay`: relay messages, proof of work, and the relay payload padding;
 - `relay_client`: a client of `relayd` (register, keepalive, locate, forward);

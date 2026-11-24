@@ -44,3 +44,13 @@ class RelayTimeout(TransferdError):
 
 class RelayProtocolError(TransferdError):
     """The relay answered with a message that does not match the request."""
+
+
+class StreamRefused(TransferdError):
+    """The peer refused a stream we opened. `code` is an OPEN_ERR code: `no_such_service`, `denied`, `rate_limited`
+    or `protocol`."""
+
+    def __init__(self, code: str, reason: str) -> None:
+        super().__init__(f"the peer refused the stream: {code}: {reason}")
+        self.code = code
+        self.reason = reason

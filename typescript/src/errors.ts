@@ -39,3 +39,13 @@ export class RelayTimeout extends TransferdError {}
 
 /** The relay answered with a message that does not match the request. */
 export class RelayProtocolError extends TransferdError {}
+
+/** The peer refused a stream we opened. `code` is an OPEN_ERR code: `no_such_service`, `denied`, `rate_limited` or `protocol`. */
+export class StreamRefused extends TransferdError {
+  constructor(
+    readonly code: string,
+    readonly reason: string,
+  ) {
+    super(`the peer refused the stream: ${code}: ${reason}`);
+  }
+}
