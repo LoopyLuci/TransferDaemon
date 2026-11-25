@@ -41,8 +41,12 @@ pub struct RelayClient {
     ghost: std::sync::Mutex<Option<(GhostCertificate, [u8; 32])>>,
     /// The proof of work last solved for each peer token, with the challenge it was solved against. A forward to the
     /// same peer then needs no new solve until the challenge changes.
-    nonces: std::sync::Mutex<std::collections::HashMap<[u8; 32], (([u8; 16], u32), u64)>>,
+    nonces: std::sync::Mutex<SolvedNonces>,
 }
+
+/// The proofs of work kept, by peer token: the challenge each was solved against (its bytes and difficulty), and the
+/// nonce that solves it.
+type SolvedNonces = std::collections::HashMap<[u8; 32], (([u8; 16], u32), u64)>;
 
 /// Proofs of work kept at once: one per peer, for the challenge they were solved against.
 const NONCES_KEPT: usize = 256;
