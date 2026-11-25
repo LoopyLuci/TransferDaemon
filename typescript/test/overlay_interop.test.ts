@@ -20,6 +20,7 @@ import { test } from "node:test";
 import { handshakeInitiator, handshakeResponder } from "../src/handshake.js";
 import { HybridIdentity } from "../src/identity.js";
 import { TcpRoute } from "../src/link.js";
+import { StreamReset } from "../src/errors.js";
 import { type OverlaySession, type SessionEvent, spawn } from "../src/overlay.js";
 import { EventQueue } from "../src/queue.js";
 import { Link as WireLink } from "../src/wire.js";
@@ -196,6 +197,100 @@ test(
         socket.destroy();
       }
       server.close();
+    }
+  },
+);
+
+test(
+  "TypeScript closes a flushed stream at once against the reference",
+  { skip: SKIP, timeout: 120_000 },
+  async () => {
+    const rust = new HybridIdentity(RUST_SEED, "rust");
+    const ts = new HybridIdentity(TS_SEED, "typescript");
+    const child = spawnProcess(PEER, ["overlay-echo", "0", hex(RUST_SEED)], { stdio: ["ignore", "pipe", "pipe"] });
+    const lines = createInterface({ input: child.stdout });
+    let socket: net.Socket | undefined;
+    let route: TcpRoute | undefined;
+    let session: OverlaySession | undefined;
+    try {
+      const [first] = await within(once(lines, "line"), 10_000, "the reference's listening line");
+      const listening = JSON.parse(String(first)).listening as string;
+      const colon = listening.lastIndexOf(":");
+      socket = net.connect(Number(listening.slice(colon + 1)), listening.slice(0, colon));
+      await within(once(socket, "connect"), 5000, "the connection");
+      const link = new WireLink(socket);
+      const result = await within(handshakeInitiator(link, ts, rust.nodeId), 10_000, "the handshake");
+      route = new TcpRoute(1, link, result.keys, "direct", "tcp");
+      route.start();
+      session = spawn(
+        { peerNodeId: rust.nodeId, peerName: "rust", identity: ts },
+        [route],
+        new EventQueue<SessionEvent>(),
+      );
+      assert.ok(await session.ready(10_000), "the reference answers our hello");
+      const stream = await within(session.open("echo"), 10_000, "the open");
+      const payload = randomBytes(300 * 1024);
+      await session.send(stream, payload, true);
+      assert.ok(sameBytes(await readAll(session, stream), payload), "every echoed byte matches");
+      const started = Date.now();
+      await within(session.close(stream), 10_000, "the close");
+      // Everything went out and was acknowledged, so the close does not wait out the flush limit.
+      assert.ok(Date.now() - started < 2000, "a flushed stream closes at once");
+    } finally {
+      if (session !== undefined) {
+        await session.shutdown();
+      }
+      route?.close();
+      socket?.destroy();
+      lines.close();
+      child.kill();
+    }
+  },
+);
+
+test(
+  "a stream the reference ends with a refusal is an error in TypeScript",
+  { skip: SKIP, timeout: 120_000 },
+  async () => {
+    const rust = new HybridIdentity(RUST_SEED, "rust");
+    const ts = new HybridIdentity(TS_SEED, "typescript");
+    const child = spawnProcess(PEER, ["overlay-echo", "0", hex(RUST_SEED)], { stdio: ["ignore", "pipe", "pipe"] });
+    const lines = createInterface({ input: child.stdout });
+    let socket: net.Socket | undefined;
+    let route: TcpRoute | undefined;
+    let session: OverlaySession | undefined;
+    try {
+      const [first] = await within(once(lines, "line"), 10_000, "the reference's listening line");
+      const listening = JSON.parse(String(first)).listening as string;
+      const colon = listening.lastIndexOf(":");
+      socket = net.connect(Number(listening.slice(colon + 1)), listening.slice(0, colon));
+      await within(once(socket, "connect"), 5000, "the connection");
+      const link = new WireLink(socket);
+      const result = await within(handshakeInitiator(link, ts, rust.nodeId), 10_000, "the handshake");
+      route = new TcpRoute(1, link, result.keys, "direct", "tcp");
+      route.start();
+      session = spawn(
+        { peerNodeId: rust.nodeId, peerName: "rust", identity: ts },
+        [route],
+        new EventQueue<SessionEvent>(),
+      );
+      assert.ok(await session.ready(10_000), "the reference answers our hello");
+      // The reference accepts "refuse" and then ends the stream with a refusal: that is not the end.
+      const stream = await within(session.open("refuse"), 10_000, "the open");
+      const outcome = await session.recv(stream).then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+      assert.ok(outcome instanceof StreamReset, `the end is an error, got ${String(outcome)}`);
+      assert.ok((outcome as StreamReset).message.includes("refused"), "the reason is kept");
+    } finally {
+      if (session !== undefined) {
+        await session.shutdown();
+      }
+      route?.close();
+      socket?.destroy();
+      lines.close();
+      child.kill();
     }
   },
 );

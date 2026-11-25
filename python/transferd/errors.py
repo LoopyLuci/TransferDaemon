@@ -56,6 +56,16 @@ class StreamRefused(TransferdError):
         self.reason = reason
 
 
+class StreamReset(TransferdError):
+    """A stream ended with an error rather than the end: the peer closed it with a code other than `closed`, it
+    left frames missing, it was refused, or it was never open here. `reason` says which."""
+
+    def __init__(self, sid: int, reason: str) -> None:
+        super().__init__(f"stream {sid}: {reason}")
+        self.sid = sid
+        self.reason = reason
+
+
 class OverlayError(TransferdError):
     """A route or stream operation on an overlay session failed (`Unreachable`, `Closed`, ...)."""
 

@@ -40,6 +40,19 @@ export class RelayTimeout extends TransferdError {}
 /** The relay answered with a message that does not match the request. */
 export class RelayProtocolError extends TransferdError {}
 
+/**
+ * A stream ended with an error rather than the end: the peer closed it with a code other than `closed`, it left
+ * frames missing, it was refused, or it was never open here. `reason` says which.
+ */
+export class StreamReset extends TransferdError {
+  constructor(
+    readonly sid: number,
+    readonly reason: string,
+  ) {
+    super(`stream ${sid}: ${reason}`);
+  }
+}
+
 /** The peer refused a stream we opened. `code` is an OPEN_ERR code: `no_such_service`, `denied`, `rate_limited` or `protocol`. */
 export class StreamRefused extends TransferdError {
   constructor(

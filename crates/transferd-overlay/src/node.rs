@@ -1276,27 +1276,66 @@ impl OverlayNode {
             Ok(s) => s,
             Err(e) => {
                 tracing::debug!("[overlay] the service at {local} did not take the stream: {e}");
-                let _ = session.close(stream).await;
+                session
+                    .close_now(stream, "refused", "the service did not take the stream")
+                    .await;
                 return;
             }
         };
-        let (mut sr, mut sw) = tokio::io::split(service);
+        let (sr, mut sw) = tokio::io::split(service);
         let up = session.clone();
         let down = session;
+        // The upload hands back its read half when stopped, so the connection can be reset if the session is lost.
+        let (stop_tx, mut stop_rx) = tokio::sync::oneshot::channel::<()>();
         let upload = tokio::spawn(async move {
+            let mut sr = sr;
             let mut buf = vec![0u8; COPY_CHUNK];
-            while let Ok(n) = sr.read(&mut buf).await {
-                if n == 0 || up.send(stream, buf[..n].to_vec(), false).await.is_err() {
-                    break;
+            let mut ended = false;
+            loop {
+                tokio::select! {
+                    Ok(()) = &mut stop_rx => break,
+                    read = sr.read(&mut buf) => match read {
+                        Ok(n) if n > 0 => {
+                            if up.send(stream, buf[..n].to_vec(), false).await.is_err() {
+                                break;
+                            }
+                        }
+                        _ => {
+                            ended = true;
+                            break;
+                        }
+                    },
                 }
             }
-            let _ = up.send(stream, Vec::new(), true).await;
+            if ended {
+                let _ = up.send(stream, Vec::new(), true).await;
+            }
+            sr
         });
         tokio::spawn(async move {
-            while let Ok(Some(bytes)) = down.recv(stream).await {
-                if sw.write_all(&bytes).await.is_err() {
-                    break;
+            let mut lost = false;
+            loop {
+                match down.recv(stream).await {
+                    Ok(Some(bytes)) => {
+                        if sw.write_all(&bytes).await.is_err() {
+                            break;
+                        }
+                    }
+                    Ok(None) => break,
+                    Err(_) => {
+                        lost = true;
+                        break;
+                    }
                 }
+            }
+            if lost {
+                // The session ended before the stream did: reset the service's connection, so it does not read
+                // a clean end for a stream that was cut short.
+                let _ = stop_tx.send(());
+                if let Ok(sr) = upload.await {
+                    crate::proxy::reset(sr.unsplit(sw));
+                }
+                return;
             }
             // The peer is done sending: pass the end on to the service, and leave the other
             // direction running, since a service may still answer after reading everything.
@@ -1447,7 +1486,7 @@ impl OverlayNode {
         // Prove the service is reachable before publishing an endpoint, so `overlay.connect`
         // never hands back an address that does not work.
         let probe = session.open(service).await?;
-        session.close(probe).await;
+        session.close_now(probe, "closed", "").await;
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await

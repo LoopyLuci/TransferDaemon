@@ -161,6 +161,8 @@ class RecvSide:
     _fin: bool = False
     #: Frames refused because the reorder buffer was full.
     _dropped: int = 0
+    #: Why the stream ended with an error rather than the end (see `abort`).
+    _aborted: Optional[str] = None
 
     @classmethod
     def with_window(cls, id: int, service: str, window: int) -> "RecvSide":
@@ -251,6 +253,21 @@ class RecvSide:
         """Mark the stream closed by this side too."""
         self._fin = True
         self._pending.clear()
+
+    def abort(self, why: str) -> None:
+        """End the stream with an error: the peer reset it, or it left frames missing. Bytes already delivered are
+        still read first; after them the reader gets `why`, not the end."""
+        self._fin = True
+        self._pending.clear()
+        self._aborted = why
+
+    def aborted(self) -> Optional[str]:
+        """Why the stream ended with an error, if it did (see `abort`)."""
+        return self._aborted
+
+    def has_gap(self) -> bool:
+        """Whether frames have arrived beyond a gap: the stream is not complete yet."""
+        return bool(self._pending)
 
     def buffered(self) -> int:
         """Bytes buffered but not yet read by the application."""

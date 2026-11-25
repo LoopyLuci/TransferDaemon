@@ -21,7 +21,11 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
 from . import frames as F
+from .errors import StreamReset
 from .mux import Mux, OutFrame
+
+#: How many cleanly ended streams the engine remembers, so a read on one of them is the end and not an error.
+ENDED_KEPT = 1024
 
 #: The initial retransmission timeout, before any round trip has been measured (ms).
 INITIAL_RTO_MS = 400.0
@@ -112,6 +116,8 @@ class StreamEngine:
         self._backlog: Dict[int, bytearray] = {}
         self._fin_wanted: Dict[int, bool] = {}
         self._fin_sent: Dict[int, bool] = {}
+        # Streams this side closed cleanly, oldest first (see ENDED_KEPT).
+        self._ended: List[int] = []
         self._inflight: Dict[Tuple[int, int], _Flight] = {}
         self._last_ack: Dict[int, float] = {}
         self._dup_acks: Dict[int, Tuple[int, int]] = {}
@@ -150,14 +156,21 @@ class StreamEngine:
         """Take the bytes ready on a stream.
 
         Returns `(data, out)`: `data` is the bytes, `b""` at the end of the stream, or `None` when nothing is ready
-        yet. `out` holds the WINDOW that returns the credit the reader has used.
+        yet. `out` holds the WINDOW that returns the credit the reader has used. A stream that ended with an error
+        raises `StreamReset`, once the bytes that arrived before the error have been taken.
         """
         recv = self.mux.recv_side(sid)
         if recv is None:
-            return b"", []
+            if sid in self._ended:
+                return b"", []
+            raise StreamReset(sid, "it is not open")
         taken = recv.take()
         if taken is None:
-            return (b"" if recv.finished() else None), []
+            if not recv.finished():
+                return None, []
+            if recv.aborted() is not None:
+                raise StreamReset(sid, recv.aborted() or "")
+            return b"", []
         granted = recv.window_update()
         out: Out = [(F.WINDOW, F.Window(stream=sid, credit=granted))] if granted > 0 else []
         return taken, out
@@ -170,11 +183,18 @@ class StreamEngine:
         """Whether the end of our side of the stream has gone out (after everything queued before it)."""
         return self._fin_sent.get(sid, False)
 
+    def flushed(self, sid: int) -> bool:
+        """Whether everything written to the stream has gone out and the peer has acknowledged all of it."""
+        side = self.mux.send_side(sid)
+        return self.pending(sid) == 0 and (side is None or side.unacked_frames() == 0)
+
     def close(self, sid: int, code: str = "closed", reason: str = "") -> Out:
         """Close a stream from our side. The stream's state is dropped at once."""
         self.mux.remove_send(sid)
         self.mux.remove_recv(sid)
         self._forget(sid)
+        if code == "closed":
+            self._note_ended(sid)
         return [(F.CLOSE, F.Close(stream=sid, code=code, reason=reason))]
 
     # ----- inbound frames -----
@@ -317,8 +337,17 @@ class StreamEngine:
         self.mux.remove_send(body.stream)
         self._forget(body.stream)
         recv = self.mux.recv_side(body.stream)
-        if recv is not None:
+        if recv is None:
+            if body.code == "closed":
+                self._note_ended(body.stream)
+        elif body.code == "closed" and not recv.has_gap():
+            # A clean close with every frame in hand is the end.
             recv.close()
+        elif body.code == "closed":
+            recv.abort("the peer closed it with frames still missing")
+        else:
+            # Anything else is an error for the reader, after the bytes that did arrive.
+            recv.abort(f"the peer closed it with code {body.code}: {body.reason}")
         return [], [Event("closed", body.stream, code=body.code, reason=body.reason)]
 
     # ----- timers -----
@@ -390,6 +419,14 @@ class StreamEngine:
             return []
         self._inflight[key] = _Flight(sent_at=now, retx=True)
         return [(F.DATA, F.Data(stream=stream, seq=frame.seq, fin=frame.fin, payload=frame.payload))]
+
+    def _note_ended(self, sid: int) -> None:
+        """Remember a stream closed cleanly here, so a read on it later is the end and not an error."""
+        if sid in self._ended:
+            return
+        if len(self._ended) >= ENDED_KEPT:
+            self._ended.pop(0)
+        self._ended.append(sid)
 
     def _forget(self, sid: int) -> None:
         for key in [k for k in self._inflight if k[0] == sid]:

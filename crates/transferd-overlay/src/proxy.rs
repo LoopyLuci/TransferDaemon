@@ -213,39 +213,68 @@ async fn open(node: &OverlayNode, host: &str) -> Result<SocketAddr> {
 }
 
 /// Copy bytes both ways between the client and the overlay endpoint, until either side stops.
+///
+/// If the overlay side fails (the session was lost), the client's connection is reset rather than closed: a clean
+/// close would tell the application that a stream cut short was complete.
 pub async fn splice(client: TcpStream, local: SocketAddr) {
     let Ok(server) = TcpStream::connect(local).await else {
         return;
     };
-    let (mut client_read, mut client_write) = tokio::io::split(client);
+    let (client_read, mut client_write) = tokio::io::split(client);
     let (mut server_read, mut server_write) = tokio::io::split(server);
     let mut buf = vec![0u8; 32 * 1024];
-    let up_buf = vec![0u8; 32 * 1024];
+    // The upload hands back the client's read half when it is stopped, so the halves can be rejoined to reset.
+    let (stop_tx, mut stop_rx) = tokio::sync::oneshot::channel::<()>();
     let upload = tokio::spawn(async move {
-        let mut buf = up_buf;
+        let mut client_read = client_read;
+        let mut up_buf = vec![0u8; 32 * 1024];
         loop {
-            match client_read.read(&mut buf).await {
-                Ok(0) | Err(_) => break,
-                Ok(n) => {
-                    if server_write.write_all(&buf[..n]).await.is_err() {
-                        break;
+            tokio::select! {
+                Ok(()) = &mut stop_rx => break,
+                read = client_read.read(&mut up_buf) => match read {
+                    Ok(n) if n > 0 => {
+                        if server_write.write_all(&up_buf[..n]).await.is_err() {
+                            break;
+                        }
                     }
-                }
+                    _ => break,
+                },
             }
         }
+        client_read
     });
+    let mut failed = false;
     loop {
         match server_read.read(&mut buf).await {
-            Ok(0) | Err(_) => break,
+            Ok(0) => break,
             Ok(n) => {
                 if client_write.write_all(&buf[..n]).await.is_err() {
                     break;
                 }
             }
+            Err(_) => {
+                failed = true;
+                break;
+            }
         }
+    }
+    if failed {
+        let _ = stop_tx.send(());
+        if let Ok(client_read) = upload.await {
+            reset(client_read.unsplit(client_write));
+        }
+        return;
     }
     let _ = client_write.shutdown().await;
     upload.abort();
+}
+
+/// Close a TCP connection with a reset instead of a FIN, so the reader at the other end gets an error and not the
+/// end of the stream.
+pub fn reset(socket: TcpStream) {
+    #[allow(deprecated)]
+    let _ = socket.set_linger(Some(std::time::Duration::ZERO));
+    drop(socket);
 }
 
 /// A refusal the caller can turn into the right protocol error.
@@ -259,6 +288,31 @@ pub fn refused() -> std::io::Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A session lost under a local connection resets the application's socket: it reads an error, not the end.
+    #[tokio::test]
+    async fn a_failed_overlay_side_resets_the_client() {
+        let front = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let front_addr = front.local_addr().expect("address");
+        let service = TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let service_addr = service.local_addr().expect("address");
+        // The overlay end accepts, then goes away with a reset.
+        tokio::spawn(async move {
+            let (socket, _) = service.accept().await.expect("accept");
+            reset(socket);
+        });
+        let client = tokio::spawn(async move {
+            TcpStream::connect(front_addr).await.expect("connect")
+        });
+        let (accepted, _) = front.accept().await.expect("accept");
+        let mut app = client.await.expect("join");
+        tokio::spawn(splice(accepted, service_addr));
+        let mut buf = [0u8; 16];
+        let outcome = tokio::time::timeout(std::time::Duration::from_secs(5), app.read(&mut buf))
+            .await
+            .expect("the reset arrives");
+        assert!(outcome.is_err(), "a reset, not the end of the stream: {outcome:?}");
+    }
 
     #[test]
     fn an_overlay_host_splits_into_a_service_and_a_node() {

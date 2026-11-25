@@ -44,6 +44,8 @@ export const RECEIPT_WINDOW = CONTROL_WINDOW;
 export const WRITE_LIMIT = DEFAULT_WINDOW;
 /** How long `close` waits for the peer's receipt of the CLOSE (ms). */
 export const CLOSE_RECEIPT_MS = 5000;
+/** How long `close` waits for the peer to acknowledge what was written before it sends `closed` (ms). */
+export const STREAM_FLUSH_MS = 5000;
 /** How often the timer runs (ms). */
 const TICK_MS = 20;
 
@@ -172,7 +174,10 @@ export class StreamSession {
     }
   }
 
-  /** Read the next bytes of a stream. Resolves with an empty array once the stream has ended. */
+  /**
+   * Read the next bytes of a stream. Resolves with an empty array once the stream has ended cleanly. Rejects with a
+   * `StreamReset` if the stream ended with an error (reset, refused, or never open), after the bytes before it.
+   */
   async read(sid: number): Promise<Uint8Array> {
     for (;;) {
       this.check();
@@ -188,18 +193,38 @@ export class StreamSession {
   }
 
   /**
-   * Close a stream. Its state is dropped on this side at once, so bytes still queued are dropped too: `write` with
-   * `fin` first, and close after it resolves. Waits up to 5 s for the peer's receipt of the CLOSE, so that a caller
-   * tearing the transport down straight after does not reset the connection before the peer reads it.
+   * Close a stream. With code `closed`, every byte written to it goes out first, and the peer is told the stream
+   * closed cleanly once it has acknowledged them. If that does not happen within `STREAM_FLUSH_MS`, the peer is told
+   * `reset` instead.
+   *
+   * Then waits up to 5 s for the peer's receipt of the CLOSE, so that a caller tearing the transport down straight
+   * after does not reset the connection before the peer reads it.
    */
   async close(sid: number, code = "closed", reason = ""): Promise<void> {
-    const receipts = await this.send(this.engine.close(sid, code, reason));
+    const flushed = code !== "closed" || (await this.flushed(sid));
+    const [sentCode, sentReason] = flushed ? [code, reason] : ["reset", "the stream could not be flushed in time"];
+    const receipts = await this.send(this.engine.close(sid, sentCode, sentReason));
     wake(this.readWaiters, sid);
     wake(this.drainWaiters, sid);
     const deadline = nowMs() + CLOSE_RECEIPT_MS;
     while (receipts.some((seq) => this.unreceipted.has(seq)) && this.dead === null && nowMs() < deadline) {
       await sleep(5);
     }
+  }
+
+  /** Wait until everything written to the stream is acknowledged, or `STREAM_FLUSH_MS` pass. */
+  private async flushed(sid: number): Promise<boolean> {
+    const deadline = nowMs() + STREAM_FLUSH_MS;
+    while (this.dead === null) {
+      if (this.engine.flushed(sid)) {
+        return true;
+      }
+      if (nowMs() >= deadline) {
+        return false;
+      }
+      await sleep(5);
+    }
+    return false;
   }
 
   // ----- tasks -----

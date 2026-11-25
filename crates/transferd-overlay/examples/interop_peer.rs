@@ -472,6 +472,12 @@ async fn overlay_echo(port: &str, seed_hex: &str) -> Result<(), Fail> {
                         handle.authorize(stream, service, true, String::new()).await?;
                         totals.streams.fetch_add(1, Ordering::Relaxed);
                         tokio::spawn(echo_stream(handle.clone(), stream, totals.clone()));
+                    } else if service == "refuse" {
+                        // Accepted, then ended with a refusal: the peer's reader must get an error, not the end.
+                        handle.authorize(stream, service, true, String::new()).await?;
+                        handle
+                            .close_now(stream, "refused", "the service did not take the stream")
+                            .await;
                     } else {
                         let reason = format!("no service named {service}");
                         handle.authorize(stream, service, false, reason).await?;
@@ -498,13 +504,22 @@ async fn overlay_echo(port: &str, seed_hex: &str) -> Result<(), Fail> {
 
 /// Echo one stream to its end: each chunk the peer sends goes straight back, and the end is answered with an end.
 async fn echo_stream(handle: Arc<SessionHandle>, stream: StreamId, totals: Arc<OverlayTotals>) {
-    while let Ok(Some(bytes)) = handle.recv(stream).await {
-        totals.bytes.fetch_add(bytes.len() as u64, Ordering::Relaxed);
-        if handle.send(stream, bytes, false).await.is_err() {
-            return;
+    loop {
+        match handle.recv(stream).await {
+            Ok(Some(bytes)) => {
+                totals.bytes.fetch_add(bytes.len() as u64, Ordering::Relaxed);
+                if handle.send(stream, bytes, false).await.is_err() {
+                    return;
+                }
+            }
+            // The peer's end is answered with ours. An error is not an end, so none is sent.
+            Ok(None) => {
+                let _ = handle.send(stream, Vec::new(), true).await;
+                return;
+            }
+            Err(_) => return,
         }
     }
-    let _ = handle.send(stream, Vec::new(), true).await;
 }
 
 /// Dial the peer, open a stream for `echo`, send the payload and read back what the peer echoes.

@@ -29,7 +29,11 @@ import {
   type OpenOk,
   type Window,
 } from "./frames.js";
+import { StreamReset } from "./errors.js";
 import { Mux, type OutFrame } from "./mux.js";
+
+/** How many cleanly ended streams the engine remembers, so a read on one of them is the end and not an error. */
+const ENDED_KEPT = 1024;
 
 /** The initial retransmission timeout, before any round trip has been measured (ms). */
 export const INITIAL_RTO_MS = 400;
@@ -124,6 +128,8 @@ export class StreamEngine {
   private readonly backlog = new Map<number, Uint8Array>();
   private readonly finWanted = new Set<number>();
   private readonly finSent = new Set<number>();
+  /** Streams this side closed cleanly, oldest first (see ENDED_KEPT). */
+  private readonly ended: number[] = [];
   private readonly inflight = new Map<string, Flight>();
   private readonly lastAck = new Map<number, number>();
   private readonly dupAcks = new Map<number, [number, number]>();
@@ -188,11 +194,21 @@ export class StreamEngine {
   read(sid: number): [Uint8Array | null, Outbound[]] {
     const recv = this.mux.recvSide(sid);
     if (recv === undefined) {
-      return [new Uint8Array(0), []];
+      if (this.ended.includes(sid)) {
+        return [new Uint8Array(0), []];
+      }
+      throw new StreamReset(sid, "it is not open");
     }
     const taken = recv.take();
     if (taken === null) {
-      return [recv.finished() ? new Uint8Array(0) : null, []];
+      if (!recv.finished()) {
+        return [null, []];
+      }
+      const why = recv.aborted();
+      if (why !== null) {
+        throw new StreamReset(sid, why);
+      }
+      return [new Uint8Array(0), []];
     }
     const granted = recv.windowUpdate();
     const body: Window = { stream: sid, credit: granted };
@@ -209,11 +225,20 @@ export class StreamEngine {
     return this.finSent.has(sid);
   }
 
+  /** Whether everything written to the stream has gone out and the peer has acknowledged all of it. */
+  flushed(sid: number): boolean {
+    const side = this.mux.sendSide(sid);
+    return this.pending(sid) === 0 && (side === undefined || side.unackedFrames() === 0);
+  }
+
   /** Close a stream from our side. The stream's state is dropped at once. */
   close(sid: number, code = "closed", reason = ""): Outbound[] {
     this.mux.removeSend(sid);
     this.mux.removeRecv(sid);
     this.forget(sid);
+    if (code === "closed") {
+      this.noteEnded(sid);
+    }
     const body: Close = { stream: sid, code, reason };
     return [{ kind: CLOSE, body }];
   }
@@ -380,8 +405,32 @@ export class StreamEngine {
     this.pendingOpens.delete(body.stream);
     this.mux.removeSend(body.stream);
     this.forget(body.stream);
-    this.mux.recvSide(body.stream)?.close();
+    const recv = this.mux.recvSide(body.stream);
+    if (recv === undefined) {
+      if (body.code === "closed") {
+        this.noteEnded(body.stream);
+      }
+    } else if (body.code === "closed" && !recv.hasGap()) {
+      // A clean close with every frame in hand is the end.
+      recv.close();
+    } else if (body.code === "closed") {
+      recv.abort("the peer closed it with frames still missing");
+    } else {
+      // Anything else is an error for the reader, after the bytes that did arrive.
+      recv.abort(`the peer closed it with code ${body.code}: ${body.reason}`);
+    }
     return [[], [{ kind: "closed", stream: body.stream, code: body.code, reason: body.reason }]];
+  }
+
+  /** Remember a stream closed cleanly here, so a read on it later is the end and not an error. */
+  private noteEnded(sid: number): void {
+    if (this.ended.includes(sid)) {
+      return;
+    }
+    if (this.ended.length >= ENDED_KEPT) {
+      this.ended.shift();
+    }
+    this.ended.push(sid);
   }
 
   // ----- timers -----

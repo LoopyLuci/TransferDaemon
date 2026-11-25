@@ -224,6 +224,8 @@ pub struct RecvSide {
     fin: bool,
     /// Frames refused because the reorder buffer was full.
     dropped: u64,
+    /// Why the stream ended with an error rather than the end: set by [`RecvSide::abort`].
+    aborted: Option<String>,
 }
 
 impl RecvSide {
@@ -247,6 +249,7 @@ impl RecvSide {
             window,
             fin: false,
             dropped: 0,
+            aborted: None,
         }
     }
 
@@ -362,6 +365,24 @@ impl RecvSide {
     pub fn close(&mut self) {
         self.fin = true;
         self.pending.clear();
+    }
+
+    /// End the stream with an error: the peer reset it, or it left frames missing. Bytes already
+    /// delivered are still read first; after them the reader gets `why`, not the end.
+    pub fn abort(&mut self, why: String) {
+        self.fin = true;
+        self.pending.clear();
+        self.aborted = Some(why);
+    }
+
+    /// Why the stream ended with an error, if it did (see [`RecvSide::abort`]).
+    pub fn aborted(&self) -> Option<&str> {
+        self.aborted.as_deref()
+    }
+
+    /// Whether frames have arrived beyond a gap: the stream is not complete yet.
+    pub fn has_gap(&self) -> bool {
+        !self.pending.is_empty()
     }
 
     /// Bytes buffered but not yet read by the application.
@@ -515,6 +536,22 @@ mod tests {
         let frames = s.frame(b"hello", false);
         assert_eq!(frames.len(), 1);
         assert_eq!(frames[0].payload, b"hello");
+    }
+
+    #[test]
+    fn a_close_over_missing_frames_is_an_abort_not_the_end() {
+        let mut r = RecvSide::new(StreamId(1), "svc");
+        let early = OutFrame {
+            stream: StreamId(1),
+            seq: 1,
+            payload: vec![9],
+            fin: false,
+        };
+        assert!(r.accept(early).is_empty(), "frame 1 waits for frame 0");
+        assert!(r.has_gap());
+        r.abort("the peer closed it with frames missing".into());
+        assert!(r.finished());
+        assert_eq!(r.aborted(), Some("the peer closed it with frames missing"));
     }
 
     #[test]

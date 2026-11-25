@@ -24,7 +24,7 @@ import { CONTROL_WINDOW, ReplayWindow } from "./replay.js";
 import { INITIAL_RTO, MSS, RouteCc, cost as wireCost } from "./cc.js";
 import { Route, bestRoute, nowSeconds, rankedRoutes } from "./link.js";
 import { EventQueue } from "./queue.js";
-import { Closed, Denied, NoSuchService, OverlayError, RateLimited, TransferdError, Unreachable } from "./errors.js";
+import { Closed, Denied, NoSuchService, OverlayError, RateLimited, StreamReset, TransferdError, Unreachable } from "./errors.js";
 import type { HybridIdentity } from "./identity.js";
 
 /** How often the session ticks, in milliseconds. */
@@ -47,6 +47,8 @@ export const CTRL_RESEND = 0.3;
 export const CTRL_GIVE_UP = 60;
 /** How long `open` waits for the peer to accept or refuse a stream, in milliseconds. */
 export const OPEN_TIMEOUT_MS = 15_000;
+/** How long `close` waits for the peer to acknowledge what was written before it resets the stream (ms). */
+export const FLUSH_MS = 5_000;
 /** A frame this big or bigger is treated as bulk: striped across routes rather than pinned. */
 export const BULK_THRESHOLD = 4096;
 
@@ -172,6 +174,8 @@ export class OverlaySession {
   private readonly lastAck = new Map<number, number>();
   private readonly pings = new Map<bigint, { route: number; sent: number }>();
   private readonly misses = new Map<number, number>();
+  /** Streams this side closed cleanly, oldest first (at most 1024). */
+  private readonly ended: number[] = [];
   private readonly pendingReads = new Map<
     number,
     { resolve: (data: Uint8Array | null) => void; reject: (error: Error) => void }
@@ -319,8 +323,10 @@ export class OverlaySession {
   }
 
   /**
-   * Take what the peer has sent on a stream. Waits for data. `null` is the end of the stream: the peer's FIN or CLOSE,
-   * or our own close. Rejects with `Closed` when the session ends before the stream does.
+   * Take what the peer has sent on a stream. Waits for data. `null` is the clean end of the stream: the peer's FIN, its
+   * CLOSE with code `closed`, or our own close. Rejects with `StreamReset` when the stream ended with an error (a CLOSE
+   * with another code, a refusal, or a stream this session never had), after the bytes that arrived before it. Rejects
+   * with `Closed` when the session ends before the stream does.
    */
   async recv(stream: number): Promise<Uint8Array | null> {
     if (this.stopped) {
@@ -328,12 +334,18 @@ export class OverlaySession {
     }
     const recv = this.mux.recvSide(stream);
     if (recv === undefined) {
-      // No such stream (closed, refused, never opened): the end, not a wait forever.
-      return null;
+      if (this.ended.includes(stream)) {
+        return null;
+      }
+      throw new StreamReset(stream, "it is not open");
     }
     const ready = recv.take();
-    const ended = recv.finished() && recv.buffered() === 0;
-    if (ready === null && ended) {
+    const streamEnded = recv.finished() && recv.buffered() === 0;
+    if (ready === null && streamEnded) {
+      const why = recv.aborted();
+      if (why !== null) {
+        throw new StreamReset(stream, why);
+      }
       return null;
     }
     if (ready !== null) {
@@ -347,16 +359,44 @@ export class OverlaySession {
     });
   }
 
-  /** Close a stream: tell the peer, and forget everything about it. */
+  /**
+   * Close a stream. Everything written to it goes out first; once the peer has acknowledged it, the peer is told the
+   * stream closed cleanly. If that cannot happen within `FLUSH_MS` the peer is told `reset` instead, so its reader gets
+   * an error.
+   */
   async close(stream: number): Promise<void> {
     if (this.stopped) {
       return;
     }
-    this.sendFrame(CLOSE, encodeBody(CLOSE, { stream, code: "closed", reason: "" } as Close), false);
+    const flushed = await this.flushed(stream);
+    const [code, reason] = flushed ? ["closed", ""] : ["reset", "the stream could not be flushed in time"];
+    this.sendFrame(CLOSE, encodeBody(CLOSE, { stream, code, reason } as Close), false);
     this.mux.removeSend(stream);
     this.mux.removeRecv(stream);
     this.forgetStream(stream);
-    this.resolveRead(stream, null);
+    if (flushed) {
+      this.noteEnded(stream);
+      this.resolveRead(stream, null);
+    } else {
+      this.rejectRead(stream, new StreamReset(stream, "this side reset the stream"));
+    }
+  }
+
+  /** Wait until every byte queued on the stream is framed and acknowledged, or `FLUSH_MS` pass. */
+  private async flushed(stream: number): Promise<boolean> {
+    const deadline = Date.now() + FLUSH_MS;
+    while (!this.stopped) {
+      const entry = this.writeQueue.get(stream);
+      const side = this.mux.sendSide(stream);
+      if ((entry === undefined || entry.chunks.length === 0) && (side === undefined || side.unackedFrames() === 0)) {
+        return true;
+      }
+      if (Date.now() >= deadline) {
+        return false;
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    }
+    return false;
   }
 
   /** Add a route discovered after the session came up (a hole punch, a LAN address). */
@@ -1054,6 +1094,25 @@ export class OverlaySession {
     }
   }
 
+  private rejectRead(stream: number, error: Error): void {
+    const pending = this.pendingReads.get(stream);
+    if (pending !== undefined) {
+      this.pendingReads.delete(stream);
+      pending.reject(error);
+    }
+  }
+
+  /** Remember a stream closed cleanly here, so a read on it later is the end and not an error. */
+  private noteEnded(stream: number): void {
+    if (this.ended.includes(stream)) {
+      return;
+    }
+    if (this.ended.length >= 1024) {
+      this.ended.shift();
+    }
+    this.ended.push(stream);
+  }
+
   private resolveRead(stream: number, value: Uint8Array | null): void {
     const pending = this.pendingReads.get(stream);
     if (pending !== undefined) {
@@ -1184,7 +1243,7 @@ export class OverlaySession {
         this.mux.removeSend(err.stream);
         this.mux.removeRecv(err.stream);
         this.forgetStream(err.stream);
-        this.resolveRead(err.stream, null);
+        this.rejectRead(err.stream, new StreamReset(err.stream, `the peer refused it: ${err.reason}`));
         return;
       }
       case DATA: {
@@ -1238,8 +1297,26 @@ export class OverlaySession {
         this.pendingOpens.delete(closed.stream);
         this.mux.removeSend(closed.stream);
         this.forgetStream(closed.stream);
-        this.mux.recvSide(closed.stream)?.close();
-        this.resolveRead(closed.stream, null);
+        const recv = this.mux.recvSide(closed.stream);
+        if (recv === undefined) {
+          if (closed.code === "closed") {
+            this.noteEnded(closed.stream);
+          }
+        } else if (closed.code === "closed" && !recv.hasGap()) {
+          // A clean close with every frame in hand is the end.
+          recv.close();
+        } else if (closed.code === "closed") {
+          recv.abort("the peer closed it with frames still missing");
+        } else {
+          // Anything else is an error for the reader, after the bytes that did arrive.
+          recv.abort(`the peer closed it with code ${closed.code}: ${closed.reason}`);
+        }
+        const why = recv?.aborted() ?? null;
+        if (why !== null) {
+          this.rejectRead(closed.stream, new StreamReset(closed.stream, why));
+        } else {
+          this.resolveRead(closed.stream, null);
+        }
         return;
       }
       case PONG: {

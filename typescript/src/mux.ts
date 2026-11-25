@@ -182,6 +182,8 @@ export class RecvSide {
   private fin = false;
   /** Frames refused because the reorder buffer was full. */
   private droppedCount = 0;
+  /** Why the stream ended with an error rather than the end (see `abort`). */
+  private abortedWhy: string | null = null;
 
   constructor(id: number, service = "", window = DEFAULT_WINDOW) {
     this.id = id;
@@ -292,6 +294,26 @@ export class RecvSide {
   close(): void {
     this.fin = true;
     this.pending.clear();
+  }
+
+  /**
+   * End the stream with an error: the peer reset it, or it left frames missing. Bytes already delivered are still
+   * read first; after them the reader gets `why`, not the end.
+   */
+  abort(why: string): void {
+    this.fin = true;
+    this.pending.clear();
+    this.abortedWhy = why;
+  }
+
+  /** Why the stream ended with an error, if it did (see `abort`). */
+  aborted(): string | null {
+    return this.abortedWhy;
+  }
+
+  /** Whether frames have arrived beyond a gap: the stream is not complete yet. */
+  hasGap(): boolean {
+    return this.pending.size > 0;
   }
 
   /** Bytes buffered but not yet read by the application. */

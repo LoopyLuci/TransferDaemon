@@ -8,6 +8,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { ACK, CLOSE, DATA, OPEN, OPEN_ERR, WINDOW, type Ack, type Close, type Data, type Window } from "../src/frames.js";
+import { StreamReset } from "../src/errors.js";
 import { MAX_FRAME } from "../src/mux.js";
 import {
   INITIAL_RTO_MS,
@@ -251,4 +252,76 @@ test("nextDeadline is the earliest resend time", () => {
   assert.equal(a.nextDeadline(), null);
   a.write(sid, new TextEncoder().encode("one"), false, 10);
   assert.equal(a.nextDeadline(), 10 + INITIAL_RTO_MS);
+});
+
+test("a close with a refusal code is an error for the reader", () => {
+  const [a, b] = pair();
+  const sid = openStream(a, b);
+  const body: Close = { stream: sid, code: "refused", reason: "the service did not take the stream" };
+  deliver(b, [{ kind: CLOSE, body }], 1);
+  assert.throws(() => b.read(sid), StreamReset);
+  assert.throws(() => b.read(sid), StreamReset, "and it stays one");
+});
+
+test("bytes that arrived before a reset are read before the error", () => {
+  const [a, b] = pair();
+  const sid = openStream(a, b);
+  deliver(b, a.write(sid, bytesOf(7), false, 0), 0);
+  const body: Close = { stream: sid, code: "reset", reason: "gave up" };
+  deliver(b, [{ kind: CLOSE, body }], 1);
+  assert.deepEqual(b.read(sid)[0], bytesOf(7));
+  assert.throws(() => b.read(sid), StreamReset);
+});
+
+test("a clean close over missing frames is an error, not the end", () => {
+  const [a, b] = pair();
+  const sid = openStream(a, b);
+  a.write(sid, bytesOf(3, 1), false, 0); // frame 0: never delivered
+  deliver(b, a.write(sid, bytesOf(3, 2), false, 0), 0); // frame 1 arrives beyond the gap
+  const body: Close = { stream: sid, code: "closed", reason: "" };
+  deliver(b, [{ kind: CLOSE, body }], 1);
+  assert.throws(() => b.read(sid), StreamReset);
+});
+
+test("a read on a stream that was never open is an error", () => {
+  const [, b] = pair();
+  assert.throws(() => b.read(999_999), StreamReset);
+});
+
+test("a read after our own clean close is the end, and after our reset an error", () => {
+  const [a, b] = pair();
+  const sid = openStream(a, b);
+  a.close(sid);
+  assert.equal(a.read(sid)[0]?.length, 0);
+  const sid2 = openStream(a, b);
+  a.close(sid2, "reset", "gave up");
+  assert.throws(() => a.read(sid2), StreamReset);
+});
+
+test("a stream is flushed only once its bytes and end are acknowledged", () => {
+  const [a, b] = pair();
+  const sid = openStream(a, b);
+  const frames = a.write(sid, bytesOf(5000), true, 1.0);
+  assert.equal(a.flushed(sid), false, "nothing has been acknowledged yet");
+  const [acks] = deliver(b, frames, 2.0);
+  assert.equal(a.flushed(sid), false, "the peer's acknowledgement has not arrived yet");
+  deliver(a, acks, 3.0);
+  assert.equal(a.flushed(sid), true);
+});
+
+test("bytes held back by the window keep a stream from being flushed", () => {
+  const [a, b] = pair();
+  const sid = openStream(a, b);
+  a.write(sid, bytesOf(300 * 1024), true, 1.0); // more than the 256 KiB window: the rest waits for credit
+  assert.ok(a.pending(sid) > 0);
+  assert.equal(a.flushed(sid), false);
+});
+
+test("a stream written without its end is flushed once its bytes are acknowledged", () => {
+  const [a, b] = pair();
+  const sid = openStream(a, b);
+  const frames = a.write(sid, bytesOf(3), false, 1.0);
+  const [acks] = deliver(b, frames, 2.0);
+  deliver(a, acks, 3.0);
+  assert.equal(a.flushed(sid), true, "the bytes are acknowledged, so a close is clean even without an end");
 });

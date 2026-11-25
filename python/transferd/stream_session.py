@@ -33,6 +33,8 @@ SESSION_DEAD_AFTER_MS = 60_000.0
 RECEIPT_WINDOW = CONTROL_WINDOW
 #: How long `close` waits for the peer's receipt of the CLOSE (seconds).
 CLOSE_RECEIPT_SECONDS = 5.0
+#: How long `close` waits for the peer to acknowledge what was written before it sends `closed` (seconds).
+FLUSH_SECONDS = 5.0
 #: How much a stream may hold queued before `write` waits for the window to drain it.
 WRITE_LIMIT = DEFAULT_WINDOW
 #: How often the timer runs (seconds).
@@ -120,7 +122,8 @@ class StreamSession:
             self._check()
 
     async def read(self, sid: int) -> bytes:
-        """Read the next bytes of a stream. Returns `b""` once the stream has ended."""
+        """Read the next bytes of a stream. Returns `b""` once the stream has ended cleanly. Raises `StreamReset` if it
+        ended with an error (reset, refused, or never open here), after the bytes that arrived before it."""
         while True:
             self._check()
             data, out = self._engine.read(sid, _now_ms())
@@ -133,12 +136,15 @@ class StreamSession:
             await waiter
 
     async def close(self, sid: int, code: str = "closed", reason: str = "") -> None:
-        """Close a stream. Its state is dropped on this side at once, so bytes still queued are dropped too:
-        `write` with `fin` first, and close after it returns.
+        """Close a stream. With code `closed`, every byte written to it goes out first, and the peer is told the stream
+        closed cleanly once it has acknowledged them. If that does not happen within `FLUSH_SECONDS`, the peer is told
+        `reset` instead.
 
-        Waits, up to 5 s, for the peer's receipt of the CLOSE. Without it a caller that tears the transport down
+        Then waits, up to 5 s, for the peer's receipt of the CLOSE. Without it a caller that tears the transport down
         straight after could reset the connection before the peer reads its CLOSE.
         """
+        if code == "closed" and not await self._flushed(sid):
+            code, reason = "reset", "the stream could not be flushed in time"
         receipts = await self._send(self._engine.close(sid, code, reason))
         self._wake(self._read_waiters, sid)
         self._wake(self._drain_waiters, sid)
@@ -147,6 +153,17 @@ class StreamSession:
             if time.monotonic() >= deadline:
                 break
             await asyncio.sleep(0.005)
+
+    async def _flushed(self, sid: int) -> bool:
+        """Wait until everything written to the stream is acknowledged, or `FLUSH_SECONDS` pass."""
+        deadline = time.monotonic() + FLUSH_SECONDS
+        while self._dead is None:
+            if self._engine.flushed(sid):
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            await asyncio.sleep(0.005)
+        return False
 
     # ----- tasks -----
 

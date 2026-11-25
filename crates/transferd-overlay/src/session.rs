@@ -67,6 +67,12 @@ const CTRL_GIVE_UP: Duration = Duration::from_secs(60);
 /// How long `open` waits for the peer to accept or refuse a stream.
 pub const OPEN_TIMEOUT: Duration = Duration::from_secs(15);
 
+/// How long `close` waits for the peer to acknowledge what was written before it resets the stream instead.
+pub const FLUSH_TIMEOUT: Duration = Duration::from_secs(5);
+
+/// How many cleanly ended streams a session remembers, so a read on one of them is the end and not an error.
+const ENDED_KEPT: usize = 1024;
+
 /// A frame this big or bigger is treated as bulk: striped across routes rather than pinned.
 const BULK_THRESHOLD: usize = 4096;
 
@@ -133,10 +139,19 @@ pub enum SessionCommand {
     /// Take whatever the peer has sent on a stream.
     Recv {
         stream: StreamId,
-        reply: mpsc::Sender<Option<Vec<u8>>>,
+        reply: mpsc::Sender<Result<Option<Vec<u8>>>>,
     },
-    /// Close a stream.
-    Close { stream: StreamId },
+    /// Wait until everything written to a stream is acknowledged, its end included. The reply says whether it was.
+    Flush {
+        stream: StreamId,
+        reply: mpsc::Sender<bool>,
+    },
+    /// Close a stream and tell the peer why. `closed` is the normal end; any other code is an error for the peer's reader.
+    Close {
+        stream: StreamId,
+        code: String,
+        reason: String,
+    },
     /// Add a route discovered after the session came up (a hole punch, a LAN address).
     AddLink { link: Arc<dyn Link> },
     /// Allow or refuse a stream the peer asked for.
@@ -224,9 +239,9 @@ impl SessionHandle {
             .map_err(|_| self.gone())
     }
 
-    /// Wait for what the peer sends on a stream. `Ok(None)` is the end of the stream: the peer's FIN or CLOSE,
-    /// our own close, or a stream that was refused. An `Err` means the session ended before the stream did, so
-    /// no more bytes are coming and the reader must not take the silence for a finished stream.
+    /// Wait for what the peer sends on a stream. `Ok(None)` is the end of the stream: the peer's FIN, a CLOSE with
+    /// code `closed`, or our own clean close. An `Err` means the stream ended with an error (it was reset, or
+    /// refused), or the session ended before the stream did. Bytes delivered before an error are returned first.
     pub async fn recv(&self, stream: StreamId) -> Result<Option<Vec<u8>>> {
         let (reply, mut rx) = mpsc::channel(1);
         self.commands
@@ -234,7 +249,7 @@ impl SessionHandle {
             .await
             .map_err(|_| self.gone())?;
         match rx.recv().await {
-            Some(outcome) => Ok(outcome),
+            Some(outcome) => outcome,
             // The loop ended with this read still waiting, so no end was sent for the stream.
             None => Err(OverlayError::Closed(format!(
                 "the session with {} ended before stream {} did",
@@ -243,9 +258,46 @@ impl SessionHandle {
         }
     }
 
-    /// Close a stream.
+    /// Close a stream the way it should end: every byte written so far is delivered first, then the peer reads the
+    /// end. If that cannot be done within [`FLUSH_TIMEOUT`], the stream is reset instead, so the peer's reader gets
+    /// an error rather than a clean end.
     pub async fn close(&self, stream: StreamId) {
-        let _ = self.commands.send(SessionCommand::Close { stream }).await;
+        let (code, reason) = if self.flush(stream).await {
+            ("closed", "")
+        } else {
+            ("reset", "the stream could not be flushed in time")
+        };
+        self.close_now(stream, code, reason).await;
+    }
+
+    /// Close a stream at once, without waiting for what was written to reach the peer. `closed` is the normal end;
+    /// any other code makes the peer's reader fail.
+    pub async fn close_now(&self, stream: StreamId, code: &str, reason: &str) {
+        let _ = self
+            .commands
+            .send(SessionCommand::Close {
+                stream,
+                code: code.to_string(),
+                reason: reason.to_string(),
+            })
+            .await;
+    }
+
+    /// Wait until the peer has acknowledged everything written to the stream, or [`FLUSH_TIMEOUT`] passes.
+    async fn flush(&self, stream: StreamId) -> bool {
+        let (reply, mut rx) = mpsc::channel(1);
+        if self
+            .commands
+            .send(SessionCommand::Flush { stream, reply })
+            .await
+            .is_err()
+        {
+            return false;
+        }
+        matches!(
+            tokio::time::timeout(FLUSH_TIMEOUT, rx.recv()).await,
+            Ok(Some(true))
+        )
     }
 
     /// Add a route discovered after the session came up.
@@ -362,7 +414,12 @@ impl SessionHandle {
     }
 }
 
-struct PendingRead(mpsc::Sender<Option<Vec<u8>>>);
+struct PendingRead(mpsc::Sender<Result<Option<Vec<u8>>>>);
+
+/// The error a reader gets when a stream ends with one: what happened, and on which stream with which peer.
+fn stream_error(peer: &str, stream: u64, why: impl Into<String>) -> OverlayError {
+    OverlayError::Closed(format!("stream {stream} with {peer}: {}", why.into()))
+}
 
 /// A data frame on the wire.
 struct InFlight {
@@ -423,6 +480,10 @@ struct Session {
     pending_opens: HashMap<u64, String>,
     /// Streams we asked for, waiting for the peer's OPEN_OK or OPEN_ERR.
     awaiting_open: HashMap<u64, (String, mpsc::Sender<Result<StreamId>>)>,
+    /// Flushes waiting for the peer to acknowledge a stream's writes (see `SessionCommand::Flush`).
+    flushing: HashMap<u64, Vec<mpsc::Sender<bool>>>,
+    /// Streams this side closed cleanly, oldest first, at most [`ENDED_KEPT`].
+    ended_streams: std::collections::VecDeque<u64>,
     /// The services the peer advertised.
     services: Vec<protocol::ServiceInfo>,
     /// What we tell the peer about ourselves, in our hello and in an answer to theirs.
@@ -528,6 +589,8 @@ pub async fn spawn(
             write_queue: HashMap::new(),
             pending_opens: HashMap::new(),
             awaiting_open: HashMap::new(),
+            flushing: HashMap::new(),
+            ended_streams: std::collections::VecDeque::new(),
             services: Vec::new(),
             local: hello.clone(),
             ctrl_unacked: std::collections::BTreeMap::new(),
@@ -862,31 +925,20 @@ impl Session {
                 self.pump(stream);
             }
             SessionCommand::Recv { stream, reply } => {
-                if self.mux.recv_side(stream).is_none() {
-                    // No such stream (closed, refused, never opened): the end, not a wait forever.
-                    let _ = reply.try_send(None);
+                if let Some(bytes) = self.mux.recv_side(stream).and_then(|r| r.take()) {
+                    let granted = self
+                        .mux
+                        .recv_side(stream)
+                        .map(|r| r.window_update())
+                        .unwrap_or(0);
+                    let _ = reply.try_send(Ok(Some(bytes)));
+                    self.grant_window(stream, granted);
                     return;
                 }
-                let ready = self.mux.recv_side(stream).and_then(|r| r.take());
-                let ended = self
-                    .mux
-                    .recv_side(stream)
-                    .map(|r| r.finished() && r.buffered() == 0)
-                    .unwrap_or(true);
-                if ready.is_none() && ended {
-                    // The peer ended the stream and everything has been read: end of stream.
-                    let _ = reply.try_send(None);
-                    return;
-                }
-                match ready {
-                    Some(bytes) => {
-                        let granted = self
-                            .mux
-                            .recv_side(stream)
-                            .map(|r| r.window_update())
-                            .unwrap_or(0);
-                        let _ = reply.try_send(Some(bytes));
-                        self.grant_window(stream, granted);
+                match self.end_of(stream) {
+                    // Nothing buffered, and the stream has ended: its end, or the error it ended with.
+                    Some(outcome) => {
+                        let _ = reply.try_send(outcome);
                     }
                     None => {
                         self.pending_reads.insert(stream.0, PendingRead(reply));
@@ -936,24 +988,56 @@ impl Session {
                     self.send_frame(kind::OPEN_ERR, body, false);
                 }
             }
-            SessionCommand::Close { stream } => {
+            SessionCommand::Flush { stream, reply } => {
+                if self.stream_flushed(stream) {
+                    let _ = reply.try_send(true);
+                    return;
+                }
+                // The end goes out after the bytes already queued, as an empty FIN frame.
+                let queue = self.write_queue.entry(stream.0).or_default();
+                if !queue.fin {
+                    queue.fin = true;
+                    queue.chunks.push_back(Vec::new());
+                }
+                self.flushing.entry(stream.0).or_default().push(reply);
+                self.pump(stream);
+            }
+            SessionCommand::Close {
+                stream,
+                code,
+                reason,
+            } => {
                 tracing::debug!(
-                    "[overlay session] {}: closing stream {} (asked here)",
+                    "[overlay session] {}: closing stream {} ({code})",
                     self.peer_node_id,
                     stream.0
                 );
                 let body = Self::encode(&Close {
                     stream: stream.0,
-                    code: "closed".into(),
-                    reason: String::new(),
+                    code: code.clone(),
+                    reason: reason.clone(),
                 });
                 self.send_frame(kind::CLOSE, body, false);
                 self.mux.remove_send(stream);
                 self.mux.remove_recv(stream);
                 self.forget_stream(stream.0);
-                // We closed it, so a read waiting on it ends cleanly, as it does for the peer's CLOSE.
+                // A flush still waiting on this stream gets no answer: it was not flushed.
+                self.flushing.remove(&stream.0);
+                if code == "closed" {
+                    self.note_ended(stream.0);
+                }
+                // A read waiting on the stream gets the end if it closed cleanly, otherwise the error.
                 if let Some(PendingRead(reply)) = self.pending_reads.remove(&stream.0) {
-                    let _ = reply.try_send(None);
+                    let outcome = if code == "closed" {
+                        Ok(None)
+                    } else {
+                        Err(stream_error(
+                            &self.peer_node_id,
+                            stream.0,
+                            format!("we closed it with code {code}: {reason}"),
+                        ))
+                    };
+                    let _ = reply.try_send(outcome);
                 }
             }
         }
@@ -1377,6 +1461,7 @@ impl Session {
 
     async fn tick(&mut self) {
         self.drain_inbound().await;
+        self.answer_flushes();
         self.probe();
         self.resend_control();
         // Republish the measurements so `overlay.peers` and group placement see current numbers.
@@ -1426,7 +1511,7 @@ impl Session {
             let Some(bytes) = recv.take() else { continue };
             let granted = recv.window_update();
             if let Some(PendingRead(reply)) = self.pending_reads.remove(&id) {
-                let _ = reply.try_send(Some(bytes));
+                let _ = reply.try_send(Ok(Some(bytes)));
             }
             self.grant_window(StreamId(id), granted);
         }
@@ -1614,8 +1699,13 @@ impl Session {
                 self.mux.remove_send(StreamId(err.stream));
                 self.mux.remove_recv(StreamId(err.stream));
                 self.forget_stream(err.stream);
+                self.flushing.remove(&err.stream);
                 if let Some(PendingRead(reply)) = self.pending_reads.remove(&err.stream) {
-                    let _ = reply.try_send(None);
+                    let _ = reply.try_send(Err(stream_error(
+                        &self.peer_node_id,
+                        err.stream,
+                        format!("the peer refused it: {}", err.reason),
+                    )));
                 }
             }
             kind::DATA => {
@@ -1682,6 +1772,7 @@ impl Session {
                     send.ack_below(ack.seq);
                 }
                 self.on_ack(ack.stream, ack.seq, &ack.sack);
+                self.answer_flushes();
             }
             kind::WINDOW => {
                 let Ok(w) = frame.decode::<Window>() else {
@@ -1698,19 +1789,31 @@ impl Session {
                     return;
                 };
                 tracing::debug!(
-                    "[overlay session] {}: the peer closed stream {}",
+                    "[overlay session] {}: the peer closed stream {} ({})",
                     self.peer_node_id,
-                    c.stream
+                    c.stream,
+                    c.code
                 );
                 self.pending_opens.remove(&c.stream);
                 self.mux.remove_send(StreamId(c.stream));
                 self.forget_stream(c.stream);
-                if let Some(recv) = self.mux.recv_side(StreamId(c.stream)) {
-                    recv.close();
+                self.flushing.remove(&c.stream);
+                match self.mux.recv_side(StreamId(c.stream)) {
+                    // A clean close with every frame in hand is the end. Anything else is an error for the reader,
+                    // after the bytes that did arrive.
+                    Some(recv) if c.code == "closed" && !recv.has_gap() => recv.close(),
+                    Some(recv) => {
+                        let why = if c.code == "closed" {
+                            "the peer closed it with frames still missing".to_string()
+                        } else {
+                            format!("the peer closed it with code {}: {}", c.code, c.reason)
+                        };
+                        recv.abort(why);
+                    }
+                    None if c.code == "closed" => self.note_ended(c.stream),
+                    None => {}
                 }
-                if let Some(PendingRead(reply)) = self.pending_reads.remove(&c.stream) {
-                    let _ = reply.try_send(None);
-                }
+                self.end_reader(c.stream);
             }
             kind::PONG => {
                 let Ok(pong) = frame.decode::<Pong>() else {
@@ -1778,16 +1881,44 @@ impl Session {
         }
     }
 
+    /// What a read on the stream gets when nothing is buffered for it: `Some` once the stream has ended, with its end
+    /// or the error it ended with; `None` while more bytes may still come. A stream this session has no record of is
+    /// an error, unless it was closed cleanly here.
+    fn end_of(&mut self, stream: StreamId) -> Option<Result<Option<Vec<u8>>>> {
+        let aborted = match self.mux.recv_side(stream) {
+            Some(recv) if recv.finished() && recv.buffered() == 0 => recv.aborted().map(str::to_string),
+            Some(_) => return None,
+            None if self.ended_streams.contains(&stream.0) => return Some(Ok(None)),
+            None => {
+                return Some(Err(stream_error(
+                    &self.peer_node_id,
+                    stream.0,
+                    "it is not open",
+                )))
+            }
+        };
+        Some(match aborted {
+            Some(why) => Err(stream_error(&self.peer_node_id, stream.0, why)),
+            None => Ok(None),
+        })
+    }
+
+    /// Remember a stream closed cleanly here, so a read on it later is the end and not an error.
+    fn note_ended(&mut self, stream: u64) {
+        if self.ended_streams.contains(&stream) {
+            return;
+        }
+        if self.ended_streams.len() == ENDED_KEPT {
+            self.ended_streams.pop_front();
+        }
+        self.ended_streams.push_back(stream);
+    }
+
     /// Tell a waiting reader the stream has ended, once nothing is left to read.
     fn end_reader(&mut self, stream: u64) {
-        let ended = self
-            .mux
-            .recv_side(StreamId(stream))
-            .map(|r| r.finished() && r.buffered() == 0)
-            .unwrap_or(true);
-        if ended {
+        if let Some(outcome) = self.end_of(StreamId(stream)) {
             if let Some(PendingRead(reply)) = self.pending_reads.remove(&stream) {
-                let _ = reply.try_send(None);
+                let _ = reply.try_send(outcome);
             }
         }
     }
@@ -1804,9 +1935,38 @@ impl Session {
         let Some(bytes) = recv.take() else { return };
         let granted = recv.window_update();
         if let Some(PendingRead(reply)) = self.pending_reads.remove(&stream) {
-            let _ = reply.try_send(Some(bytes));
+            let _ = reply.try_send(Ok(Some(bytes)));
         }
         self.grant_window(StreamId(stream), granted);
+    }
+
+    /// Whether everything written to the stream has been acknowledged, its end included.
+    fn stream_flushed(&mut self, stream: StreamId) -> bool {
+        let queued = self
+            .write_queue
+            .get(&stream.0)
+            .is_some_and(|q| !q.chunks.is_empty());
+        if queued {
+            return false;
+        }
+        self.mux
+            .send_side(stream)
+            .is_none_or(|send| send.unacked_frames() == 0)
+    }
+
+    /// Answer every flush whose stream has now been acknowledged in full.
+    fn answer_flushes(&mut self) {
+        if self.flushing.is_empty() {
+            return;
+        }
+        let ids: Vec<u64> = self.flushing.keys().copied().collect();
+        for id in ids {
+            if self.stream_flushed(StreamId(id)) {
+                for waiter in self.flushing.remove(&id).unwrap_or_default() {
+                    let _ = waiter.try_send(true);
+                }
+            }
+        }
     }
 
     fn best_route_name(&self) -> String {
@@ -2153,6 +2313,97 @@ mod tests {
             desk.close(stream).await;
         });
         assert_eq!(outcome.expect("the session is still up"), None);
+    }
+
+    /// Everything written before a close reaches the peer, even what the window held back: the close flushes first.
+    #[tokio::test]
+    async fn a_close_delivers_every_byte_written_before_it() {
+        let (desk, phone, stream, _events) = open_stream_pair().await;
+        // Many windows' worth, so most of it is still queued when the close is asked for.
+        let data: Vec<u8> = (0..2 * 1024 * 1024).map(|i| (i % 251) as u8).collect();
+        let expected = data.clone();
+        let writer = async {
+            desk.send(stream, data, false)
+                .await
+                .expect("the session is up");
+            desk.close(stream).await;
+        };
+        let reader = async {
+            let mut got = Vec::new();
+            while let Some(chunk) = phone.recv(stream).await.expect("the session is up") {
+                got.extend_from_slice(&chunk);
+            }
+            got
+        };
+        let ((), got) = tokio::time::timeout(Duration::from_secs(30), async {
+            tokio::join!(writer, reader)
+        })
+        .await
+        .expect("the transfer finishes");
+        assert_eq!(got.len(), expected.len(), "every byte arrives before the end");
+        assert!(got == expected, "and they arrive in order");
+    }
+
+    /// A refusal is an error to the reader, not the end: nothing says the stream was complete.
+    #[tokio::test]
+    async fn a_stream_closed_with_a_refusal_reads_as_an_error() {
+        let (desk, phone, stream, _events) = open_stream_pair().await;
+        let (outcome, ()) = tokio::join!(phone.recv(stream), async {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            desk.close_now(stream, "refused", "the service did not take the stream")
+                .await;
+        });
+        let err = outcome.expect_err("a refusal is not the end of the stream");
+        assert!(matches!(err, OverlayError::Closed(_)), "got {err:?}");
+        assert!(err.to_string().contains("refused"), "the reason is kept: {err}");
+        assert!(phone.recv(stream).await.is_err(), "and it stays an error");
+    }
+
+    /// Bytes that arrived before a reset are read first; the error comes after them.
+    #[tokio::test]
+    async fn bytes_before_a_reset_are_read_before_the_error() {
+        let (desk, phone, stream, _events) = open_stream_pair().await;
+        desk.send(stream, b"partial".to_vec(), false)
+            .await
+            .expect("the session is up");
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        desk.close_now(stream, "reset", "gave up").await;
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert_eq!(
+            phone.recv(stream).await.expect("the bytes come first"),
+            Some(b"partial".to_vec())
+        );
+        assert!(phone.recv(stream).await.is_err(), "then the reset");
+    }
+
+    /// A read on a stream the session never had is an error, not a quiet end.
+    #[tokio::test]
+    async fn a_read_on_a_stream_that_was_never_open_is_an_error() {
+        let (desk, _phone, _stream, _events) = open_stream_pair().await;
+        let err = desk
+            .recv(StreamId(999_999))
+            .await
+            .expect_err("nothing was ever open on that stream");
+        assert!(matches!(err, OverlayError::Closed(_)), "got {err:?}");
+    }
+
+    /// Our own clean close: a read afterwards is the end, as it was before.
+    #[tokio::test]
+    async fn a_read_after_our_own_clean_close_is_the_end() {
+        let (desk, _phone, stream, _events) = open_stream_pair().await;
+        desk.close(stream).await;
+        assert_eq!(
+            desk.recv(stream).await.expect("the session is still up"),
+            None
+        );
+    }
+
+    /// A stream we reset is an error for our own reader too.
+    #[tokio::test]
+    async fn a_read_after_we_reset_the_stream_is_an_error() {
+        let (desk, _phone, stream, _events) = open_stream_pair().await;
+        desk.close_now(stream, "reset", "gave up").await;
+        assert!(desk.recv(stream).await.is_err());
     }
 
     /// A route that refuses a frame must not stop the session. The frame goes out on the next

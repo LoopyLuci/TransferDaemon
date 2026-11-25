@@ -18,6 +18,7 @@ from pathlib import Path
 
 import pytest
 
+from transferd.errors import StreamReset
 from transferd.handshake import handshake_initiator, handshake_responder
 from transferd.identity import HybridIdentity
 from transferd.link import RouteKind, TcpLink
@@ -154,3 +155,87 @@ def test_the_reference_overlay_dials_python_and_python_echoes():
         "verified": True,
     }
     assert echoed == {"bytes": STREAM_BYTES, "service": "echo"}
+
+
+def test_python_closes_a_flushed_stream_at_once_against_the_reference():
+    rust = HybridIdentity(RUST_SEED, "rust")
+    python = HybridIdentity(PY_SEED, "python")
+    proc = subprocess.Popen(
+        [PEER, "overlay-echo", "0", RUST_SEED.hex()],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        listening = json.loads(proc.stdout.readline())["listening"]
+        host, port = listening.rsplit(":", 1)
+
+        async def main():
+            reader, writer = await asyncio.open_connection(host, int(port))
+            result = await handshake_initiator(reader, writer, python, rust.node_id)
+            link = TcpLink(reader, writer, result.keys, kind=RouteKind.DIRECT)
+            link.start()
+            session = spawn(
+                SessionSetup(peer_node_id=rust.node_id, peer_name="rust", identity=python),
+                [link],
+                asyncio.Queue(),
+            )
+            try:
+                assert await session.ready(10), "the reference answers our hello"
+                stream = await asyncio.wait_for(session.open("echo"), 10)
+                payload = os.urandom(300 * 1024)
+                await session.send(stream, payload, fin=True)
+                assert await read_all(session, stream) == payload, "every echoed byte matches"
+                loop = asyncio.get_running_loop()
+                started = loop.time()
+                await asyncio.wait_for(session.close(stream), 10)
+                # Everything went out and was acknowledged, so the close does not wait out the flush limit.
+                assert loop.time() - started < 2, "a flushed stream closes at once"
+            finally:
+                await session.shutdown()
+                writer.close()
+
+        asyncio.run(asyncio.wait_for(main(), 120))
+    finally:
+        proc.kill()
+        proc.wait()
+
+
+def test_a_stream_the_reference_ends_with_a_refusal_is_an_error_in_python():
+    rust = HybridIdentity(RUST_SEED, "rust")
+    python = HybridIdentity(PY_SEED, "python")
+    proc = subprocess.Popen(
+        [PEER, "overlay-echo", "0", RUST_SEED.hex()],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        listening = json.loads(proc.stdout.readline())["listening"]
+        host, port = listening.rsplit(":", 1)
+
+        async def main():
+            reader, writer = await asyncio.open_connection(host, int(port))
+            result = await handshake_initiator(reader, writer, python, rust.node_id)
+            link = TcpLink(reader, writer, result.keys, kind=RouteKind.DIRECT)
+            link.start()
+            session = spawn(
+                SessionSetup(peer_node_id=rust.node_id, peer_name="rust", identity=python),
+                [link],
+                asyncio.Queue(),
+            )
+            try:
+                assert await session.ready(10), "the reference answers our hello"
+                # The reference accepts "refuse" and then ends the stream with a refusal: not the end.
+                stream = await asyncio.wait_for(session.open("refuse"), 10)
+                with pytest.raises(StreamReset) as caught:
+                    await asyncio.wait_for(session.recv(stream), 10)
+                assert "refused" in str(caught.value), f"the reason is kept: {caught.value}"
+            finally:
+                await session.shutdown()
+                writer.close()
+
+        asyncio.run(asyncio.wait_for(main(), 120))
+    finally:
+        proc.kill()
+        proc.wait()

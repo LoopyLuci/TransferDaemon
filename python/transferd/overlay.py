@@ -29,12 +29,13 @@ from typing import Deque, Dict, List, Optional, Sequence, Set, Tuple
 from . import frames as F
 from .cc import INITIAL_RTO, MSS, RouteCc
 from .cc import cost as wire_cost
-from .errors import Closed, Denied, NoSuchService, OverlayError, RateLimited, TransferdError, Unreachable
+from .errors import Closed, Denied, NoSuchService, OverlayError, RateLimited, StreamReset, TransferdError, Unreachable
 from .frames import Frame, PunchMsg, RouteReport, ServiceInfo
 from .identity import HybridIdentity
 from .link import Link, RouteKind, best_route, ranked_routes
 from .mux import Mux, OutFrame
 from .replay import CONTROL_WINDOW, ReplayWindow
+from .streams import ENDED_KEPT
 
 #: How often the session ticks (probes, resends, timeouts).
 TICK = 0.020
@@ -213,6 +214,8 @@ class OverlaySession:
         self._misses: Dict[int, int] = {}
         # Receives still waiting for data.
         self._pending_reads: Dict[int, asyncio.Future] = {}
+        # Streams this side closed cleanly, oldest first (see ENDED_KEPT).
+        self._ended: List[int] = []
         # Bytes the application wrote that the window has not let out yet, per stream.
         self._write_queue: Dict[int, _WriteQueue] = {}
         # Streams a peer asked for that the node has not answered yet.
@@ -353,18 +356,22 @@ class OverlaySession:
     async def recv(self, stream: int) -> Optional[bytes]:
         """Take what the peer has sent on a stream. Waits for data.
 
-        None is the end of the stream: the peer's FIN or CLOSE, or our own close. Raises Closed when the session
-        ends before the stream does.
+        None is the end of the stream: the peer's FIN or a CLOSE with code `closed`, or our own clean close. Raises
+        `StreamReset` if the stream ended with an error (reset, refused, or never open here), after the bytes before
+        it, and `Closed` when the session ends before the stream does.
         """
         if self._stopped:
             raise self._gone()
         recv = self._mux.recv_side(stream)
         if recv is None:
-            # No such stream (closed, refused, never opened): the end, not a wait forever.
-            return None
+            if stream in self._ended:
+                return None
+            raise StreamReset(stream, "it is not open")
         ready = recv.take()
         ended = recv.finished() and recv.buffered() == 0
         if ready is None and ended:
+            if recv.aborted() is not None:
+                raise StreamReset(stream, recv.aborted() or "")
             return None
         if ready is not None:
             self._grant_window(stream, recv.window_update())
@@ -376,15 +383,41 @@ class OverlaySession:
         return await fut
 
     async def close(self, stream: int) -> None:
-        """Close a stream: tell the peer, and forget everything about it."""
+        """Close a stream. Everything written to it goes out first; once the peer has acknowledged it, the peer is told
+        the stream closed cleanly. If that cannot happen within `FLUSH_SECONDS` the peer is told `reset` instead, so its
+        reader gets an error.
+        """
         if self._stopped:
             return
-        body = F.encode_body(F.CLOSE, F.Close(stream=stream, code="closed", reason=""))
+        flushed = await self._flushed(stream)
+        code, reason = ("closed", "") if flushed else ("reset", "the stream could not be flushed in time")
+        body = F.encode_body(F.CLOSE, F.Close(stream=stream, code=code, reason=reason))
         self._send_frame(F.CLOSE, body, False)
         self._mux.remove_send(stream)
         self._mux.remove_recv(stream)
         self._forget_stream(stream)
-        self._resolve_read(stream, None)
+        if flushed:
+            self._note_ended(stream)
+            self._resolve_read(stream, None)
+        else:
+            self._fail_read(stream, StreamReset(stream, "this side reset the stream"))
+
+    #: How long `close` waits for the peer to acknowledge what was written before it resets the stream (seconds).
+    FLUSH_SECONDS = 5.0
+
+    async def _flushed(self, stream: int) -> bool:
+        """Wait until every byte queued on the stream is framed and acknowledged, or the time runs out."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self.FLUSH_SECONDS
+        while not self._stopped:
+            queue = self._write_queue.get(stream)
+            side = self._mux.send_side(stream)
+            if (queue is None or not queue.chunks) and (side is None or side.unacked_frames() == 0):
+                return True
+            if loop.time() >= deadline:
+                return False
+            await asyncio.sleep(0.01)
+        return False
 
     async def add_link(self, link: Link) -> None:
         """Add a route discovered after the session came up (a hole punch, a LAN address)."""
@@ -904,6 +937,18 @@ class OverlaySession:
         fut = self._pending_reads.pop(stream, None)
         _resolve(fut, value)
 
+    def _fail_read(self, stream: int, exc: BaseException) -> None:
+        fut = self._pending_reads.pop(stream, None)
+        _fail(fut, exc)
+
+    def _note_ended(self, stream: int) -> None:
+        """Remember a stream closed cleanly here, so a read on it later is the end and not an error."""
+        if stream in self._ended:
+            return
+        if len(self._ended) >= ENDED_KEPT:
+            self._ended.pop(0)
+        self._ended.append(stream)
+
     def _become_ready(self, version: int, name: str, services: List[ServiceInfo]) -> None:
         self._version = version
         self.services = list(services)
@@ -1007,7 +1052,7 @@ class OverlaySession:
             self._mux.remove_send(err.stream)
             self._mux.remove_recv(err.stream)
             self._forget_stream(err.stream)
-            self._resolve_read(err.stream, None)
+            self._fail_read(err.stream, StreamReset(err.stream, f"the peer refused it: {err.reason}"))
         elif kind == F.DATA:
             data = _decode(frame)
             if data is None:
@@ -1051,9 +1096,21 @@ class OverlaySession:
             self._mux.remove_send(closed.stream)
             self._forget_stream(closed.stream)
             recv = self._mux.recv_side(closed.stream)
-            if recv is not None:
+            if recv is None:
+                if closed.code == "closed":
+                    self._note_ended(closed.stream)
+            elif closed.code == "closed" and not recv.has_gap():
+                # A clean close with every frame in hand is the end.
                 recv.close()
-            self._resolve_read(closed.stream, None)
+            elif closed.code == "closed":
+                recv.abort("the peer closed it with frames still missing")
+            else:
+                # Anything else is an error for the reader, after the bytes that did arrive.
+                recv.abort(f"the peer closed it with code {closed.code}: {closed.reason}")
+            if recv is not None and recv.aborted() is not None:
+                self._fail_read(closed.stream, StreamReset(closed.stream, recv.aborted() or ""))
+            else:
+                self._resolve_read(closed.stream, None)
         elif kind == F.PONG:
             pong = _decode(frame)
             if pong is None:

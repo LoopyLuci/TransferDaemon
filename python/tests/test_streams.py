@@ -5,7 +5,10 @@ Two engines stand for the two ends of a session. `deliver` hands one end's frame
 CLOSE) can be checked at a known time.
 """
 
+import pytest
+
 from transferd import frames as F
+from transferd.errors import StreamReset
 from transferd.mux import MAX_FRAME
 from transferd.streams import INITIAL_RTO_MS, MAX_RTO_MS, MIN_RTO_MS, Event, RtoEstimator, StreamEngine
 
@@ -202,3 +205,78 @@ def test_next_deadline_is_the_earliest_resend_time():
     assert a.next_deadline() is None
     a.write(sid, b"one", False, 10.0)
     assert a.next_deadline() == 10.0 + INITIAL_RTO_MS
+
+
+def test_a_close_with_a_refusal_code_is_an_error_for_the_reader():
+    a, b = pair()
+    sid = open_stream(a, b)
+    deliver(b, [(F.CLOSE, F.Close(stream=sid, code="refused", reason="the service did not take the stream"))], 1.0)
+    with pytest.raises(StreamReset):
+        b.read(sid, 2.0)
+    with pytest.raises(StreamReset):
+        b.read(sid, 3.0)
+
+
+def test_bytes_that_arrived_before_a_reset_are_read_before_the_error():
+    a, b = pair()
+    sid = open_stream(a, b)
+    deliver(b, a.write(sid, b"partial", False, 0.0), 0.0)
+    deliver(b, [(F.CLOSE, F.Close(stream=sid, code="reset", reason="gave up"))], 1.0)
+    assert b.read(sid, 2.0)[0] == b"partial"
+    with pytest.raises(StreamReset):
+        b.read(sid, 3.0)
+
+
+def test_a_clean_close_over_missing_frames_is_an_error_not_the_end():
+    a, b = pair()
+    sid = open_stream(a, b)
+    a.write(sid, b"first", False, 0.0)  # frame 0: never delivered
+    deliver(b, a.write(sid, b"second", False, 0.0), 0.0)  # frame 1 arrives beyond the gap
+    deliver(b, [(F.CLOSE, F.Close(stream=sid, code="closed", reason=""))], 1.0)
+    with pytest.raises(StreamReset):
+        b.read(sid, 2.0)
+
+
+def test_a_read_on_a_stream_that_was_never_open_is_an_error():
+    _, b = pair()
+    with pytest.raises(StreamReset):
+        b.read(999_999, 0.0)
+
+
+def test_a_read_after_our_own_clean_close_is_the_end_and_after_our_reset_an_error():
+    a, b = pair()
+    sid = open_stream(a, b)
+    a.close(sid)
+    assert a.read(sid, 1.0)[0] == b"", "a clean close of ours is the end"
+    sid2 = open_stream(a, b)
+    a.close(sid2, code="reset", reason="gave up")
+    with pytest.raises(StreamReset):
+        a.read(sid2, 1.0)
+
+
+def test_a_stream_is_flushed_only_once_its_bytes_and_end_are_acknowledged():
+    a, b = pair()
+    sid = open_stream(a, b)
+    frames = a.write(sid, b"x" * 5000, True, 1.0)
+    assert not a.flushed(sid), "nothing has been acknowledged yet"
+    acks, _ = deliver(b, frames, 2.0)
+    assert not a.flushed(sid), "the peer's acknowledgement has not arrived yet"
+    deliver(a, acks, 3.0)
+    assert a.flushed(sid)
+
+
+def test_bytes_held_back_by_the_window_keep_a_stream_from_being_flushed():
+    a, b = pair()
+    sid = open_stream(a, b)
+    a.write(sid, bytes(300 * 1024), True, 1.0)  # more than the 256 KiB window: the rest waits for credit
+    assert a.pending(sid) > 0
+    assert not a.flushed(sid)
+
+
+def test_a_stream_written_without_its_end_is_flushed_once_its_bytes_are_acknowledged():
+    a, b = pair()
+    sid = open_stream(a, b)
+    frames = a.write(sid, b"abc", False, 1.0)
+    acks, _ = deliver(b, frames, 2.0)
+    deliver(a, acks, 3.0)
+    assert a.flushed(sid), "the bytes are acknowledged, so a close is clean even without an end"
