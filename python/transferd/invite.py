@@ -152,6 +152,10 @@ def accept_invite(text: str, *, now: Optional[int] = None) -> VerifiedInvite:
     current = int(time.time()) if now is None else now
     if expires_at <= current:
         raise InviteError("invite has expired")
+    # An inviter issued it at or before now, so a lifetime longer than the maximum cannot come from a
+    # conforming node. The minimum cannot be checked here: the invite carries no issue time.
+    if expires_at > current + MAX_TTL_S:
+        raise InviteError("invite lives longer than the 24 h maximum")
     try:
         check_node_id(node_id)
     except TransferdError as exc:

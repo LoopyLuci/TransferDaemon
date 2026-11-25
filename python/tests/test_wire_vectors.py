@@ -226,6 +226,42 @@ def test_an_expired_invite_is_refused(wire_vectors):
         accept_invite(inv["invite"], now=inv["expires_at"] + 1)
 
 
+def _signed_invite_expiring_at(identity, expires_at):
+    """An invite signed correctly for `expires_at`, which `make_invite` would never issue."""
+    import json
+    import os
+
+    from transferd.identity import key_fingerprint
+    from transferd.invite import PREFIX, base64url_encode, invite_binding
+
+    nonce = os.urandom(16)
+    fields = dict(
+        version=2,
+        node_id=identity.node_id,
+        name=identity.name,
+        key_fingerprint=key_fingerprint(identity.public_key).hex(),
+        relays=[],
+        direct=[],
+        expires_at=expires_at,
+        nonce=nonce.hex(),
+    )
+    signature = identity.sign_ed25519(invite_binding(**fields)).hex()
+    body = {**fields, "signature": signature}
+    return PREFIX + base64url_encode(json.dumps(body, separators=(",", ":")).encode("utf-8"))
+
+
+def test_an_invite_that_lives_longer_than_a_day_is_refused():
+    from transferd.invite import MAX_TTL_S
+
+    identity = HybridIdentity.generate("alpha")
+    now = 1_000_000
+    too_long = _signed_invite_expiring_at(identity, now + MAX_TTL_S + 3600)
+    with pytest.raises(InviteError):
+        accept_invite(too_long, now=now)
+    at_the_limit = _signed_invite_expiring_at(identity, now + MAX_TTL_S - 60)
+    assert accept_invite(at_the_limit, now=now).node_id == identity.node_id
+
+
 def test_an_invite_we_make_is_accepted_by_our_own_reader():
     from transferd.invite import make_invite
 

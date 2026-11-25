@@ -24,6 +24,10 @@ const INVITE_PREFIX: &str = "tdov2:";
 /// stops an oversized one from being read.
 const MAX_INVITE_BYTES: usize = 4 * 1024;
 
+/// An invite's lifetime, at least and at most, in seconds (PROTOCOL.md §6).
+pub const INVITE_MIN_LIFETIME_S: u64 = 30;
+pub const INVITE_MAX_LIFETIME_S: u64 = 86_400;
+
 /// The domain context that binds an invite signature to its contents.
 const INVITE_CONTEXT: &str = "TransferDaemon-overlay-invite-v2";
 
@@ -300,7 +304,7 @@ pub fn make_invite_with_nonce(
     direct: Vec<String>,
     ttl_s: u64,
 ) -> (String, [u8; 16], u64) {
-    let ttl_s = ttl_s.clamp(30, 86_400);
+    let ttl_s = ttl_s.clamp(INVITE_MIN_LIFETIME_S, INVITE_MAX_LIFETIME_S);
     let mut nonce = [0u8; 16];
     rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut nonce);
     let expires_at = now_secs() + ttl_s;
@@ -392,8 +396,16 @@ pub struct VerifiedInvite {
 /// the fingerprint when the node is first reached.
 pub fn accept_invite(invite: &str) -> Result<VerifiedInvite> {
     let invite = decode_invite(invite)?;
-    if invite.expires_at <= now_secs() {
+    let now = now_secs();
+    if invite.expires_at <= now {
         return Err(OverlayError::protocol("invite has expired"));
+    }
+    // An inviter issued it at or before now, so a lifetime longer than the maximum cannot come
+    // from a conforming node. The minimum cannot be checked here: the invite carries no issue time.
+    if invite.expires_at > now + INVITE_MAX_LIFETIME_S {
+        return Err(OverlayError::protocol(
+            "invite lives longer than the 24 h maximum",
+        ));
     }
     check_node_id(&invite.node_id)?;
     let public_key: [u8; 32] = hex_array(&invite.node_id)
@@ -643,6 +655,34 @@ mod tests {
         // TTL is clamped to at least 30 s, so check the boundary rather than sleeping.
         let record = accept_invite(&invite).expect("still valid");
         assert_eq!(record.node_id, id.node_id());
+    }
+
+    #[test]
+    fn an_invite_that_lives_longer_than_a_day_is_refused() {
+        let id = NodeIdentity::generate("phone");
+        let fingerprint = key_fingerprint(&id.hybrid_public_key());
+        // Signed correctly, but no conforming node issues one this long: a day plus an hour.
+        let too_long = sign_invite(
+            &id,
+            fingerprint,
+            Vec::new(),
+            Vec::new(),
+            [3; 16],
+            now_secs() + INVITE_MAX_LIFETIME_S + 3600,
+        );
+        assert!(
+            accept_invite(&too_long).is_err(),
+            "a lifetime beyond the 24 h maximum is refused"
+        );
+        let at_the_limit = sign_invite(
+            &id,
+            fingerprint,
+            Vec::new(),
+            Vec::new(),
+            [4; 16],
+            now_secs() + INVITE_MAX_LIFETIME_S - 60,
+        );
+        assert!(accept_invite(&at_the_limit).is_ok());
     }
 
     #[test]

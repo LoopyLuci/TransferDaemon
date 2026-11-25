@@ -182,6 +182,11 @@ export function acceptInvite(text: string, options: { now?: number } = {}): Veri
   if (expiresAt <= current) {
     throw new InviteError("invite has expired");
   }
+  // An inviter issued it at or before now, so a lifetime longer than the maximum cannot come from a
+  // conforming node. The minimum cannot be checked here: the invite carries no issue time.
+  if (expiresAt > current + MAX_TTL_S) {
+    throw new InviteError("invite lives longer than the 24 h maximum");
+  }
   try {
     checkNodeId(nodeId);
   } catch (error) {

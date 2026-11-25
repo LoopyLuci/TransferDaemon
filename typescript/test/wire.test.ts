@@ -270,6 +270,16 @@ test("an expired invite is refused", () => {
   assert.throws(() => acceptInvite(wire.invite.invite, { now: wire.invite.expires_at + 1 }), InviteError);
 });
 
+test("an invite that lives longer than a day, as seen from here, is refused", () => {
+  const identity = HybridIdentity.generate("alpha");
+  const now = 1_000_000;
+  // Issued by a node whose clock runs an hour ahead: its 24 h invite outlives a day from here.
+  const skewed = makeInvite(identity, [], [], 86_400, { now: now + 3_600 });
+  assert.throws(() => acceptInvite(skewed.text, { now }), InviteError);
+  const within = makeInvite(identity, [], [], 86_400 - 60, { now });
+  assert.equal(acceptInvite(within.text, { now }).nodeId, identity.nodeId);
+});
+
 test("an invite we make is accepted by our own reader", () => {
   const identity = HybridIdentity.generate("alpha");
   const made = makeInvite(identity, ["relay.example:4433"], ["192.0.2.10:4000"], 600, { now: 1_000_000 });
