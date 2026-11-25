@@ -36,6 +36,12 @@ def ghost_vectors():
     return _load("ghost.json")
 
 
+@pytest.fixture(scope="session")
+def ratchet_vectors():
+    """Ratchet envelopes from the Rust reference for a fixed root (`transferd-crypto/examples/gen_ratchet_vectors.rs`)."""
+    return _load("ratchet.json")
+
+
 def pattern(length: int, tag: int) -> bytes:
     """The generator's byte pattern: `i * 13 + tag` modulo 256."""
     return bytes(((i * 13) + tag) & 0xFF for i in range(length))
