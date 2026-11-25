@@ -27,8 +27,12 @@ use crate::wire::{read_blob, write_blob, LinkKeys, Tunnel};
 /// The marker byte that says "this payload belongs to the overlay".
 pub const PREFIX_OVERLAY: u8 = 0x03;
 
-/// How many sealed frames may be queued for a socket before the route is called congested.
+/// How many sealed bulk frames may be queued for a socket before the route is called congested.
 const SEND_QUEUE: usize = 256;
+
+/// How many sealed control and interactive frames may be queued. They have their own queue, drained first, so a
+/// backlog of bulk data never keeps a control frame (a window update, a stream open) waiting behind it.
+const CONTROL_QUEUE: usize = 512;
 
 /// How many inbound overlay frames a link buffers before the reader stops taking more.
 const RECV_QUEUE: usize = 1024;
@@ -50,7 +54,10 @@ pub struct FramePipe {
     describe: String,
     stats: Arc<RouteStats>,
     sender: Tunnel,
+    /// Bulk frames (see [`Frame::is_bulk`]), drained after the control queue.
     out: mpsc::Sender<Vec<u8>>,
+    /// Control and interactive frames, drained first.
+    control: mpsc::Sender<Vec<u8>>,
     inbox: Mutex<VecDeque<Frame>>,
     closed: Arc<AtomicBool>,
     /// The session's wake-up, set when a session adopts the link.
@@ -70,14 +77,15 @@ impl FramePipe {
     /// Build a link. The caller supplies the byte sink and starts the byte source with
     /// [`FramePipe::feed`].
     ///
-    /// Returns the link and the queue a writer task drains onto its socket.
+    /// Returns the link and the queues a writer task drains onto its socket, control first.
     pub fn new(
         id: u32,
         kind: RouteKind,
         describe: impl Into<String>,
         keys: &LinkKeys,
-    ) -> (Arc<Self>, mpsc::Receiver<Vec<u8>>) {
+    ) -> (Arc<Self>, Outbound) {
         let (tx, rx) = mpsc::channel(SEND_QUEUE);
+        let (control, control_rx) = mpsc::channel(CONTROL_QUEUE);
         let link = Arc::new(Self {
             id,
             kind,
@@ -85,11 +93,18 @@ impl FramePipe {
             stats: Arc::new(RouteStats::new(kind)),
             sender: Tunnel::sender(keys),
             out: tx,
+            control,
             inbox: Mutex::new(VecDeque::new()),
             closed: Arc::new(AtomicBool::new(false)),
             waker: Mutex::new(None),
         });
-        (link, rx)
+        (
+            link,
+            Outbound {
+                control: control_rx,
+                data: rx,
+            },
+        )
     }
 
     /// The receiving half's cipher and frame reader, for the task that reads the transport.
@@ -97,26 +112,27 @@ impl FramePipe {
         (Tunnel::receiver(keys), FrameReader::new())
     }
 
+    /// Whether the inbox has room for another blob. The reader waits until it does before it takes
+    /// the next blob from the transport, so a slow session slows the peer down instead of losing
+    /// frames.
+    pub fn has_room(&self) -> bool {
+        self.inbox.lock().unwrap_or_else(|e| e.into_inner()).len() < RECV_QUEUE
+    }
+
     /// Feed a sealed blob read from the transport into the link's inbox.
     ///
-    /// Returns false when the blob was dropped: it failed authentication or was a replay (the
-    /// tunnel's window refuses it), or the inbox is full. A dropped blob says nothing about the
-    /// route (anyone can throw a bad datagram at a socket), so it never marks the route down;
-    /// an authenticated one is what proves the route works.
+    /// Returns false when the blob failed authentication or was a replay (the tunnel's window
+    /// refuses it). Such a blob says nothing about the route (anyone can throw a bad datagram at a
+    /// socket), so it never marks the route down; an authenticated one is what proves the route
+    /// works. Every frame in an authenticated blob is kept, because the reader only takes a blob
+    /// once `has_room` says there is space for it.
     pub fn feed(&self, tunnel: &Tunnel, reader: &mut FrameReader, sealed: &[u8]) -> bool {
         let Ok(plain) = tunnel.open(sealed) else {
             return false;
         };
         self.stats.mark_up();
         let mut inbox = self.inbox.lock().unwrap_or_else(|e| e.into_inner());
-        for frame in reader.push(&plain) {
-            if inbox.len() >= RECV_QUEUE {
-                drop(inbox);
-                self.wake();
-                return false;
-            }
-            inbox.push_back(frame);
-        }
+        inbox.extend(reader.push(&plain));
         drop(inbox);
         self.wake();
         true
@@ -172,7 +188,9 @@ impl Link for FramePipe {
 
     fn send(&self, frame: &Frame) -> Result<()> {
         let sealed = self.sender.seal(&frame.encode())?;
-        match self.out.try_send(sealed) {
+        // Control and interactive frames go on their own queue, so bulk data never holds them up.
+        let queue = if frame.is_bulk() { &self.out } else { &self.control };
+        match queue.try_send(sealed) {
             Ok(()) => {
                 self.stats.record_sent(frame.body.len() as u64);
                 Ok(())
@@ -222,12 +240,31 @@ impl Link for FramePipe {
 // Writer tasks
 // ---------------------------------------------------------------------------
 
-/// Drain a link's send queue onto a byte stream.
-async fn write_loop<W>(mut writer: W, mut rx: mpsc::Receiver<Vec<u8>>, link: Arc<FramePipe>)
+/// The two queues a writer task drains, control first.
+pub struct Outbound {
+    control: mpsc::Receiver<Vec<u8>>,
+    data: mpsc::Receiver<Vec<u8>>,
+}
+
+impl Outbound {
+    /// The next sealed blob to send: a waiting control blob before any bulk blob. `None` once the link is gone and
+    /// both queues are empty.
+    pub async fn recv(&mut self) -> Option<Vec<u8>> {
+        tokio::select! {
+            biased;
+            Some(sealed) = self.control.recv() => Some(sealed),
+            Some(sealed) = self.data.recv() => Some(sealed),
+            else => None,
+        }
+    }
+}
+
+/// Drain a link's send queues onto a byte stream, control frames first.
+async fn write_loop<W>(mut writer: W, mut outbound: Outbound, link: Arc<FramePipe>)
 where
     W: AsyncWrite + Unpin + Send,
 {
-    while let Some(sealed) = rx.recv().await {
+    while let Some(sealed) = outbound.recv().await {
         if write_blob(&mut writer, &sealed).await.is_err() {
             link.close();
             break;
@@ -371,7 +408,7 @@ impl RelayPoint {
         peer_token: [u8; 32],
         keys: &LinkKeys,
     ) -> Arc<FramePipe> {
-        let (link, rx) = FramePipe::new(
+        let (link, outbound) = FramePipe::new(
             id,
             self.kind,
             format!("relay://{}#{}", self.addr, hex::encode(peer_token)),
@@ -381,8 +418,8 @@ impl RelayPoint {
         // The relay is a blind pipe: bytes go out through it, and inbound blobs come back on
         // the socket the relay replies to.
         tokio::spawn(async move {
-            let mut rx = rx;
-            while let Some(sealed) = rx.recv().await {
+            let mut outbound = outbound;
+            while let Some(sealed) = outbound.recv().await {
                 let mut payload = Vec::with_capacity(1 + 32 + sealed.len());
                 payload.push(PREFIX_OVERLAY);
                 payload.extend_from_slice(&this.self_token);
@@ -513,9 +550,9 @@ where
     W: AsyncWrite + Unpin + Send + 'static,
     R: AsyncRead + Unpin + Send + 'static,
 {
-    let (link, rx) = FramePipe::new(id, kind, describe, &keys);
+    let (link, outbound) = FramePipe::new(id, kind, describe, &keys);
     let w = link.clone();
-    tokio::spawn(write_loop(writer, rx, w));
+    tokio::spawn(write_loop(writer, outbound, w));
     tokio::spawn(read_loop(link.clone(), keys, reader));
     link
 }
@@ -525,11 +562,61 @@ where
     R: AsyncRead + Unpin + Send + 'static,
 {
     let (tunnel, mut reader) = FramePipe::receiver(&keys);
-    while let Ok(sealed) = read_blob(&mut source).await {
-        if !link.feed(&tunnel, &mut reader, &sealed) {
-            // The inbox is full: pause so the application can drain it.
+    loop {
+        // Until the session drains the inbox there is no room, and the next blob stays on the socket.
+        while !link.has_room() {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
+        let Ok(sealed) = read_blob(&mut source).await else {
+            break;
+        };
+        link.feed(&tunnel, &mut reader, &sealed);
     }
     link.close();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::protocol::{self, kind};
+    use crate::wire::LinkKeys;
+
+    fn bulk_frame(seq: u64) -> Frame {
+        let mut frame = Frame::bare(protocol::VERSION_CURRENT as u8, kind::DATA, seq).bulk();
+        frame.body = vec![0u8; 1024];
+        frame
+    }
+
+    /// A control frame is accepted while the bulk queue is full, and it leaves before the bulk
+    /// frames queued ahead of it.
+    #[tokio::test]
+    async fn a_control_frame_leaves_before_a_full_bulk_queue() {
+        let session_key = [9u8; 32];
+        let keys = LinkKeys::derive(&session_key);
+        let (link, mut outbound) = FramePipe::new(1, RouteKind::Direct, "test", &keys);
+
+        // Fill the bulk queue until the link refuses a bulk frame.
+        let mut queued = 0u64;
+        while link.send(&bulk_frame(queued)).is_ok() {
+            queued += 1;
+        }
+        assert_eq!(queued, SEND_QUEUE as u64, "the bulk queue holds SEND_QUEUE frames");
+
+        // A control frame is still accepted, and it is the first frame out.
+        let control = Frame::bare(protocol::VERSION_CURRENT as u8, kind::WINDOW, queued);
+        link.send(&control)
+            .expect("a control frame is accepted while the bulk queue is full");
+        let sealed = outbound.recv().await.expect("a frame is queued");
+
+        // The peer opens with the mirrored keys.
+        let (tunnel, mut reader) = FramePipe::receiver(&LinkKeys::derive(&session_key).swapped());
+        let plain = tunnel.open(&sealed).expect("the first frame opens");
+        let frames = reader.push(&plain);
+        assert_eq!(frames.len(), 1);
+        assert_eq!(
+            frames[0].kind,
+            kind::WINDOW,
+            "the control frame leaves before the bulk backlog"
+        );
+    }
 }

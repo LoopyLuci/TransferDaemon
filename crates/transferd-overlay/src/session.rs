@@ -34,7 +34,7 @@ use crate::link::{Link, RouteKind};
 use crate::mux::{Mux, OutFrame, StreamId};
 use crate::protocol::{
     self, kind, Ack, Close, CtrlAck, Data, Frame, Hello, HelloAck, Open, OpenErr, OpenOk, Ping,
-    Pong, PunchMsg, RouteReport, Routes, Window,
+    Pong, PunchMsg, ReplayWindow, RouteReport, Routes, Window, CONTROL_WINDOW,
 };
 
 /// How often the session ticks.
@@ -63,9 +63,6 @@ pub const CTRL_RESEND: Duration = Duration::from_millis(300);
 
 /// How long a control frame is resent before the peer is taken to be gone.
 const CTRL_GIVE_UP: Duration = Duration::from_secs(60);
-
-/// Control frames remembered for de-duplication.
-const CTRL_REMEMBERED: usize = 8192;
 
 /// How long `open` waits for the peer to accept or refuse a stream.
 pub const OPEN_TIMEOUT: Duration = Duration::from_secs(15);
@@ -169,7 +166,8 @@ pub(crate) fn routes_usable(routes: &[protocol::RouteReport]) -> bool {
 /// The sending half of a session: the handle the rest of the node uses to talk to it.
 pub struct SessionHandle {
     pub peer_node_id: String,
-    peer_name: parking_lot::RwLock<String>,
+    /// The peer's display name: the one it was given, then the one its hello announces. Shared with the session.
+    peer_name: Arc<parking_lot::RwLock<String>>,
     commands: mpsc::Sender<SessionCommand>,
     /// The services the peer advertised, refreshed on every hello.
     pub services: Arc<parking_lot::RwLock<Vec<protocol::ServiceInfo>>>,
@@ -183,7 +181,7 @@ impl Clone for SessionHandle {
     fn clone(&self) -> Self {
         Self {
             peer_node_id: self.peer_node_id.clone(),
-            peer_name: parking_lot::RwLock::new(self.peer_name.read().clone()),
+            peer_name: self.peer_name.clone(),
             commands: self.commands.clone(),
             services: self.services.clone(),
             routes: self.routes.clone(),
@@ -226,14 +224,23 @@ impl SessionHandle {
             .map_err(|_| self.gone())
     }
 
-    /// Take what the peer has sent on a stream, or `None` when nothing is buffered yet.
+    /// Wait for what the peer sends on a stream. `Ok(None)` is the end of the stream: the peer's FIN or CLOSE,
+    /// our own close, or a stream that was refused. An `Err` means the session ended before the stream did, so
+    /// no more bytes are coming and the reader must not take the silence for a finished stream.
     pub async fn recv(&self, stream: StreamId) -> Result<Option<Vec<u8>>> {
         let (reply, mut rx) = mpsc::channel(1);
         self.commands
             .send(SessionCommand::Recv { stream, reply })
             .await
             .map_err(|_| self.gone())?;
-        Ok(rx.recv().await.unwrap_or(None))
+        match rx.recv().await {
+            Some(outcome) => Ok(outcome),
+            // The loop ended with this read still waiting, so no end was sent for the stream.
+            None => Err(OverlayError::Closed(format!(
+                "the session with {} ended before stream {} did",
+                self.peer_node_id, stream.0
+            ))),
+        }
     }
 
     /// Close a stream.
@@ -308,7 +315,7 @@ impl SessionHandle {
     pub fn detached(node_id: String, commands: mpsc::Sender<SessionCommand>) -> Self {
         Self {
             peer_node_id: node_id,
-            peer_name: parking_lot::RwLock::new(String::new()),
+            peer_name: Arc::new(parking_lot::RwLock::new(String::new())),
             commands,
             services: Arc::new(parking_lot::RwLock::new(Vec::new())),
             routes: Arc::new(parking_lot::RwLock::new(Vec::new())),
@@ -422,17 +429,19 @@ struct Session {
     local: Hello,
     /// Control frames sent and not yet receipted: (frame, first sent, last sent).
     ctrl_unacked: std::collections::BTreeMap<u64, (Frame, Instant, Instant)>,
-    /// Control frames received, by frame `seq`, so a resent one is acted on once. A set rather
-    /// than a sliding window: frame numbers advance with every data frame and ping, so a resent
-    /// control frame can arrive far behind the newest one and must still be recognised.
-    ctrl_seen: std::collections::BTreeSet<u64>,
+    /// Control frames received, by frame `seq`, so a resent one is acted on once. A window of
+    /// [`CONTROL_WINDOW`] sequence numbers (PROTOCOL.md §5). Frame numbers advance with every data
+    /// frame, so the window is measured in numbers, not in control frames.
+    ctrl_seen: ReplayWindow,
+    /// The nonce of the last hello the peer sent: a new one means the peer restarted (see `note_peer_hello`).
+    peer_hello_nonce: Option<[u8; 16]>,
     version: u8,
     frame_seq: u64,
     ready: bool,
     stopped: bool,
     events: mpsc::UnboundedSender<SessionEvent>,
     handle_services: Arc<parking_lot::RwLock<Vec<protocol::ServiceInfo>>>,
-    handle_name: parking_lot::RwLock<String>,
+    handle_name: Arc<parking_lot::RwLock<String>>,
     handle_routes: Arc<parking_lot::RwLock<Vec<protocol::RouteReport>>>,
     handle_version: Arc<parking_lot::RwLock<u16>>,
 }
@@ -471,9 +480,10 @@ pub async fn spawn(
     let shared_services = Arc::new(parking_lot::RwLock::new(Vec::new()));
     let routes = Arc::new(parking_lot::RwLock::new(Vec::new()));
     let version = Arc::new(parking_lot::RwLock::new(0u16));
+    let peer_name_shared = Arc::new(parking_lot::RwLock::new(peer_name));
     let handle = SessionHandle {
         peer_node_id: peer_node_id.clone(),
-        peer_name: parking_lot::RwLock::new(peer_name),
+        peer_name: peer_name_shared.clone(),
         commands: cmd_tx,
         services: shared_services.clone(),
         routes: routes.clone(),
@@ -521,14 +531,15 @@ pub async fn spawn(
             services: Vec::new(),
             local: hello.clone(),
             ctrl_unacked: std::collections::BTreeMap::new(),
-            ctrl_seen: std::collections::BTreeSet::new(),
+            ctrl_seen: ReplayWindow::new(CONTROL_WINDOW),
+            peer_hello_nonce: None,
             version: max_version,
             frame_seq: fresh_frame_seq(),
             ready: false,
             stopped: false,
             events,
             handle_services: shared_services,
-            handle_name: parking_lot::RwLock::new(String::new()),
+            handle_name: peer_name_shared,
             handle_routes: routes,
             handle_version: version,
         };
@@ -577,11 +588,14 @@ pub async fn spawn(
     handle
 }
 
-/// Where a session's frame numbers start. A random start, as TCP picks its sequence numbers, so a
-/// restarted peer never reuses a number the other end still remembers from the process before it.
-/// Control frames are told apart by these numbers, so a reused one would be taken for a resend.
+/// Where a session's frame numbers start: a random point below 2^40, counted up from there.
+///
+/// Random, so two processes that talk to the same peer rarely start on the same number. Below 2^40, so the
+/// numbers stay exact in a JavaScript double (which holds integers up to 2^53): a receiver in any language
+/// counts them correctly. A restarted peer is heard whatever its base, because it announces itself with a
+/// new hello nonce (see `note_peer_hello`).
 fn fresh_frame_seq() -> u64 {
-    rand::random::<u64>() >> 2
+    rand::random::<u64>() >> 24
 }
 
 fn random_nonce() -> [u8; 16] {
@@ -602,10 +616,15 @@ impl Session {
 
     fn send_frame(&mut self, kind: u8, body: Vec<u8>, bulk: bool) -> bool {
         let seq = self.next_seq();
+        // A reliable control frame goes out on every live route: a route that dies with it costs no receipt round trip.
+        let mut flags = if bulk { protocol::flags::BULK } else { 0 };
+        if protocol::is_reliable(kind) {
+            flags |= protocol::flags::MIRROR;
+        }
         let frame = Frame {
             version: self.version,
             kind,
-            flags: if bulk { protocol::flags::BULK } else { 0 },
+            flags,
             seq,
             body,
         };
@@ -650,12 +669,27 @@ impl Session {
         }
     }
 
-    /// A control frame arrived: send its receipt, and say whether to act on it (false for a
-    /// copy we have already acted on).
+    /// A hello with a nonce this session has not seen starts a new numbering.
+    ///
+    /// A peer that restarted counts its control frames from a fresh random base, which the window would
+    /// refuse as older than what it has already seen, so the restarted peer would never be heard. Resent
+    /// copies of a hello carry the same nonce, so they do not reset the window and stay duplicates.
+    fn note_peer_hello(&mut self, frame: &Frame) {
+        let Ok(hello) = frame.decode::<Hello>() else {
+            return;
+        };
+        if self.peer_hello_nonce != Some(hello.nonce) {
+            self.peer_hello_nonce = Some(hello.nonce);
+            self.ctrl_seen = ReplayWindow::new(CONTROL_WINDOW);
+        }
+    }
+
+    /// A control frame arrived: send its receipt, and say whether to act on it. False for a copy
+    /// already acted on, and for one older than the window, which cannot be told from a copy.
     fn admit_control(&mut self, frame: &Frame) -> bool {
         let receipt = Self::encode(&CtrlAck { seq: frame.seq });
         self.send_frame(kind::CTRL_ACK, receipt, false);
-        let first = self.ctrl_seen.insert(frame.seq);
+        let first = self.ctrl_seen.accept(frame.seq);
         tracing::trace!(
             "[overlay session] {}: control {:#04x} seq {} {}",
             self.peer_node_id,
@@ -663,31 +697,30 @@ impl Session {
             frame.seq,
             if first { "arrived" } else { "arrived again" }
         );
-        // Bounded: a copy can only come within the sender's resend budget, far fewer frames than this.
-        while self.ctrl_seen.len() > CTRL_REMEMBERED {
-            self.ctrl_seen.pop_first();
-        }
         first
     }
 
-    /// Put a frame on the best live route; a mirrored frame also goes out on every other one.
+    /// Put a frame on a live route, cheapest first, and on the next one when a route refuses it, so one congested route
+    /// never holds a frame back while another is free. A mirrored frame goes out on every live route instead: the peer
+    /// takes the first copy to arrive and ignores the rest.
     fn dispatch(&mut self, frame: &Frame) -> bool {
         let refs: Vec<&Arc<dyn Link>> = self.links.iter().collect();
-        let Some(best) = crate::link::best_route(&refs) else {
-            return false;
+        let ranked = crate::link::ranked_routes(&refs);
+        let live: Vec<&Arc<dyn Link>> = ranked.iter().copied().filter(|l| l.is_up()).collect();
+        // With no live route, the cheapest route that is not closed still gets the frame, as `best_route` does.
+        let candidates: Vec<&Arc<dyn Link>> = if live.is_empty() {
+            ranked.iter().copied().take(1).collect()
+        } else {
+            live
         };
-        let mirrored = frame.is_mirrored();
-        let sent = best.send(frame).is_ok();
-        if mirrored {
-            for other in self
-                .links
-                .iter()
-                .filter(|l| l.id() != best.id() && l.is_up())
-            {
-                let _ = other.send(frame);
+        if frame.is_mirrored() {
+            let mut any = false;
+            for link in &candidates {
+                any |= link.send(frame).is_ok();
             }
+            return any;
         }
-        sent
+        candidates.iter().any(|link| link.send(frame).is_ok())
     }
 
     /// The route a bulk frame should go out on: striped, weighted by measured throughput.
@@ -918,7 +951,10 @@ impl Session {
                 self.mux.remove_send(stream);
                 self.mux.remove_recv(stream);
                 self.forget_stream(stream.0);
-                self.pending_reads.remove(&stream.0);
+                // We closed it, so a read waiting on it ends cleanly, as it does for the peer's CLOSE.
+                if let Some(PendingRead(reply)) = self.pending_reads.remove(&stream.0) {
+                    let _ = reply.try_send(None);
+                }
             }
         }
     }
@@ -998,6 +1034,9 @@ impl Session {
 
     /// The route a frame of `cost` bytes goes out on now, or `Err` with the time pacing allows it
     /// (`None`: it waits for an acknowledgement, or for a route).
+    /// The routes a frame of `cost` bytes may go out on now, best first: the striped choice for bulk, then every other
+    /// open route cheapest first. `Err` carries the time pacing allows (`None`: it waits for an acknowledgement, or for
+    /// a route).
     fn pick_route(
         &mut self,
         bulk: bool,
@@ -1005,7 +1044,7 @@ impl Session {
         avoid: Option<u32>,
         retx: bool,
         now: Instant,
-    ) -> std::result::Result<Arc<dyn Link>, Option<Instant>> {
+    ) -> std::result::Result<Vec<Arc<dyn Link>>, Option<Instant>> {
         let usable = self.usable_links();
         let mut open: Vec<Arc<dyn Link>> = Vec::new();
         let mut wake: Option<Instant> = None;
@@ -1029,14 +1068,20 @@ impl Session {
         if open.is_empty() {
             return Err(wake);
         }
+        let mut ordered: Vec<Arc<dyn Link>> = Vec::with_capacity(open.len());
         if bulk {
             let ids: Vec<u32> = open.iter().map(|l| l.id()).collect();
             if let Some(i) = self.route_for_bulk(&ids) {
-                return Ok(self.links[i].clone());
+                ordered.push(self.links[i].clone());
             }
         }
         let refs: Vec<&Arc<dyn Link>> = open.iter().collect();
-        crate::link::best_route(&refs).cloned().ok_or(None)
+        for link in crate::link::ranked_routes(&refs) {
+            if !ordered.iter().any(|o| o.id() == link.id()) {
+                ordered.push(link.clone());
+            }
+        }
+        Ok(ordered)
     }
 
     /// Send what the routes have room for: resends first, then new data. What does not fit waits;
@@ -1068,17 +1113,19 @@ impl Session {
             }
             let cost = cc::cost(frame.payload.len());
             let bulk = frame.payload.len() >= BULK_THRESHOLD;
-            let link = match self.pick_route(bulk, cost, avoid, retx, now) {
-                Ok(link) => link,
+            let candidates = match self.pick_route(bulk, cost, avoid, retx, now) {
+                Ok(candidates) => candidates,
                 Err(wake) => {
                     self.pace_at = wake;
                     return;
                 }
             };
             let wire = self.data_frame(&frame, false);
-            if link.send(&wire).is_err() {
-                return; // the route's queue is full: the next tick tries again
-            }
+            // The first route that takes the frame carries it. When every route's queue is full, the next tick tries again.
+            let Some(link) = candidates.into_iter().find(|link| link.send(&wire).is_ok()) else {
+                return;
+            };
+            link.stats().record_data_out(cost);
             tracing::trace!(
                 "[overlay session] {}: send stream {} seq {} on {} (retx {retx})",
                 self.peer_node_id,
@@ -1109,6 +1156,13 @@ impl Session {
         }
     }
 
+    /// A data frame left the books of `route` (acknowledged, lost or dropped with its stream).
+    fn left_route(&self, route: u32, wire_bytes: u64) {
+        if let Some(link) = self.links.iter().find(|l| l.id() == route) {
+            link.stats().record_acked(wire_bytes);
+        }
+    }
+
     /// A frame is given up on: off the route's books, and queued to go out again.
     fn mark_lost(&mut self, key: (u64, u64), now: Instant, why: &str) -> bool {
         tracing::debug!(
@@ -1120,6 +1174,7 @@ impl Session {
         let Some(entry) = self.inflight.remove(&key) else {
             return false;
         };
+        self.left_route(entry.route, entry.cost);
         let newest = self
             .inflight
             .range((key.0, 0)..=(key.0, u64::MAX))
@@ -1200,6 +1255,7 @@ impl Session {
                 if let Some(cc) = self.cc.get_mut(&entry.route) {
                     cc.release(entry.cost);
                 }
+                self.left_route(entry.route, entry.cost);
             }
         }
         self.outbox.retain(|f| f.stream.0 != stream);
@@ -1244,6 +1300,7 @@ impl Session {
             let Some(entry) = self.inflight.remove(key) else {
                 continue;
             };
+            self.left_route(entry.route, entry.cost);
             resent |= entry.retx;
             sample = Some((entry.route, now.duration_since(entry.sent_at)));
             let cc = self.cc.entry(entry.route).or_default();
@@ -1345,6 +1402,9 @@ impl Session {
                     // route and not whichever one is best right now.
                     Some(frame) if frame.kind == kind::PING => self.answer_ping(&frame, &link),
                     Some(frame) if protocol::is_reliable(frame.kind) => {
+                        if frame.kind == kind::HELLO {
+                            self.note_peer_hello(&frame);
+                        }
                         if self.admit_control(&frame) {
                             self.on_frame(&frame);
                         }
@@ -1840,7 +1900,7 @@ pub fn count(bytes: &StreamBytes, n: u64) {
 mod tests {
     use super::*;
     use crate::identity::NodeIdentity;
-    use crate::link::{Link, Pipe, PipeLink, RouteKind};
+    use crate::link::{Link, Pipe, PipeLink, RouteKind, RouteStats};
 
     type Queue = Arc<parking_lot::Mutex<std::collections::VecDeque<Vec<u8>>>>;
 
@@ -1962,6 +2022,211 @@ mod tests {
             "the desktop hears the restarted peer's open"
         );
         assert!(second.await.expect("join").is_ok(), "the restarted peer's open is accepted");
+    }
+
+    /// A route that refuses every frame it is offered, as a route whose queue is full does. It
+    /// counts the attempts, so a test can show the session tried it before it fell back.
+    struct RefusingLink {
+        stats: Arc<RouteStats>,
+        attempts: AtomicU64,
+    }
+
+    impl Link for RefusingLink {
+        fn kind(&self) -> RouteKind {
+            RouteKind::Direct
+        }
+
+        fn id(&self) -> u32 {
+            1
+        }
+
+        fn stats(&self) -> &Arc<RouteStats> {
+            &self.stats
+        }
+
+        fn send(&self, _frame: &Frame) -> Result<()> {
+            self.attempts.fetch_add(1, Ordering::Relaxed);
+            Err(OverlayError::Other("the route's queue is full".into()))
+        }
+
+        fn try_recv(&self) -> Option<Frame> {
+            None
+        }
+
+        fn is_up(&self) -> bool {
+            true
+        }
+
+        fn mark_down(&self) {
+            self.stats.mark_down();
+        }
+
+        fn describe(&self) -> String {
+            "refusing".into()
+        }
+    }
+
+    /// Reads from `stream` until `len` bytes have arrived, or the stream stops producing them.
+    async fn read_all(desk: &SessionHandle, stream: StreamId, len: usize) -> Vec<u8> {
+        let mut got = Vec::with_capacity(len);
+        while got.len() < len {
+            match next_bytes(desk, stream).await {
+                Some(chunk) if !chunk.is_empty() => got.extend(chunk),
+                _ => break,
+            }
+        }
+        got
+    }
+
+    /// A desktop and a phone on one in-memory link, with a stream the phone opened and the desktop accepted.
+    /// The desktop's event receiver is returned too, so the session can keep reporting events.
+    async fn open_stream_pair() -> (
+        SessionHandle,
+        SessionHandle,
+        StreamId,
+        mpsc::UnboundedReceiver<SessionEvent>,
+    ) {
+        let desk_id = NodeIdentity::generate("desktop");
+        let phone_id = NodeIdentity::generate("phone");
+        let (desk_events_tx, mut desk_events) = mpsc::unbounded_channel();
+        let (route, phone_end) = link_pair(3);
+        let desk = spawn(
+            setup(&desk_id, &phone_id),
+            vec![route as Arc<dyn Link>],
+            desk_events_tx,
+        )
+        .await;
+        let (phone_tx, _phone_events) = mpsc::unbounded_channel();
+        let phone = spawn(
+            setup(&phone_id, &desk_id),
+            vec![phone_end as Arc<dyn Link>],
+            phone_tx,
+        )
+        .await;
+        let open = tokio::spawn(async move {
+            let stream = phone.open("cfs").await;
+            (phone, stream)
+        });
+        let accepted = tokio::time::timeout(
+            Duration::from_secs(5),
+            accept_next_open(&desk, &mut desk_events),
+        )
+        .await
+        .expect("the open reaches the desktop")
+        .expect("the desktop accepts it");
+        let (phone, opened) = open.await.expect("join");
+        let stream = opened.expect("the open is accepted");
+        assert_eq!(stream, accepted);
+        (desk, phone, stream, desk_events)
+    }
+
+    /// A session that ends while a read waits is an error to that read. Silence is not the end of the stream:
+    /// nothing says the stream was complete, so the reader must not take it for a finished transfer.
+    #[tokio::test]
+    async fn a_read_waiting_when_the_session_ends_is_an_error_not_the_end() {
+        let (desk, _phone, stream, _events) = open_stream_pair().await;
+        let (outcome, ()) = tokio::join!(desk.recv(stream), async {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            desk.shutdown().await;
+        });
+        let err = outcome.expect_err("the session ended before the stream did");
+        assert!(matches!(err, OverlayError::Closed(_)), "got {err:?}");
+    }
+
+    /// The peer's CLOSE is the explicit end of a stream, so a read waiting on it gets the end, not an error.
+    #[tokio::test]
+    async fn a_read_waiting_when_the_peer_closes_the_stream_gets_the_end() {
+        let (desk, phone, stream, _events) = open_stream_pair().await;
+        let (outcome, ()) = tokio::join!(desk.recv(stream), async {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            phone.close(stream).await;
+        });
+        assert_eq!(outcome.expect("the session is still up"), None);
+    }
+
+    /// Our own close is also an explicit end: a read waiting on the stream on this side ends cleanly.
+    #[tokio::test]
+    async fn a_read_waiting_when_we_close_the_stream_gets_the_end() {
+        let (desk, _phone, stream, _events) = open_stream_pair().await;
+        let (outcome, ()) = tokio::join!(desk.recv(stream), async {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            desk.close(stream).await;
+        });
+        assert_eq!(outcome.expect("the session is still up"), None);
+    }
+
+    /// A route that refuses a frame must not stop the session. The frame goes out on the next
+    /// live route, so both sides get their bytes, and the refusing route is tried first.
+    #[tokio::test]
+    async fn a_route_that_refuses_a_frame_hands_it_to_the_next_route() {
+        let desk_id = NodeIdentity::generate("desktop");
+        let phone_id = NodeIdentity::generate("phone");
+
+        let refusing = Arc::new(RefusingLink {
+            stats: Arc::new(RouteStats::new(RouteKind::Direct)),
+            attempts: AtomicU64::new(0),
+        });
+        let (working, phone_end) = link_pair(2);
+
+        let (desk_events_tx, mut desk_events) = mpsc::unbounded_channel();
+        let desk = spawn(
+            setup(&desk_id, &phone_id),
+            vec![
+                refusing.clone() as Arc<dyn Link>,
+                working as Arc<dyn Link>,
+            ],
+            desk_events_tx,
+        )
+        .await;
+        let (phone_tx, _phone_events) = mpsc::unbounded_channel();
+        let phone = spawn(
+            setup(&phone_id, &desk_id),
+            vec![phone_end as Arc<dyn Link>],
+            phone_tx,
+        )
+        .await;
+
+        let open = tokio::spawn(async move {
+            let stream = phone.open("cfs").await;
+            (phone, stream)
+        });
+        let accepted = tokio::time::timeout(
+            Duration::from_secs(5),
+            accept_next_open(&desk, &mut desk_events),
+        )
+        .await;
+        let stream = accepted
+            .expect("the open reaches the desktop")
+            .expect("the desktop accepts it");
+        let (phone, opened) = open.await.expect("join");
+        assert_eq!(opened.expect("the open is accepted"), stream);
+
+        // Phone to desktop. The desktop's replies (window updates, acknowledgements) go out on
+        // the refusing route first and must fall back to the working one.
+        let upload: Vec<u8> = (0..200_000u32).map(|i| (i % 251) as u8).collect();
+        phone
+            .send(stream, upload.clone(), false)
+            .await
+            .expect("the upload goes out");
+        assert!(
+            read_all(&desk, stream, upload.len()).await == upload,
+            "the desktop gets every uploaded byte"
+        );
+
+        // Desktop to phone. The desktop's own data frames fall back the same way.
+        let download: Vec<u8> = (0..200_000u32).map(|i| (i % 241) as u8).collect();
+        desk.send(stream, download.clone(), false)
+            .await
+            .expect("the download goes out");
+        assert!(
+            read_all(&phone, stream, download.len()).await == download,
+            "the phone gets every downloaded byte"
+        );
+
+        assert!(
+            refusing.attempts.load(Ordering::Relaxed) > 0,
+            "the refusing route was tried before the session fell back"
+        );
     }
 
     /// A peer process restarts and numbers its streams from the start again. The desktop still

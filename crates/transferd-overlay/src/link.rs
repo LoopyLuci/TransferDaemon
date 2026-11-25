@@ -11,6 +11,7 @@
 //! `docs/PROTOCOL.md`.
 
 use async_trait::async_trait;
+use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -93,8 +94,11 @@ pub struct RouteMetrics {
     pub loss: f64,
     /// Smoothed throughput in megabits per second.
     pub mbps: f64,
-    /// Frames handed to this route and not yet acknowledged by the peer.
+    /// Data frames handed to this route and not yet acknowledged by the peer.
     pub active: u64,
+    /// Bytes of those frames (wire size, overhead included), not yet acknowledged. This is the backlog a new frame
+    /// queues behind, so it is what the cost charges for.
+    pub outstanding_bytes: u64,
     /// Whether the route is usable right now.
     pub up: bool,
 }
@@ -102,14 +106,16 @@ pub struct RouteMetrics {
 impl RouteMetrics {
     /// The score the router minimises: time to push the next frame out on this route.
     ///
-    /// Loss is charged quadratically because a lossy route costs a retransmit, and a dead
-    /// route must never win no matter how good its old numbers were.
+    /// Three terms, all in milliseconds: the round trip, the time the route needs to drain its backlog of unacknowledged
+    /// bytes at its measured throughput, and a penalty for loss. Loss is charged quadratically because a lossy route
+    /// costs a retransmit, and a dead route must never win no matter how good its old numbers were.
     pub fn cost(&self) -> f64 {
         if !self.up {
             return f64::INFINITY;
         }
-        let bps = (self.mbps * 1_000_000.0).max(1.0);
-        self.rtt_ms + self.active as f64 / bps * 1000.0 + self.loss * self.loss * 1000.0
+        let bits_per_second = (self.mbps * 1_000_000.0).max(1.0);
+        let backlog_ms = self.outstanding_bytes as f64 * 8.0 / bits_per_second * 1000.0;
+        self.rtt_ms + backlog_ms + self.loss * self.loss * 1000.0
     }
 }
 
@@ -121,6 +127,7 @@ pub struct RouteStats {
     loss: Mutex<f64>,
     mbps: Mutex<f64>,
     active: AtomicU64,
+    outstanding: AtomicU64,
     up: AtomicBool,
     sent: AtomicU64,
     bytes: AtomicU64,
@@ -140,6 +147,7 @@ impl RouteStats {
             loss: Mutex::new(0.0),
             mbps: Mutex::new(0.0),
             active: AtomicU64::new(0),
+            outstanding: AtomicU64::new(0),
             up: AtomicBool::new(true),
             sent: AtomicU64::new(0),
             bytes: AtomicU64::new(0),
@@ -195,19 +203,28 @@ impl RouteStats {
         self.probes_ok.store(0, Ordering::Relaxed);
     }
 
-    /// Record `bytes` handed to this route.
+    /// Record `bytes` handed to this route, of any kind of frame.
     pub fn record_sent(&self, bytes: u64) {
         self.sent.fetch_add(1, Ordering::Relaxed);
         self.bytes.fetch_add(bytes, Ordering::Relaxed);
-        self.active.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Record `n` frames acknowledged by the peer.
-    pub fn record_acked(&self, n: u64) {
+    /// A data frame of `wire_bytes` went out on this route and now awaits its acknowledgement. Only data frames are
+    /// counted in `active` and `outstanding`: a control frame, a ping or an acknowledgement never gets one back.
+    pub fn record_data_out(&self, wire_bytes: u64) {
+        self.active.fetch_add(1, Ordering::Relaxed);
+        self.outstanding.fetch_add(wire_bytes, Ordering::Relaxed);
+    }
+
+    /// A data frame of `wire_bytes` left this route's books: acknowledged, or given up on. Counts never go below zero.
+    pub fn record_acked(&self, wire_bytes: u64) {
         let _ = self
             .active
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |a| Some(a.saturating_sub(1)));
+        let _ = self
+            .outstanding
             .try_update(Ordering::Relaxed, Ordering::Relaxed, |a| {
-                Some(a.saturating_sub(n))
+                Some(a.saturating_sub(wire_bytes))
             });
     }
 
@@ -249,6 +266,7 @@ impl RouteStats {
             loss: *self.loss.lock().unwrap_or_else(|e| e.into_inner()),
             mbps: *self.mbps.lock().unwrap_or_else(|e| e.into_inner()),
             active: self.active.load(Ordering::Relaxed),
+            outstanding_bytes: self.outstanding.load(Ordering::Relaxed),
             up: self.up.load(Ordering::Relaxed),
         }
     }
@@ -393,6 +411,8 @@ pub struct PipeLink {
     stats: Arc<RouteStats>,
     pipe: Mutex<Pipe>,
     reader: Mutex<FrameReader>,
+    /// Frames one read delivered beyond the first: a read can carry several, and the rest wait here.
+    pending: Mutex<VecDeque<Frame>>,
     describe: String,
 }
 
@@ -414,6 +434,7 @@ impl PipeLink {
             stats: Arc::new(RouteStats::new(kind)),
             pipe: Mutex::new(pipe),
             reader: Mutex::new(FrameReader::new()),
+            pending: Mutex::new(VecDeque::new()),
             describe: describe.into(),
         })
     }
@@ -449,6 +470,14 @@ impl Link for PipeLink {
     }
 
     fn try_recv(&self) -> Option<Frame> {
+        if let Some(frame) = self
+            .pending
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .pop_front()
+        {
+            return Some(frame);
+        }
         // Bounded: a caller polls this from the session tick, so one call must not read for
         // ever, and a peer that never completes a frame must not grow the buffer without limit.
         for _ in 0..MAX_PIPE_READS_PER_POLL {
@@ -469,7 +498,10 @@ impl Link for PipeLink {
                     if frames.is_empty() {
                         continue; // partial frame; wait for more bytes
                     }
-                    return frames.into_iter().next();
+                    // Every frame in this read is kept: the first is returned, the rest are the next calls'.
+                    let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+                    pending.extend(frames);
+                    return pending.pop_front();
                 }
                 Ok(None) => return None,
                 Err(_) => {
@@ -492,6 +524,22 @@ impl Link for PipeLink {
     fn describe(&self) -> String {
         self.describe.clone()
     }
+}
+
+/// Every route that is not closed, cheapest first. Ties break on [`RouteKind::rank`]. A route that is down costs
+/// infinity, so it comes last. The session walks this list when the cheapest route refuses a frame, so one congested
+/// route never holds up the others.
+pub fn ranked_routes<'a>(links: &'a [&'a Arc<dyn Link>]) -> Vec<&'a Arc<dyn Link>> {
+    let mut open: Vec<&'a Arc<dyn Link>> = links.iter().copied().filter(|l| !l.is_closed()).collect();
+    open.sort_by(|a, b| {
+        a.stats()
+            .metrics()
+            .cost()
+            .partial_cmp(&b.stats().metrics().cost())
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then(a.kind().rank().cmp(&b.kind().rank()))
+    });
+    open
 }
 
 /// Choose the live route with the lowest cost. Ties break on [`RouteKind::rank`], so a LAN
@@ -588,6 +636,23 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_read_that_carries_several_frames_delivers_all_of_them() {
+        // One read holds three whole frames, as a busy peer's writes often do: none may be dropped.
+        let wire: Vec<u8> = [frame(4), frame(5), frame(6)]
+            .iter()
+            .flat_map(|f| f.encode())
+            .collect();
+        let queue = shared_queue(vec![wire]);
+        let link = PipeLink::new(2, RouteKind::Direct, "test", pipe_over(queue));
+        let seqs: Vec<u64> = std::iter::from_fn(|| link.try_recv())
+            .take(3)
+            .map(|f| f.seq)
+            .collect();
+        assert_eq!(seqs, vec![4, 5, 6], "every frame of the read comes back, in order");
+        assert!(link.try_recv().is_none(), "and then nothing");
+    }
+
     type Queue = std::sync::Arc<Mutex<VecDeque<Vec<u8>>>>;
 
     fn shared_queue(initial: Vec<Vec<u8>>) -> Queue {
@@ -647,6 +712,55 @@ mod tests {
         assert!(
             s.metrics().loss > 0.0,
             "two of three probes lost is recorded as loss"
+        );
+    }
+
+    #[test]
+    fn only_data_frames_count_as_in_flight() {
+        let s = RouteStats::new(RouteKind::Direct);
+        s.record_sent(100); // a control frame, a ping or an acknowledgement: never acknowledged as data
+        assert_eq!(s.metrics().active, 0, "a control frame is not in flight");
+        s.record_data_out(1_000);
+        s.record_data_out(1_000);
+        assert_eq!(s.metrics().active, 2);
+        assert_eq!(s.metrics().outstanding_bytes, 2_000);
+        s.record_acked(1_000);
+        assert_eq!(s.metrics().active, 1);
+        assert_eq!(s.metrics().outstanding_bytes, 1_000);
+        s.record_acked(5_000);
+        assert_eq!(s.metrics().active, 0, "never below zero");
+        assert_eq!(s.metrics().outstanding_bytes, 0, "never below zero");
+    }
+
+    #[test]
+    fn the_cost_charges_the_backlog_in_time() {
+        // 1 MB unacknowledged on a 100 Mbit/s route is 80 ms of queue, on top of the 10 ms round trip.
+        let loaded = RouteMetrics {
+            rtt_ms: 10.0,
+            loss: 0.0,
+            mbps: 100.0,
+            active: 700,
+            outstanding_bytes: 1_000_000,
+            up: true,
+        };
+        assert!((loaded.cost() - 90.0).abs() < 1e-9, "round trip plus queue time: {}", loaded.cost());
+        // The same route with nothing queued is just its round trip.
+        let idle = RouteMetrics { outstanding_bytes: 0, active: 0, ..loaded };
+        assert!((idle.cost() - 10.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_busy_route_costs_more_than_an_idle_one_of_the_same_speed() {
+        let busy = RouteStats::new(RouteKind::Direct);
+        busy.record_rtt(5.0);
+        busy.mbps.lock().map(|mut m| *m = 100.0).ok();
+        busy.record_data_out(2_000_000);
+        let idle = RouteStats::new(RouteKind::Direct);
+        idle.record_rtt(5.0);
+        idle.mbps.lock().map(|mut m| *m = 100.0).ok();
+        assert!(
+            busy.metrics().cost() > idle.metrics().cost() + 100.0,
+            "a route with 2 MB queued must not look as cheap as an idle one"
         );
     }
 

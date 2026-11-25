@@ -430,7 +430,7 @@ impl RelayHub {
 
     /// Open a session link to a peer over this relay.
     pub async fn link(&self, id: u32, peer_token: [u8; 32], keys: &LinkKeys) -> Arc<FramePipe> {
-        let (link, rx) = FramePipe::new(
+        let (link, outbound) = FramePipe::new(
             id,
             RouteKind::Relay,
             format!("relay://{}#{}", self.addr, hex::encode(peer_token)),
@@ -460,8 +460,8 @@ impl RelayHub {
         let client = self.client.clone();
         let self_token = self.self_token;
         tokio::spawn(async move {
-            let mut rx = rx;
-            while let Some(sealed) = rx.recv().await {
+            let mut outbound = outbound;
+            while let Some(sealed) = outbound.recv().await {
                 let mut body = Vec::with_capacity(1 + 32 + sealed.len());
                 body.push(PREFIX_DATA);
                 body.extend_from_slice(&self_token);

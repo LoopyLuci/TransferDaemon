@@ -433,6 +433,8 @@ fn associated_data(len: u32, counter: u64) -> [u8; 12] {
 pub struct TunnelReader {
     cipher: Tunnel,
     reader: FrameReader,
+    /// Frames already decoded from a blob but not yet handed out: one blob can carry several.
+    pending: std::collections::VecDeque<Frame>,
 }
 
 impl TunnelReader {
@@ -441,17 +443,20 @@ impl TunnelReader {
         Self {
             cipher: Tunnel::receiver(keys),
             reader: FrameReader::new(),
+            pending: std::collections::VecDeque::new(),
         }
     }
 
-    /// Read the next overlay frame, blocking until one arrives.
+    /// Read the next overlay frame, blocking until one arrives. Frames that share a blob are
+    /// handed out one at a time, in order, and none is dropped.
     pub async fn next_frame<R: AsyncRead + Unpin>(&mut self, r: &mut R) -> Result<Frame> {
         loop {
-            let sealed = read_blob(r).await?;
-            let plain = self.cipher.open(&sealed)?;
-            if let Some(frame) = self.reader.push(&plain).into_iter().next() {
+            if let Some(frame) = self.pending.pop_front() {
                 return Ok(frame);
             }
+            let sealed = read_blob(r).await?;
+            let plain = self.cipher.open(&sealed)?;
+            self.pending.extend(self.reader.push(&plain));
         }
     }
 }
@@ -640,6 +645,29 @@ mod tests {
         write_frame(&mut a, &tx, &two).await.expect("write two");
         assert_eq!(reader.next_frame(&mut b).await.expect("frame one"), one);
         assert_eq!(reader.next_frame(&mut b).await.expect("frame two"), two);
+    }
+
+    #[tokio::test]
+    async fn frames_that_share_a_blob_are_all_delivered() {
+        let here = keys();
+        let there = here.clone().swapped();
+        let (mut a, mut b) = tokio::io::duplex(64 * 1024);
+        let tx = Tunnel::sender(&here);
+        let mut reader = TunnelReader::new(&there);
+
+        let one = Frame::new(2, kind::BYE, 1, &()).expect("frame");
+        let two = Frame::new(2, kind::BYE, 2, &()).expect("frame");
+        let three = Frame::new(2, kind::BYE, 3, &()).expect("frame");
+        // One sealed blob carrying three overlay frames back to back.
+        let mut plain = one.encode();
+        plain.extend(two.encode());
+        plain.extend(three.encode());
+        write_blob(&mut a, &tx.seal(&plain).expect("seal"))
+            .await
+            .expect("write");
+        assert_eq!(reader.next_frame(&mut b).await.expect("one"), one);
+        assert_eq!(reader.next_frame(&mut b).await.expect("two"), two);
+        assert_eq!(reader.next_frame(&mut b).await.expect("three"), three);
     }
 
     #[test]

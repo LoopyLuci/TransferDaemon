@@ -93,7 +93,7 @@ frame := magic "TDOV" | version u8 | kind u8 | flags u16 LE | seq u64 LE | len u
 
 - **`version`**: the frame's protocol version.
 - **`seq`**: counts every frame a session sends in one direction. It identifies control frames for their receipts (§5).
-- **`flags`**: `0x1` MIRROR (sent on every route, used for resends) and `0x2` BULK (may be striped across routes).
+- **`flags`**: `0x1` MIRROR (a reliable control frame, sent on every usable route; the receiver takes the first copy and ignores the rest, because the receipt (§5) makes a duplicate harmless) and `0x2` BULK (a data frame that may be striped across routes). A data resend is not mirrored: it goes out on one route, preferring one other than the route that lost it.
 - **`body`**: bincode, with the struct named by `kind`. `len` MUST be at most 60 KiB.
 
 | kind | name | body | receipt |
@@ -147,6 +147,7 @@ frame := magic "TDOV" | version u8 | kind u8 | flags u16 LE | seq u64 LE | len u
   - A sender SHOULD also resend a frame before its timeout when three acknowledgements in a row repeat the same cumulative point, or when a selective acknowledgement reports a gap ahead of it. Both are loss signals.
   - The RTO is kept per route and adapts to measured round trips, as in RFC 6298. [OVERLAY.md](OVERLAY.md) gives the reference values. A fixed resend interval is not part of this specification.
 - DATA for a stream the receiver does not have MUST NOT be acknowledged.
+- A stream ends at the peer's FIN (a DATA frame with `fin`) or CLOSE, or at this node's own close. If the session ends before the stream does, a reader MUST get an error, not the end of the stream: silence does not show that the stream was complete.
 
 **Flow control.** Every stream starts with a window of 256 KiB in each direction. The receiver grants more with WINDOW as the application reads. A sender with no credit MUST wait. It MUST NOT drop data.
 

@@ -1652,25 +1652,61 @@ impl OverlayNode {
                         .or_insert(1);
                     let (mut reader, mut writer) = tokio::io::split(socket);
                     let up = session.clone();
+                    // Stopped by the download task when the session is lost. The upload hands back the read
+                    // half, so the two halves can be rejoined to reset the connection.
+                    let (stop_tx, mut stop_rx) = tokio::sync::oneshot::channel::<()>();
                     let upload = tokio::spawn(async move {
                         let mut buf = vec![0u8; COPY_CHUNK];
-                        while let Ok(n) = reader.read(&mut buf).await {
-                            if n == 0 || up.send(stream, buf[..n].to_vec(), false).await.is_err() {
-                                break;
+                        loop {
+                            tokio::select! {
+                                Ok(()) = &mut stop_rx => break,
+                                read = reader.read(&mut buf) => match read {
+                                    Ok(n) if n > 0 => {
+                                        if up.send(stream, buf[..n].to_vec(), false).await.is_err() {
+                                            break;
+                                        }
+                                    }
+                                    _ => {
+                                        let _ = up.send(stream, Vec::new(), true).await;
+                                        break;
+                                    }
+                                },
                             }
                         }
-                        let _ = up.send(stream, Vec::new(), true).await;
+                        reader
                     });
                     tokio::spawn(async move {
-                        while let Ok(Some(bytes)) = session.recv(stream).await {
-                            if writer.write_all(&bytes).await.is_err() {
-                                break;
+                        let mut session_lost = false;
+                        loop {
+                            match session.recv(stream).await {
+                                Ok(Some(bytes)) => {
+                                    if writer.write_all(&bytes).await.is_err() {
+                                        break;
+                                    }
+                                }
+                                Ok(None) => break,
+                                // The session ended before the stream did.
+                                Err(_) => {
+                                    session_lost = true;
+                                    break;
+                                }
                             }
                         }
-                        // The service is done sending: end the application's read side, and leave
-                        // the other direction running (half-close), as TCP itself would.
-                        let _ = writer.shutdown().await;
-                        let _ = upload.await;
+                        if session_lost {
+                            // Stop sending, then reset the connection rather than closing it: a clean close
+                            // would tell the application that a stream cut short by the session was complete.
+                            let _ = stop_tx.send(());
+                            if let Ok(reader) = upload.await {
+                                let socket = reader.unsplit(writer);
+                                #[allow(deprecated)]
+                                let _ = socket.set_linger(Some(std::time::Duration::ZERO));
+                            }
+                        } else {
+                            // The service is done sending: end the application's read side, and leave
+                            // the other direction running (half-close), as TCP itself would.
+                            let _ = writer.shutdown().await;
+                            let _ = upload.await;
+                        }
                         node.inner
                             .loads
                             .lock()

@@ -74,6 +74,14 @@ tray-icon = "0.19"
 notify-rust = "4"
 proptest = "1"
 
+[profile.test]
+# The throughput and timing tests in transferd-overlay measure the protocol over emulated links.
+# An unoptimised build spends more CPU on the crypto and framing than the emulated link allows, so
+# those tests measured the debug build, not the protocol (55% of the link in debug, 93% optimised).
+# Optimising the test profile keeps `cargo test` measuring what the tests are about. Debug
+# assertions and overflow checks stay on.
+opt-level = 3
+
 [profile.release]
 opt-level = 3
 lto = "fat"

@@ -537,58 +537,56 @@ pub fn negotiate(peer_min: u16, peer_max: u16, our_min: u16, our_max: u16) -> Op
 // Replay protection
 // ---------------------------------------------------------------------------
 
+/// The width of the control-frame window, in sequence numbers (PROTOCOL.md §5: "act on each
+/// `seq` once (a 4096-wide window)").
+pub const CONTROL_WINDOW: u64 = 4096;
+
 /// A sliding replay window over a per-direction frame counter.
 ///
 /// The sender increments `seq` for every frame; the receiver accepts anything above
-/// `highest` and anything inside the window it has not seen. A replayed or reordered
-/// frame outside the window is refused, so an attacker cannot re-inject an old frame even
-/// if they can copy ciphertext off the wire.
+/// `highest` and anything inside the last `span` numbers it has not seen. A replayed frame, or
+/// one older than the window, is refused, so an attacker cannot re-inject an old frame even if
+/// they can copy ciphertext off the wire.
+///
+/// Only the accepted numbers inside the window are kept, so memory is bounded by `span`.
 #[derive(Debug)]
 pub struct ReplayWindow {
     highest: Option<u64>,
-    /// Bit `i` set = frame `highest - i` was already accepted.
-    seen: u64,
-    /// How far below `highest` a frame may still be accepted.
+    /// The accepted numbers within `span` of `highest`.
+    seen: std::collections::BTreeSet<u64>,
+    /// How far below `highest` a frame may still be accepted (a number `highest - span` or lower is refused).
     span: u64,
 }
 
 impl ReplayWindow {
-    /// A window that accepts the last `span` sequence numbers, at most 64 (one `u64` of bits).
+    /// A window that accepts the last `span` sequence numbers. `span` is at least 1.
     pub fn new(span: u64) -> Self {
         Self {
             highest: None,
-            seen: 0,
+            seen: std::collections::BTreeSet::new(),
             span: span.max(1),
         }
     }
 
-    /// Accept `seq`, or refuse it as a replay.
+    /// Accept `seq`, or refuse it as a replay or as older than the window.
     pub fn accept(&mut self, seq: u64) -> bool {
         let Some(highest) = self.highest else {
             self.highest = Some(seq);
-            self.seen = 1; // the new highest counts as seen
+            self.seen.insert(seq);
             return true;
         };
         if seq > highest {
-            let shift = seq - highest;
-            self.seen = if shift >= 64 {
-                1
-            } else {
-                (self.seen << shift) | 1
-            };
             self.highest = Some(seq);
+            self.seen.insert(seq);
+            // Forget what has slid out of the window; those numbers are refused by age from now on.
+            let floor = seq.saturating_sub(self.span - 1);
+            self.seen = self.seen.split_off(&floor);
             return true;
         }
-        let back = highest - seq;
-        if back >= self.span || back >= 64 {
+        if highest - seq >= self.span {
             return false; // too old to be inside the window
         }
-        let bit = 1u64 << back;
-        if self.seen & bit != 0 {
-            return false; // already accepted: a replay
-        }
-        self.seen |= bit;
-        true
+        self.seen.insert(seq) // false when already accepted: a replay
     }
 
     /// The highest sequence number accepted so far.
@@ -842,6 +840,22 @@ mod tests {
         // even though its ciphertext would still authenticate.
         assert!(!w.accept(900), "900 is more than a window behind 999");
         assert!(!w.accept(999), "and the newest is a replay");
+    }
+
+    #[test]
+    fn the_control_window_is_4096_wide_as_the_spec_says() {
+        let mut w = ReplayWindow::new(CONTROL_WINDOW);
+        assert!(w.accept(0));
+        assert!(w.accept(2000));
+        assert!(w.accept(1000), "1000 is 1000 behind and was never seen");
+        assert!(!w.accept(1000), "and is then a replay");
+        assert!(!w.accept(0), "0 is still inside the window and was seen");
+        // Slide the window on: 2000 is now 8000 behind, outside the 4096 span.
+        assert!(w.accept(10_000));
+        assert!(!w.accept(2000), "outside the window: refused by age, not acted on");
+        assert!(!w.accept(5000), "5000 is 5000 behind: outside the window");
+        assert!(w.accept(6000), "6000 is 4000 behind: inside, and unseen");
+        assert!(!w.accept(6000));
     }
 
     #[test]
