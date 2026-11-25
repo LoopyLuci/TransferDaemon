@@ -19,7 +19,7 @@ A Python implementation of the [Transferd](../README.md) wire protocol. It follo
 | Relay client: register, keepalive, locate, forward | `relay_client` | live against the reference `relayd` |
 | Hole-punch probes and the gateway envelope | `punch` | `vectors/wire.json` |
 
-**Not implemented yet:** route probing and failover across several links (the engine has one RTO estimator, not one per route), congestion control and pacing, the hole-punching state machine, mesh DNS, `transferd-cat`, the DHT node, and registering ghost keys with a relay. The stream engine resends on the RTO it is given and on the loss signals it sees; choosing among routes is not done.
+**Not implemented yet:** mesh DNS, `transferd-cat`, and the DHT node. The overlay (`transferd/overlay.py`) probes every route, keeps a congestion window and retransmission timeout per route, and sends each frame on the cheapest route that has room and is up, charging a route for the backlog it still has to clear. A frame a route refuses goes to the next route, reliable control frames are mirrored on every live route, bulk data is striped across routes by measured throughput, and control frames have their own queue so bulk data never holds them up. The stream engine resends on the RTO it is given and on the loss signals it sees.
 
 ## Install and test
 

@@ -30,6 +30,12 @@ def wire_vectors():
     return _load("wire.json")
 
 
+@pytest.fixture(scope="session")
+def ghost_vectors():
+    """A ghost key certificate and a relay registration from the Rust reference (`relayd/examples/gen_ghost_vectors.rs`)."""
+    return _load("ghost.json")
+
+
 def pattern(length: int, tag: int) -> bytes:
     """The generator's byte pattern: `i * 13 + tag` modulo 256."""
     return bytes(((i * 13) + tag) & 0xFF for i in range(length))
