@@ -49,3 +49,43 @@ export class StreamRefused extends TransferdError {
     super(`the peer refused the stream: ${code}: ${reason}`);
   }
 }
+
+/** A route or stream operation on an overlay session failed (`Unreachable`, `Closed`, ...). */
+export class OverlayError extends TransferdError {}
+
+/** The peer did not answer an operation in time, or no route to it is usable. */
+export class Unreachable extends OverlayError {
+  constructor(readonly node: string) {
+    super(`${node} is unreachable`);
+  }
+}
+
+/** The session or stream is gone. */
+export class Closed extends OverlayError {}
+
+/** The peer does not expose the service asked for. */
+export class NoSuchService extends OverlayError {
+  constructor(readonly service: string) {
+    super(`the peer has no service named ${service}`);
+  }
+}
+
+/** The peer's access list refuses this node the service. */
+export class Denied extends OverlayError {
+  constructor(
+    readonly node: string,
+    readonly service: string,
+  ) {
+    super(`${node} may not use ${service}`);
+  }
+}
+
+/** The peer's rate limit refused the stream for now. */
+export class RateLimited extends OverlayError {
+  constructor(
+    readonly service: string,
+    readonly reason: string,
+  ) {
+    super(`${service} is rate limited: ${reason}`);
+  }
+}

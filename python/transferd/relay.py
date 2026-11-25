@@ -160,6 +160,44 @@ def encode_register(session_token: bytes, pow_nonce: int, seq: int) -> bytes:
     return _tagged(Tag.REGISTER, lambda w: (w.raw(session_token), w.u64(pow_nonce), w.u32(seq)))
 
 
+@dataclass(frozen=True)
+class GhostRegister:
+    """A registration with a ghost key certificate (`GhostRegisterMsg`): the usual registration, the certificate as
+    bincode, and the ghost key's signature over the binding of the token and the sequence number."""
+
+    session_token: bytes
+    pow_nonce: int
+    seq: int
+    certificate: bytes
+    signature: bytes
+
+
+def encode_register_ghost(
+    session_token: bytes, pow_nonce: int, seq: int, certificate: bytes, signature: bytes
+) -> bytes:
+    return _tagged(
+        Tag.REGISTER_GHOST,
+        lambda w: (
+            w.raw(session_token),
+            w.u64(pow_nonce),
+            w.u32(seq),
+            w.bytes_(certificate),
+            w.bytes_(signature),
+        ),
+    )
+
+
+def decode_register_ghost(body: bytes) -> GhostRegister:
+    r = Reader(body)
+    return GhostRegister(
+        session_token=r.raw(32),
+        pow_nonce=r.u64(),
+        seq=r.u32(),
+        certificate=r.bytes_(),
+        signature=r.bytes_(),
+    )
+
+
 def encode_keepalive(session_token: bytes, pow_nonce: int, seq: int) -> bytes:
     return _tagged(Tag.KEEPALIVE, lambda w: (w.raw(session_token), w.u64(pow_nonce), w.u32(seq)))
 

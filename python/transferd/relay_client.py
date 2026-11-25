@@ -13,14 +13,17 @@ timed out is dropped before the next request is sent.
 from __future__ import annotations
 
 import asyncio
+import socket
 from types import TracebackType
 from typing import Callable, Optional, Tuple, Type, Union
 
 from . import relay as R
 from .errors import DecodeError, RelayProtocolError, RelayRefused, RelayTimeout, TransferdError
+from .ghostkey import GhostKey, binding
 
 Addr = Tuple[str, int]
 Reply = Union[R.Challenge, R.Located, R.Acked, R.RelayError]
+
 
 
 class _Datagrams(asyncio.DatagramProtocol):
@@ -28,7 +31,16 @@ class _Datagrams(asyncio.DatagramProtocol):
         self._client = client
 
     def datagram_received(self, data: bytes, addr) -> None:  # noqa: ANN001 - asyncio's signature
-        self._client._received(data)
+        self._client._received(data, (addr[0], addr[1]))
+
+
+def route_source(relay_addr: Addr) -> str:
+    """The address this host sends from towards the relay. A UDP `connect` sends nothing: it only makes the OS choose
+    the source address it would use, which is the address the relay sees for a socket bound to the wildcard."""
+    family = socket.AF_INET6 if ":" in relay_addr[0] else socket.AF_INET
+    with socket.socket(family, socket.SOCK_DGRAM) as probe:
+        probe.connect(relay_addr)
+        return probe.getsockname()[0]
 
 
 def _is_invalid_pow(reply: object) -> bool:
@@ -54,15 +66,20 @@ class RelayClient:
         self._delivered: asyncio.Queue = asyncio.Queue()
         self._lock = asyncio.Lock()
         self._seq = 0
+        #: Offered every datagram before the relay's replies are read. Returns True when it took the datagram. The
+        #: hole-punch table uses this: its probes arrive on this same socket, from the peers rather than the relay.
+        self.on_datagram: Optional[Callable[[bytes, Addr], bool]] = None
         #: This client's socket address, as the relay sees it.
         self.local_addr: Optional[Addr] = None
 
     async def open(self) -> None:
         loop = asyncio.get_running_loop()
-        transport, _ = await loop.create_datagram_endpoint(lambda: _Datagrams(self), remote_addr=self._relay_addr)
+        # Unconnected, so the same socket can also send to peers (hole punches) as well as to the relay.
+        any_addr = "::" if ":" in self._relay_addr[0] else "0.0.0.0"
+        transport, _ = await loop.create_datagram_endpoint(lambda: _Datagrams(self), local_addr=(any_addr, 0))
         self._transport = transport
-        sockname = transport.get_extra_info("sockname")
-        self.local_addr = (sockname[0], sockname[1])
+        port = transport.get_extra_info("sockname")[1]
+        self.local_addr = (route_source(self._relay_addr), port)
 
     def close(self) -> None:
         if self._transport is not None:
@@ -91,6 +108,17 @@ class RelayClient:
         """Registers `token` at this client's address. Returns once relayd accepts it."""
         seq = self._next_seq()
         await self._with_proof(token, lambda nonce: R.encode_register(token, nonce, seq), R.Challenge)
+
+    async def register_ghost(self, token: bytes, certificate: bytes, ghost: GhostKey) -> None:
+        """Registers `token` with a ghost key certificate (`certificate` is its bincode). The ghost key signs the
+        binding of this token and sequence number, so a certificate someone else saw cannot be reused."""
+        seq = self._next_seq()
+        signature = ghost.sign(binding(token, seq))
+        await self._with_proof(
+            token,
+            lambda nonce: R.encode_register_ghost(token, nonce, seq, certificate, signature),
+            R.Challenge,
+        )
 
     async def keepalive(self, token: bytes) -> None:
         """Refreshes a registration. relayd sends nothing back, so this returns once the datagram is out."""
@@ -129,6 +157,16 @@ class RelayClient:
         except asyncio.TimeoutError as exc:
             raise RelayTimeout("no payload was delivered in time") from exc
 
+    async def next_delivered(self) -> R.Delivered:
+        """The next payload delivered to this client, waiting as long as it takes (for a receive loop)."""
+        return await self._delivered.get()
+
+    def send_to(self, datagram: bytes, addr: Addr) -> None:
+        """Sends a datagram from this client's socket to any address (a peer, for a hole punch)."""
+        if self._transport is None:
+            raise TransferdError("the relay client is not open")
+        self._transport.sendto(datagram, addr)
+
     # --- internals ----------------------------------------------------------------------------------
 
     def _next_seq(self) -> int:
@@ -136,11 +174,11 @@ class RelayClient:
         return self._seq
 
     def _send(self, datagram: bytes) -> None:
-        if self._transport is None:
-            raise TransferdError("the relay client is not open")
-        self._transport.sendto(datagram)
+        self.send_to(datagram, self._relay_addr)
 
-    def _received(self, data: bytes) -> None:
+    def _received(self, data: bytes, addr: Addr) -> None:
+        if self.on_datagram is not None and self.on_datagram(data, addr):
+            return
         parts = R.split(data)
         if parts is None:
             return

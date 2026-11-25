@@ -30,9 +30,11 @@ import {
   encodeKeepalive,
   encodeLocate,
   encodeRegister,
-  solvePow,
+  encodeRegisterGhost,
+  solvePowYielding,
   split,
 } from "./relay.js";
+import { type GhostKey, binding } from "./ghostkey.js";
 
 export interface RelayAddress {
   host: string;
@@ -43,6 +45,7 @@ export interface Delivered {
   senderSeq: number;
   ciphertext: Uint8Array;
 }
+
 
 type Reply =
   | { kind: "challenge"; challenge: Challenge }
@@ -66,6 +69,15 @@ class Mailbox<T> {
 
   drain(): void {
     this.items.length = 0;
+  }
+
+  /** Resolves with the next item, waiting as long as it takes. */
+  next(): Promise<T> {
+    const ready = this.items.shift();
+    if (ready !== undefined) {
+      return Promise.resolve(ready);
+    }
+    return new Promise<T>((resolve) => this.waiting.push(resolve));
   }
 
   take(timeoutMs: number, onTimeout: () => TransferdError): Promise<T> {
@@ -105,6 +117,25 @@ function expect<K extends Reply["kind"]>(reply: Reply, kind: K): Extract<Reply, 
   return reply as Extract<Reply, { kind: K }>;
 }
 
+/**
+ * The address this host sends from towards `relay`. A UDP `connect` sends nothing: it only makes the OS choose the
+ * source address it would use, which is the address the relay sees for a socket bound to the wildcard.
+ */
+export function routeSource(relay: RelayAddress): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const probe = dgram.createSocket(isIPv6(relay.host) ? "udp6" : "udp4");
+    probe.once("error", (error) => {
+      probe.close();
+      reject(error);
+    });
+    probe.connect(relay.port, relay.host, () => {
+      const { address } = probe.address();
+      probe.close();
+      resolve(address);
+    });
+  });
+}
+
 export class RelayClient {
   private socket: dgram.Socket | null = null;
   private readonly replies = new Mailbox<Reply>();
@@ -113,6 +144,11 @@ export class RelayClient {
   private seq = 0;
   /** This client's socket address, as the relay sees it. Set by `open()`. */
   localAddr: SocketAddr | null = null;
+  /**
+   * Offered every datagram before the relay's replies are read. Returns true when it took the datagram. The hole-punch
+   * table uses this: its probes arrive on this same socket, from the peers rather than the relay.
+   */
+  onDatagram: ((datagram: Uint8Array, from: SocketAddr) => boolean) | null = null;
 
   constructor(
     private readonly relay: RelayAddress,
@@ -120,20 +156,22 @@ export class RelayClient {
   ) {}
 
   async open(): Promise<void> {
-    const socket = dgram.createSocket(isIPv6(this.relay.host) ? "udp6" : "udp4");
+    const family = isIPv6(this.relay.host) ? "udp6" : "udp4";
+    const socket = dgram.createSocket(family);
     // Node hands over Buffers; copy to a plain Uint8Array so every decoded field has one type.
-    socket.on("message", (datagram) => this.received(new Uint8Array(datagram)));
+    socket.on("message", (datagram, info) => this.received(new Uint8Array(datagram), [info.address, info.port]));
     // ICMP refusals surface here on Windows; the request they affect times out instead.
     socket.on("error", () => undefined);
+    const anyAddress = family === "udp6" ? "::" : "0.0.0.0";
     await new Promise<void>((resolve, reject) => {
       socket.once("error", reject);
-      socket.connect(this.relay.port, this.relay.host, () => {
+      socket.bind(0, anyAddress, () => {
         socket.off("error", reject);
         resolve();
       });
     });
-    const { address, port } = socket.address();
-    this.localAddr = [address, port];
+    const { port } = socket.address();
+    this.localAddr = [await routeSource(this.relay), port];
     this.socket = socket;
   }
 
@@ -154,11 +192,25 @@ export class RelayClient {
     await this.withProof(token, (nonce) => encodeRegister(token, nonce, seq), "challenge");
   }
 
+  /**
+   * Registers `token` with a ghost key certificate (`certificate` is its bincode). The ghost key signs the binding of
+   * this token and sequence number, so a certificate someone else saw cannot be reused.
+   */
+  async registerGhost(token: Uint8Array, certificate: Uint8Array, ghost: GhostKey): Promise<void> {
+    const seq = this.nextSeq();
+    const signature = ghost.sign(binding(token, seq));
+    await this.withProof(
+      token,
+      (nonce) => encodeRegisterGhost(token, nonce, seq, certificate, signature),
+      "challenge",
+    );
+  }
+
   /** Refreshes a registration. relayd sends nothing back, so this returns once the datagram is out. */
   async keepalive(token: Uint8Array): Promise<void> {
     const seq = this.nextSeq();
     const current = await this.challenge();
-    this.send(encodeKeepalive(token, solvePow(current.difficulty, current.challenge, token), seq));
+    this.send(encodeKeepalive(token, await solvePowYielding(current.difficulty, current.challenge, token), seq));
   }
 
   /** The addresses of `selfToken` and `peerToken`, as the relay sees them. `selfToken` must be ours. */
@@ -194,14 +246,27 @@ export class RelayClient {
     return this.seq;
   }
 
-  private send(datagram: Uint8Array): void {
+  /** Sends a datagram from this client's socket to any address (a peer, for a hole punch). */
+  sendTo(datagram: Uint8Array, addr: SocketAddr): void {
     if (this.socket === null) {
       throw new TransferdError("the relay client is not open");
     }
-    this.socket.send(datagram);
+    this.socket.send(datagram, addr[1], addr[0]);
   }
 
-  private received(datagram: Uint8Array): void {
+  /** The next payload delivered to this client, waiting as long as it takes (for a receive loop). */
+  nextDelivered(): Promise<Delivered> {
+    return this.inbox.next();
+  }
+
+  private send(datagram: Uint8Array): void {
+    this.sendTo(datagram, [this.relay.host, this.relay.port]);
+  }
+
+  private received(datagram: Uint8Array, from: SocketAddr): void {
+    if (this.onDatagram?.(datagram, from) === true) {
+      return;
+    }
     const message = split(datagram);
     if (message === null) {
       return;
@@ -268,6 +333,6 @@ export class RelayClient {
 
   private async proofExchange(token: Uint8Array, build: (nonce: bigint) => Uint8Array): Promise<Reply> {
     const current = await this.challenge();
-    return this.exchange(build(solvePow(current.difficulty, current.challenge, token)));
+    return this.exchange(build(await solvePowYielding(current.difficulty, current.challenge, token)));
   }
 }

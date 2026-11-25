@@ -110,6 +110,29 @@ export function solvePow(difficulty: number, challenge: Uint8Array, token: Uint8
   return nonce;
 }
 
+/**
+ * `solvePow`, from nonce 0, but it yields to the event loop every `batch` tries. A solve at difficulty 12 takes tens of
+ * milliseconds; done in one go it stops the sockets being read, and datagrams the relay sent in that time are lost.
+ * It returns the same nonce `solvePow` would.
+ */
+export async function solvePowYielding(
+  difficulty: number,
+  challenge: Uint8Array,
+  token: Uint8Array,
+  batch = 256,
+): Promise<bigint> {
+  let nonce = 0n;
+  for (;;) {
+    for (let i = 0; i < batch; i++) {
+      if (powOk(difficulty, challenge, token, nonce)) {
+        return nonce;
+      }
+      nonce += 1n;
+    }
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+}
+
 // --- Messages -------------------------------------------------------------------------------------
 
 export interface SplitMessage {
@@ -165,6 +188,40 @@ export function encodeRegister(sessionToken: Uint8Array, powNonce: bigint, seq: 
     w.u64(powNonce);
     w.u32(seq);
   });
+}
+
+/** A registration with a ghost key certificate (`GhostRegisterMsg`): the usual registration, the certificate as bincode,
+ * and the ghost key's signature over the binding of the token and the sequence number (see `ghostkey.ts`). */
+export interface GhostRegister {
+  sessionToken: Uint8Array;
+  powNonce: bigint;
+  seq: number;
+  certificate: Uint8Array;
+  signature: Uint8Array;
+}
+
+export function encodeRegisterGhost(
+  sessionToken: Uint8Array,
+  powNonce: bigint,
+  seq: number,
+  certificate: Uint8Array,
+  signature: Uint8Array,
+): Uint8Array {
+  return tagged(Tag.REGISTER_GHOST, (w) => {
+    w.raw(sessionToken);
+    w.u64(powNonce);
+    w.u32(seq);
+    w.bytes(certificate);
+    w.bytes(signature);
+  });
+}
+
+export function decodeRegisterGhost(body: Uint8Array): GhostRegister {
+  const r = new Reader(body);
+  const sessionToken = r.raw(32);
+  const powNonce = r.u64Big();
+  const seq = r.u32();
+  return { sessionToken, powNonce, seq, certificate: r.bytes(), signature: r.bytes() };
 }
 
 export function encodeKeepalive(sessionToken: Uint8Array, powNonce: bigint, seq: number): Uint8Array {

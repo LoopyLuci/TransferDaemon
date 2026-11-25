@@ -93,7 +93,8 @@ export class Flight {
   }
 }
 
-function buildFlight(tag: number, hello: Uint8Array, identity: HybridIdentity): Flight {
+/** A signed flight carrying `hello`. Used by the TCP handshake and by the relay path, which send the same flights. */
+export function buildFlight(tag: number, hello: Uint8Array, identity: HybridIdentity): Flight {
   const transcript = transcriptOf(tag, PROTOCOL_VERSION, CIPHERSUITE_HYBRID, hello, identity.publicKey);
   return new Flight(tag, PROTOCOL_VERSION, CIPHERSUITE_HYBRID, hello, identity.publicKey, transcript, identity.sign(transcript));
 }

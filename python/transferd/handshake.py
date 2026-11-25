@@ -115,7 +115,8 @@ class Flight:
         return self.identity_pk[:32].hex()
 
 
-def _build(tag: int, hello: bytes, identity: HybridIdentity) -> Flight:
+def build_flight(tag: int, hello: bytes, identity: HybridIdentity) -> Flight:
+    """A signed flight carrying `hello`. Used by the TCP handshake and by the relay path, which send the same flights."""
     identity_pk = identity.public_key
     transcript = _transcript(tag, PROTOCOL_VERSION, CIPHERSUITE_HYBRID, hello, identity_pk)
     return Flight(tag, PROTOCOL_VERSION, CIPHERSUITE_HYBRID, hello, identity_pk, transcript, identity.sign(transcript))
@@ -168,7 +169,7 @@ async def handshake_initiator(
     expect_node_id: Optional[str] = None,
 ) -> HandshakeResult:
     state = InitiatorState()
-    flight = _build(TAG_INITIATOR, state.hello(), identity)
+    flight = build_flight(TAG_INITIATOR, state.hello(), identity)
     await write_blob(writer, flight.to_wire())
     answer = Flight.parse(await read_blob(reader), TAG_RESPONDER, RESPONDER_HELLO_LEN, RESPONDER_FLIGHT_LEN)
     if not answer.verify():
@@ -193,7 +194,7 @@ async def handshake_responder(
     if not hello.verify():
         raise HandshakeError("initiator flight signature does not verify")
     responder_hello, session_key = respond(hello.hello)
-    answer = _build(TAG_RESPONDER, responder_hello, identity)
+    answer = build_flight(TAG_RESPONDER, responder_hello, identity)
     await write_blob(writer, answer.to_wire())
     return HandshakeResult(
         session_key=session_key,

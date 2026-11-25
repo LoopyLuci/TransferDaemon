@@ -54,3 +54,45 @@ class StreamRefused(TransferdError):
         super().__init__(f"the peer refused the stream: {code}: {reason}")
         self.code = code
         self.reason = reason
+
+
+class OverlayError(TransferdError):
+    """A route or stream operation on an overlay session failed (`Unreachable`, `Closed`, ...)."""
+
+
+class Unreachable(OverlayError):
+    """The peer did not answer an operation in time, or no route to it is usable."""
+
+    def __init__(self, node: str) -> None:
+        super().__init__(f"{node} is unreachable")
+        self.node = node
+
+
+class Closed(OverlayError):
+    """The session or stream is gone."""
+
+
+class NoSuchService(OverlayError):
+    """The peer does not expose the service asked for."""
+
+    def __init__(self, service: str) -> None:
+        super().__init__(f"the peer has no service named {service}")
+        self.service = service
+
+
+class Denied(OverlayError):
+    """The peer's access list refuses this node the service."""
+
+    def __init__(self, node: str, service: str) -> None:
+        super().__init__(f"{node} may not use {service}")
+        self.node = node
+        self.service = service
+
+
+class RateLimited(OverlayError):
+    """The peer's rate limit refused the stream for now."""
+
+    def __init__(self, service: str, reason: str) -> None:
+        super().__init__(f"{service} is rate limited: {reason}")
+        self.service = service
+        self.reason = reason
