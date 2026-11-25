@@ -29,6 +29,7 @@ import {
   type Window,
 } from "./frames.js";
 import { DEFAULT_WINDOW } from "./mux.js";
+import { CONTROL_WINDOW, ReplayWindow } from "./replay.js";
 import type { Session } from "./session.js";
 import { StreamEngine, type Event, type Outbound } from "./streams.js";
 import { writeFrame } from "./tunnel.js";
@@ -37,8 +38,8 @@ import { writeFrame } from "./tunnel.js";
 export const CTRL_RESEND_MS = 300;
 /** A session with no receipt for a control frame this long is ended (ms). */
 export const SESSION_DEAD_AFTER_MS = 60_000;
-/** How many reliable frame sequence numbers a receiver remembers, so a resent one is not acted on twice. */
-export const RECEIPT_WINDOW = 4096;
+/** The width, in sequence numbers, of the window that keeps a resent control frame from being acted on twice. */
+export const RECEIPT_WINDOW = CONTROL_WINDOW;
 /** How much a stream may hold queued before `write` waits for the window to drain it. */
 export const WRITE_LIMIT = DEFAULT_WINDOW;
 /** How long `close` waits for the peer's receipt of the CLOSE (ms). */
@@ -93,8 +94,7 @@ export class StreamSession {
   private nextSeq: number;
   private writeChain: Promise<void> = Promise.resolve();
   private readonly unreceipted = new Map<number, Unreceipted>();
-  private readonly seen = new Set<number>();
-  private readonly seenOrder: number[] = [];
+  private readonly seen = new ReplayWindow(RECEIPT_WINDOW);
   private readonly openWaiters = new Map<number, Deferred<void>>();
   private readonly readWaiters = new Map<number, () => void>();
   private readonly drainWaiters = new Map<number, () => void>();
@@ -158,11 +158,15 @@ export class StreamSession {
     await this.send(this.engine.refuse(sid, code, reason));
   }
 
-  /** Send bytes on a stream. Waits while too much is queued behind the peer's window. */
+  /**
+   * Send bytes on a stream. Waits while too much is queued behind the peer's window. With `fin`, resolves only once
+   * every byte has gone out and the end of the stream has been sent, so `close` right after it cannot drop bytes.
+   */
   async write(sid: number, data: Uint8Array, fin = false): Promise<void> {
     this.check();
     await this.send(this.engine.write(sid, data, fin, nowMs()));
-    while (this.engine.pending(sid) > WRITE_LIMIT) {
+    const limit = fin ? 0 : WRITE_LIMIT;
+    while (this.engine.pending(sid) > limit || (fin && !this.engine.finSentOn(sid))) {
       await new Promise<void>((resolve) => this.drainWaiters.set(sid, resolve));
       this.check();
     }
@@ -184,8 +188,9 @@ export class StreamSession {
   }
 
   /**
-   * Close a stream. Its state is dropped on this side at once. Waits up to 5 s for the peer's receipt of the CLOSE, so
-   * that a caller tearing the transport down straight after does not reset the connection before the peer reads it.
+   * Close a stream. Its state is dropped on this side at once, so bytes still queued are dropped too: `write` with
+   * `fin` first, and close after it resolves. Waits up to 5 s for the peer's receipt of the CLOSE, so that a caller
+   * tearing the transport down straight after does not reset the connection before the peer reads it.
    */
   async close(sid: number, code = "closed", reason = ""): Promise<void> {
     const receipts = await this.send(this.engine.close(sid, code, reason));
@@ -243,10 +248,9 @@ export class StreamSession {
       // Every copy is answered, and each sequence number is acted on once.
       const receipt: CtrlAck = { seq: frame.seq };
       await this.emit(Frame.withBody(this.session.version, CTRL_ACK, this.seqNext(), receipt));
-      if (this.seen.has(frame.seq)) {
+      if (!this.seen.accept(frame.seq)) {
         return;
       }
-      this.remember(frame.seq);
     }
     if (frame.kind === PING) {
       const ping = frame.decode() as Ping;
@@ -326,14 +330,6 @@ export class StreamSession {
     const seq = this.nextSeq;
     this.nextSeq += 1;
     return seq;
-  }
-
-  private remember(seq: number): void {
-    this.seen.add(seq);
-    this.seenOrder.push(seq);
-    while (this.seenOrder.length > RECEIPT_WINDOW) {
-      this.seen.delete(this.seenOrder.shift()!);
-    }
   }
 
   private fail(error: Error): void {

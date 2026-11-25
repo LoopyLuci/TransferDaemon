@@ -204,6 +204,11 @@ export class StreamEngine {
     return this.backlog.get(sid)?.length ?? 0;
   }
 
+  /** Whether the end of our side of the stream has gone out (after everything queued before it). */
+  finSentOn(sid: number): boolean {
+    return this.finSent.has(sid);
+  }
+
   /** Close a stream from our side. The stream's state is dropped at once. */
   close(sid: number, code = "closed", reason = ""): Outbound[] {
     this.mux.removeSend(sid);

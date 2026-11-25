@@ -14,13 +14,13 @@ from __future__ import annotations
 import asyncio
 import secrets
 import time
-from collections import deque
-from typing import Deque, Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from . import frames as F
 from .errors import SessionError, StreamRefused
 from .frames import Frame
 from .mux import DEFAULT_WINDOW
+from .replay import CONTROL_WINDOW, ReplayWindow
 from .session import Session
 from .streams import Event, StreamEngine
 from .tunnel import write_frame
@@ -29,8 +29,8 @@ from .tunnel import write_frame
 CTRL_RESEND_MS = 300.0
 #: A session with no receipt for a control frame this long is ended (ms).
 SESSION_DEAD_AFTER_MS = 60_000.0
-#: How many reliable frame sequence numbers a receiver remembers, so a resent one is not acted on twice.
-RECEIPT_WINDOW = 4096
+#: The width, in sequence numbers, of the window that keeps a resent control frame from being acted on twice.
+RECEIPT_WINDOW = CONTROL_WINDOW
 #: How long `close` waits for the peer's receipt of the CLOSE (seconds).
 CLOSE_RECEIPT_SECONDS = 5.0
 #: How much a stream may hold queued before `write` waits for the window to drain it.
@@ -55,8 +55,7 @@ class StreamSession:
         self._write_lock = asyncio.Lock()
         # Reliable control frames waiting for their receipt: seq -> (frame, last sent, first sent), in ms.
         self._unreceipted: Dict[int, Tuple[Frame, float, float]] = {}
-        self._seen: Set[int] = set()
-        self._seen_order: Deque[int] = deque()
+        self._seen = ReplayWindow(RECEIPT_WINDOW)
         self._open_waiters: Dict[int, asyncio.Future] = {}
         self._read_waiters: Dict[int, asyncio.Future] = {}
         self._drain_waiters: Dict[int, asyncio.Future] = {}
@@ -106,10 +105,15 @@ class StreamSession:
         await self._send(self._engine.refuse(sid, code, reason))
 
     async def write(self, sid: int, data: bytes, *, fin: bool = False) -> None:
-        """Send bytes on a stream. Waits while too much is queued behind the peer's window."""
+        """Send bytes on a stream. Waits while too much is queued behind the peer's window.
+
+        With `fin`, returns only once every byte has gone out and the end of the stream has been sent, so
+        `close` right after it cannot drop bytes that were still queued.
+        """
         self._check()
         await self._send(self._engine.write(sid, bytes(data), fin, _now_ms()))
-        while self._engine.pending(sid) > WRITE_LIMIT:
+        limit = 0 if fin else WRITE_LIMIT
+        while self._engine.pending(sid) > limit or (fin and not self._engine.fin_sent(sid)):
             waiter = asyncio.get_running_loop().create_future()
             self._drain_waiters[sid] = waiter
             await waiter
@@ -129,7 +133,8 @@ class StreamSession:
             await waiter
 
     async def close(self, sid: int, code: str = "closed", reason: str = "") -> None:
-        """Close a stream. Its state is dropped on this side at once.
+        """Close a stream. Its state is dropped on this side at once, so bytes still queued are dropped too:
+        `write` with `fin` first, and close after it returns.
 
         Waits, up to 5 s, for the peer's receipt of the CLOSE. Without it a caller that tears the transport down
         straight after could reset the connection before the peer reads its CLOSE.
@@ -179,9 +184,8 @@ class StreamSession:
         if frame.kind in F.RELIABLE_KINDS:
             # Every copy is answered, and each sequence number is acted on once.
             await self._write(Frame.with_body(self._session.version, F.CTRL_ACK, self._seq_next(), F.CtrlAck(seq=frame.seq)))
-            if frame.seq in self._seen:
+            if not self._seen.accept(frame.seq):
                 return
-            self._remember(frame.seq)
         if frame.kind == F.PING:
             ping = frame.decode()
             await self._send([(F.PONG, F.Pong(nonce=ping.nonce, sent_us=ping.sent_us))])
@@ -230,12 +234,6 @@ class StreamSession:
         seq = self._next_seq
         self._next_seq += 1
         return seq
-
-    def _remember(self, seq: int) -> None:
-        self._seen.add(seq)
-        self._seen_order.append(seq)
-        while len(self._seen_order) > RECEIPT_WINDOW:
-            self._seen.discard(self._seen_order.popleft())
 
     @staticmethod
     def _wake(waiters: Dict[int, asyncio.Future], sid: int) -> None:

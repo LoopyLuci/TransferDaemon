@@ -166,6 +166,10 @@ class StreamEngine:
         """Bytes queued on a stream that the window has not let out yet."""
         return len(self._backlog.get(sid, b""))
 
+    def fin_sent(self, sid: int) -> bool:
+        """Whether the end of our side of the stream has gone out (after everything queued before it)."""
+        return self._fin_sent.get(sid, False)
+
     def close(self, sid: int, code: str = "closed", reason: str = "") -> Out:
         """Close a stream from our side. The stream's state is dropped at once."""
         self.mux.remove_send(sid)
