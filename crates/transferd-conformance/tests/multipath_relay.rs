@@ -304,7 +304,7 @@ fn test_ate_select_two_lanes() {
 
     let metrics = [&m0, &m1];
     let caps = [16usize, 16usize];
-    let result = ate.select_two_lanes(Gsn(0), Gsn(0), &metrics, &caps);
+    let result = ate.select_two_lanes(Gsn(0), Gsn(0), &metrics, &caps, 1024);
     let (primary, mirror) = result.expect("two lanes should be available");
     assert_ne!(primary, mirror, "primary and mirror must be different lanes");
     // Lower RTT lane (0) should be preferred as primary.

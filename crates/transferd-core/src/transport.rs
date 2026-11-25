@@ -28,11 +28,30 @@ pub enum ControlMsg {
     Pong { nonce: [u8; 8], sent_ts: u64 },
 }
 
+/// Subtracts `n` from `counter`, stopping at zero. A compare-and-swap loop, so a release that
+/// races another one never wraps the counter around.
+fn saturating_sub(counter: &AtomicU64, n: u64) {
+    let mut current = counter.load(Ordering::Relaxed);
+    loop {
+        match counter.compare_exchange_weak(
+            current,
+            current.saturating_sub(n),
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        ) {
+            Ok(_) => return,
+            Err(seen) => current = seen,
+        }
+    }
+}
+
 /// Lane metrics shared between the transport and the health monitor.
 pub struct LaneMetrics {
     pub rtt_ms: AtomicU64,
     pub bandwidth_bps: AtomicU64,
     pub active_chunks: AtomicU64,
+    /// Bytes sent on this lane and not acknowledged yet; the ATE scores a lane by this backlog.
+    inflight_bytes: AtomicU64,
     pub errors_total: AtomicU64,
     alive: AtomicBool,
     /// Total bytes sent since construction (for bandwidth estimation).
@@ -45,6 +64,7 @@ impl Default for LaneMetrics {
             rtt_ms: AtomicU64::new(0),
             bandwidth_bps: AtomicU64::new(0),
             active_chunks: AtomicU64::new(0),
+            inflight_bytes: AtomicU64::new(0),
             errors_total: AtomicU64::new(0),
             alive: AtomicBool::new(true), // lanes start alive
             bytes_sent: AtomicU64::new(0),
@@ -61,14 +81,21 @@ impl LaneMetrics {
     pub fn update_bandwidth(&self, bps: f64) {
         self.bandwidth_bps.store(bps as u64, Ordering::Relaxed);
     }
-    pub fn inc_active(&self) { self.active_chunks.fetch_add(1, Ordering::Relaxed); }
-    pub fn dec_active(&self) { self.active_chunks.fetch_sub(1, Ordering::Relaxed); }
+    /// A chunk of `bytes` went out on this lane and is not acknowledged yet.
+    pub fn on_sent(&self, bytes: u64) {
+        self.active_chunks.fetch_add(1, Ordering::Relaxed);
+        self.inflight_bytes.fetch_add(bytes, Ordering::Relaxed);
+    }
 
-    /// Reconcile the in-flight counter down to a bounded value (e.g. the
-    /// session's outstanding, unacked chunk count) once acks have been applied.
-    /// Never raises it — increments come from `inc_active`.
-    pub fn set_active(&self, n: u64) {
-        self.active_chunks.fetch_min(n, Ordering::Relaxed);
+    /// A copy of `bytes` that went out on this lane left it: acknowledged, or given up on for a resend.
+    pub fn on_released(&self, bytes: u64) {
+        saturating_sub(&self.active_chunks, 1);
+        saturating_sub(&self.inflight_bytes, bytes);
+    }
+
+    /// Bytes sent on this lane that are not acknowledged yet.
+    pub fn inflight_bytes(&self) -> u64 {
+        self.inflight_bytes.load(Ordering::Relaxed)
     }
 
     /// Record bytes sent over this lane (for bandwidth estimation).

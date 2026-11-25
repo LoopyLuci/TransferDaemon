@@ -316,11 +316,8 @@ impl PeerConnectionManager {
             let sent = session.process_tick().await;
             events.sent_msg_ids.extend(session.take_sent_ids(&sent));
 
-            // In-flight accounting: outstanding = sent-but-unacked.
-            let outstanding = session.session.outstanding() as u64;
-            for lane in session.lanes.iter() {
-                lane.metrics().set_active(outstanding);
-            }
+            // In-flight bytes are booked per send and released per ack inside the session, so there is
+            // nothing to reconcile here.
 
             for msg in session.drain_inbound().await {
                 events.inbound.push((contact_id.clone(), msg));

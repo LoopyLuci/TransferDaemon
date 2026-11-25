@@ -13,6 +13,7 @@ pub struct SimulatedWiFiLane {
 }
 
 impl SimulatedWiFiLane {
+    /// `bandwidth_bps` is in bits per second, as the lane's metrics report it.
     pub fn new(id: u32, rtt: Duration, bandwidth_bps: f64) -> Self {
         let metrics = Arc::new(LaneMetrics::default());
         metrics.rtt_ms.store((rtt.as_millis() as u64) * 1_000, Ordering::SeqCst);
@@ -39,7 +40,7 @@ impl TransportLane for SimulatedWiFiLane {
         }
         self.capacity.fetch_sub(1, Ordering::Relaxed);
         sleep(self.rtt / 2).await;
-        let tx = Duration::from_secs_f64(chunk.payload.len() as f64 / self.bandwidth.max(1.0));
+        let tx = Duration::from_secs_f64(chunk.payload.len() as f64 * 8.0 / self.bandwidth.max(1.0));
         sleep(tx).await;
         self.capacity.fetch_add(1, Ordering::Relaxed);
         Ok(())

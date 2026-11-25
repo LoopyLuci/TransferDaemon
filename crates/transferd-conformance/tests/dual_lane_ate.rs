@@ -21,7 +21,7 @@ async fn test_ate_prefers_fast_lane() {
     let caps = vec![fast_cap, slow_cap];
 
     let ate = Ate::new(2, 64);
-    let selected = ate.select_lane(Gsn(0), Gsn(0), &metrics_refs, &caps);
+    let selected = ate.select_lane(Gsn(0), Gsn(0), &metrics_refs, &caps, 1024);
     assert_eq!(selected, Some(0), "ATE should prefer the faster lane");
 
     println!("Dual-lane ATE test passed.");
