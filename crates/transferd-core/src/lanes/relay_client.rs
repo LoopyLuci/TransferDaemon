@@ -39,7 +39,13 @@ pub struct RelayClient {
     /// A ghost key credential (certificate + the ghost key's secret): registrations then carry it, for relays that
     /// admit only vouched-for identities (relayd::ghost).
     ghost: std::sync::Mutex<Option<(GhostCertificate, [u8; 32])>>,
+    /// The proof of work last solved for each peer token, with the challenge it was solved against. A forward to the
+    /// same peer then needs no new solve until the challenge changes.
+    nonces: std::sync::Mutex<std::collections::HashMap<[u8; 32], (([u8; 16], u32), u64)>>,
 }
+
+/// Proofs of work kept at once: one per peer, for the challenge they were solved against.
+const NONCES_KEPT: usize = 256;
 
 /// A ghost key credential from the file `transferd-cli ghostkey finish` writes (a certificate line and a secret
 /// line).
@@ -73,6 +79,7 @@ impl RelayClient {
             // client sends less than one a second on average (it sends one every 30-45 s).
             reg_seq: AtomicU32::new(now_secs() as u32),
             ghost: std::sync::Mutex::new(None),
+            nonces: std::sync::Mutex::new(std::collections::HashMap::new()),
         };
         if let Some(path) = std::env::var_os("TRANSFERD_GHOST_FILE") {
             client.set_ghost(Some(read_ghost_file(std::path::Path::new(&path))?));
@@ -241,7 +248,7 @@ impl RelayClient {
     /// Send an opaque payload to the peer registered under `token`.
     pub async fn send_forward(&self, token: [u8; 32], payload: &[u8]) -> io::Result<()> {
         let challenge = self.refresh_challenge().await?;
-        let nonce = solve_pow(&challenge, &token);
+        let nonce = self.forward_nonce(&challenge, &token);
         let seq = (self.next_seq() & 0xFFFF) as u16;
         let msg = ForwardMsg {
             session_token: token,
@@ -253,6 +260,30 @@ impl RelayClient {
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
         self.socket.send_to(&frame, self.relay_addr).await?;
         Ok(())
+    }
+
+    /// The proof of work for `token` against `challenge`. Solved once per challenge and peer, then kept: a forward costs
+    /// a lookup rather than a search.
+    fn forward_nonce(&self, challenge: &relayd::pow::PowChallenge, token: &[u8; 32]) -> u64 {
+        let version = (challenge.bytes, challenge.difficulty);
+        let known = self
+            .nonces
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(token)
+            .copied();
+        if let Some((known_version, nonce)) = known {
+            if known_version == version {
+                return nonce;
+            }
+        }
+        let nonce = solve_pow(challenge, token);
+        let mut nonces = self.nonces.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
+        if nonces.len() >= NONCES_KEPT {
+            nonces.clear();
+        }
+        nonces.insert(*token, (version, nonce));
+        nonce
     }
 
     /// Send a keepalive for `token` (refreshes the relay-side TTL).
@@ -420,5 +451,83 @@ transferd-ghostsecret-v1:{}
 ", cert.to_text(), hex::encode(GhostKey::generate().secret()))).expect("write");
         assert!(read_ghost_file(&f).is_err(), "a secret that isn't the certified key");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod nonce_tests {
+    use super::*;
+
+    /// A client that never talks to a relay: the nonce cache is all these tests touch.
+    async fn client() -> RelayClient {
+        RelayClient {
+            socket: Arc::new(UdpSocket::bind("127.0.0.1:0").await.expect("bind")),
+            relay_addr: "127.0.0.1:9".parse().expect("addr"),
+            challenge: Mutex::new(None),
+            reg_seq: AtomicU32::new(0),
+            ghost: std::sync::Mutex::new(None),
+            nonces: std::sync::Mutex::new(std::collections::HashMap::new()),
+        }
+    }
+
+    fn challenge(bytes: u8, difficulty: u32) -> PowChallenge {
+        PowChallenge { bytes: [bytes; 16], expires_at: u64::MAX, difficulty }
+    }
+
+    #[tokio::test]
+    async fn a_second_forward_to_a_peer_reuses_the_cached_nonce() {
+        let client = client().await;
+        let token = [3u8; 32];
+        let ch = challenge(1, 6);
+        let first = client.forward_nonce(&ch, &token);
+        assert!(ch.verify(&token, first), "the nonce solved for this challenge verifies");
+
+        // Plant a nonce that does not verify. If the next call returns it, the cache answered and no search ran.
+        let planted = (0u64..).find(|&n| !ch.verify(&token, n)).expect("an invalid nonce");
+        client.nonces.lock().unwrap().insert(token, ((ch.bytes, ch.difficulty), planted));
+        assert_eq!(client.forward_nonce(&ch, &token), planted, "a forward reuses the cached nonce");
+    }
+
+    #[tokio::test]
+    async fn a_new_challenge_is_solved_again() {
+        let client = client().await;
+        let token = [4u8; 32];
+        let old = challenge(1, 6);
+        let planted = (0u64..).find(|&n| !old.verify(&token, n)).expect("an invalid nonce");
+        client.nonces.lock().unwrap().insert(token, ((old.bytes, old.difficulty), planted));
+
+        // The relay rotated its challenge: the planted nonce belongs to the old one and must not be sent.
+        let fresh = challenge(2, 6);
+        let nonce = client.forward_nonce(&fresh, &token);
+        assert!(fresh.verify(&token, nonce), "the nonce is solved against the new challenge");
+        assert_eq!(client.forward_nonce(&fresh, &token), nonce, "and then kept for it");
+    }
+
+    #[tokio::test]
+    async fn each_peer_keeps_its_own_nonce() {
+        let client = client().await;
+        let ch = challenge(5, 6);
+        let (a, b) = ([5u8; 32], [6u8; 32]);
+        let na = client.forward_nonce(&ch, &a);
+        let nb = client.forward_nonce(&ch, &b);
+        assert!(ch.verify(&a, na) && ch.verify(&b, nb));
+        assert_eq!(client.nonces.lock().unwrap().len(), 2, "one entry per peer");
+    }
+
+    #[tokio::test]
+    async fn the_cache_starts_over_when_it_is_full() {
+        let client = client().await;
+        let ch = challenge(7, 0); // difficulty 0: every nonce verifies, so a solve is instant
+        for i in 0..NONCES_KEPT {
+            let mut token = [0u8; 32];
+            token[..8].copy_from_slice(&(i as u64).to_le_bytes());
+            client.forward_nonce(&ch, &token);
+        }
+        assert_eq!(client.nonces.lock().unwrap().len(), NONCES_KEPT, "every peer up to the limit is kept");
+
+        let mut extra = [0u8; 32];
+        extra[..8].copy_from_slice(&(NONCES_KEPT as u64).to_le_bytes());
+        client.forward_nonce(&ch, &extra);
+        assert_eq!(client.nonces.lock().unwrap().len(), 1, "a full cache is cleared before the next peer is kept");
     }
 }
