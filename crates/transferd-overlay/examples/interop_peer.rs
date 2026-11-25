@@ -55,8 +55,26 @@ type Fail = Box<dyn Error>;
 /// The nonce the dialling side sends in its HELLO, so the answer can be checked as a reply to it.
 const DIAL_NONCE: [u8; 16] = [0x5a; 16];
 
-#[tokio::main]
-async fn main() -> Result<(), Fail> {
+/// The stack for the peer's threads. An unoptimised build keeps the node's session futures on the stack, and the
+/// default stack of the main thread (1 MiB on Windows) overflows before the first message is sent.
+const STACK_BYTES: usize = 64 * 1024 * 1024;
+
+fn main() -> Result<(), Fail> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .thread_stack_size(STACK_BYTES)
+        .enable_all()
+        .build()?;
+    // The run happens on a thread with a large stack. Its error is passed back as text, since `Fail` is not `Send`.
+    let outcome: Result<(), String> = std::thread::Builder::new()
+        .name("interop-peer".into())
+        .stack_size(STACK_BYTES)
+        .spawn(move || runtime.block_on(run()).map_err(|error| error.to_string()))?
+        .join()
+        .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+    outcome.map_err(Into::into)
+}
+
+async fn run() -> Result<(), Fail> {
     let args: Vec<String> = std::env::args().collect();
     match args.get(1).map(String::as_str) {
         Some("serve") if args.len() == 4 => serve(&args[2], &args[3], false).await,
