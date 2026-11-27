@@ -68,6 +68,10 @@ class SendSide:
         """Whether the end of the stream was asked for and everything sent is acknowledged."""
         return self._fin_pending and not self._unacked
 
+    def fin_sent(self) -> bool:
+        """Whether the end of the stream has been framed (it may not be acknowledged yet)."""
+        return self._fin_pending
+
     def frame(self, data: bytes, fin: bool) -> List[OutFrame]:
         """Split `data` into frames the window allows, marking the last one `fin` when asked.
 

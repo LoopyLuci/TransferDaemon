@@ -993,11 +993,14 @@ impl Session {
                     let _ = reply.try_send(true);
                     return;
                 }
-                // The end goes out after the bytes already queued, as an empty FIN frame.
-                let queue = self.write_queue.entry(stream.0).or_default();
-                if !queue.fin {
-                    queue.fin = true;
-                    queue.chunks.push_back(Vec::new());
+                // The end goes out after the bytes already queued, as an empty FIN frame, unless it went out already.
+                let fin_sent = self.mux.send_side(stream).is_some_and(|send| send.fin_sent());
+                if !fin_sent {
+                    let queue = self.write_queue.entry(stream.0).or_default();
+                    if !queue.fin {
+                        queue.fin = true;
+                        queue.chunks.push_back(Vec::new());
+                    }
                 }
                 self.flushing.entry(stream.0).or_default().push(reply);
                 self.pump(stream);
@@ -1951,7 +1954,7 @@ impl Session {
         }
         self.mux
             .send_side(stream)
-            .is_none_or(|send| send.unacked_frames() == 0)
+            .is_none_or(|send| send.is_finished())
     }
 
     /// Answer every flush whose stream has now been acknowledged in full.

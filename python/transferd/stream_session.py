@@ -136,15 +136,17 @@ class StreamSession:
             await waiter
 
     async def close(self, sid: int, code: str = "closed", reason: str = "") -> None:
-        """Close a stream. With code `closed`, every byte written to it goes out first, and the peer is told the stream
+        """Close a stream. With code `closed`, every byte written to it goes out first, then its end, and the peer is told the stream
         closed cleanly once it has acknowledged them. If that does not happen within `FLUSH_SECONDS`, the peer is told
         `reset` instead.
 
         Then waits, up to 5 s, for the peer's receipt of the CLOSE. Without it a caller that tears the transport down
         straight after could reset the connection before the peer reads its CLOSE.
         """
-        if code == "closed" and not await self._flushed(sid):
-            code, reason = "reset", "the stream could not be flushed in time"
+        if code == "closed":
+            await self._send(self._engine.finish(sid, _now_ms()))
+            if not await self._flushed(sid):
+                code, reason = "reset", "the stream could not be flushed in time"
         receipts = await self._send(self._engine.close(sid, code, reason))
         self._wake(self._read_waiters, sid)
         self._wake(self._drain_waiters, sid)
@@ -155,7 +157,7 @@ class StreamSession:
             await asyncio.sleep(0.005)
 
     async def _flushed(self, sid: int) -> bool:
-        """Wait until everything written to the stream is acknowledged, or `FLUSH_SECONDS` pass."""
+        """Wait until everything written to the stream, its end included, is acknowledged, or `FLUSH_SECONDS` pass."""
         deadline = time.monotonic() + FLUSH_SECONDS
         while self._dead is None:
             if self._engine.flushed(sid):

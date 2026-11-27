@@ -360,13 +360,19 @@ export class OverlaySession {
   }
 
   /**
-   * Close a stream. Everything written to it goes out first; once the peer has acknowledged it, the peer is told the
+   * Close a stream. Everything written to it goes out first, then its end; once the peer has acknowledged both, the peer is told the
    * stream closed cleanly. If that cannot happen within `FLUSH_MS` the peer is told `reset` instead, so its reader gets
    * an error.
    */
   async close(stream: number): Promise<void> {
     if (this.stopped) {
       return;
+    }
+    const side = this.mux.sendSide(stream);
+    if (side !== undefined && !side.finSent()) {
+      // The end of our side goes out after the bytes already queued, as an empty FIN frame. If it went out already
+      // (the caller wrote with fin), it is not sent twice.
+      await this.send(stream, new Uint8Array(0), true);
     }
     const flushed = await this.flushed(stream);
     const [code, reason] = flushed ? ["closed", ""] : ["reset", "the stream could not be flushed in time"];

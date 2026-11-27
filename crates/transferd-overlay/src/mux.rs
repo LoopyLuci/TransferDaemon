@@ -97,6 +97,11 @@ impl SendSide {
         self.fin_pending && self.unacked.is_empty()
     }
 
+    /// Whether the end of the stream has been framed (it may not be acknowledged yet).
+    pub fn fin_sent(&self) -> bool {
+        self.fin_pending
+    }
+
     /// Split `data` into frames the window allows, marking the last one `fin` when asked.
     ///
     /// Returns an empty vector when the window is closed — that is the backpressure signal the

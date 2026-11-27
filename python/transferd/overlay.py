@@ -383,12 +383,17 @@ class OverlaySession:
         return await fut
 
     async def close(self, stream: int) -> None:
-        """Close a stream. Everything written to it goes out first; once the peer has acknowledged it, the peer is told
+        """Close a stream. Everything written to it goes out first, then its end; once the peer has acknowledged both, the peer is told
         the stream closed cleanly. If that cannot happen within `FLUSH_SECONDS` the peer is told `reset` instead, so its
         reader gets an error.
         """
         if self._stopped:
             return
+        side = self._mux.send_side(stream)
+        if side is not None and not side.fin_sent():
+            # The end of our side goes out after the bytes already queued, as an empty FIN frame. If it went out already
+            # (the caller wrote with fin), it is not sent twice.
+            await self.send(stream, b"", fin=True)
         flushed = await self._flushed(stream)
         code, reason = ("closed", "") if flushed else ("reset", "the stream could not be flushed in time")
         body = F.encode_body(F.CLOSE, F.Close(stream=stream, code=code, reason=reason))

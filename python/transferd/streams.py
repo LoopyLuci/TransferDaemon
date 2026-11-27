@@ -183,10 +183,20 @@ class StreamEngine:
         """Whether the end of our side of the stream has gone out (after everything queued before it)."""
         return self._fin_sent.get(sid, False)
 
+    def finish(self, sid: int, now: float) -> Out:
+        """End our side of the stream after the bytes already queued: an empty FIN frame, sent once the window lets the
+        bytes out. Nothing happens if the stream has no send side."""
+        if self.mux.send_side(sid) is None:
+            return []
+        self._fin_wanted[sid] = True
+        return self._pump(sid, now)
+
     def flushed(self, sid: int) -> bool:
-        """Whether everything written to the stream has gone out and the peer has acknowledged all of it."""
+        """Whether everything written to the stream has gone out, its end included, and the peer has acknowledged all of it."""
+        if self.pending(sid) != 0:
+            return False
         side = self.mux.send_side(sid)
-        return self.pending(sid) == 0 and (side is None or side.unacked_frames() == 0)
+        return side is None or (self.fin_sent(sid) and side.unacked_frames() == 0)
 
     def close(self, sid: int, code: str = "closed", reason: str = "") -> Out:
         """Close a stream from our side. The stream's state is dropped at once."""

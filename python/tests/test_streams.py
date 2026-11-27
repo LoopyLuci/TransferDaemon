@@ -273,10 +273,24 @@ def test_bytes_held_back_by_the_window_keep_a_stream_from_being_flushed():
     assert not a.flushed(sid)
 
 
-def test_a_stream_written_without_its_end_is_flushed_once_its_bytes_are_acknowledged():
+def test_a_stream_is_not_flushed_until_its_end_is_acknowledged():
     a, b = pair()
     sid = open_stream(a, b)
     frames = a.write(sid, b"abc", False, 1.0)
     acks, _ = deliver(b, frames, 2.0)
     deliver(a, acks, 3.0)
-    assert a.flushed(sid), "the bytes are acknowledged, so a close is clean even without an end"
+    assert not a.flushed(sid), "the bytes are acknowledged, but the end of the stream has not gone out"
+    frames = a.finish(sid, 4.0)
+    acks, _ = deliver(b, frames, 5.0)
+    deliver(a, acks, 6.0)
+    assert a.flushed(sid)
+
+
+def test_a_stream_with_no_bytes_is_flushed_once_its_end_is_acknowledged():
+    a, b = pair()
+    sid = open_stream(a, b)
+    frames = a.finish(sid, 1.0)
+    assert not a.flushed(sid), "the end has not been acknowledged yet"
+    acks, _ = deliver(b, frames, 2.0)
+    deliver(a, acks, 3.0)
+    assert a.flushed(sid)

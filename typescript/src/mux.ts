@@ -63,6 +63,11 @@ export class SendSide {
     return this.finPending && this.unacked.size === 0;
   }
 
+  /** Whether the end of the stream has been framed (it may not be acknowledged yet). */
+  finSent(): boolean {
+    return this.finPending;
+  }
+
   /**
    * Split `data` into frames the window allows, marking the last one `fin` when asked. Returns an empty list when the
    * window is closed: that is the backpressure signal. The bytes the window did not take are the caller's to keep;

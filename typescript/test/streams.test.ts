@@ -317,11 +317,24 @@ test("bytes held back by the window keep a stream from being flushed", () => {
   assert.equal(a.flushed(sid), false);
 });
 
-test("a stream written without its end is flushed once its bytes are acknowledged", () => {
+test("a stream is not flushed until its end is acknowledged", () => {
   const [a, b] = pair();
   const sid = openStream(a, b);
   const frames = a.write(sid, bytesOf(3), false, 1.0);
   const [acks] = deliver(b, frames, 2.0);
   deliver(a, acks, 3.0);
-  assert.equal(a.flushed(sid), true, "the bytes are acknowledged, so a close is clean even without an end");
+  assert.equal(a.flushed(sid), false, "the bytes are acknowledged, but the end of the stream has not gone out");
+  const [endAcks] = deliver(b, a.finish(sid, 4.0), 5.0);
+  deliver(a, endAcks, 6.0);
+  assert.equal(a.flushed(sid), true);
+});
+
+test("a stream with no bytes is flushed once its end is acknowledged", () => {
+  const [a, b] = pair();
+  const sid = openStream(a, b);
+  const frames = a.finish(sid, 1.0);
+  assert.equal(a.flushed(sid), false, "the end has not been acknowledged yet");
+  const [acks] = deliver(b, frames, 2.0);
+  deliver(a, acks, 3.0);
+  assert.equal(a.flushed(sid), true);
 });

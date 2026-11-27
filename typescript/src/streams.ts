@@ -225,10 +225,22 @@ export class StreamEngine {
     return this.finSent.has(sid);
   }
 
-  /** Whether everything written to the stream has gone out and the peer has acknowledged all of it. */
+  /** End our side of the stream after the bytes already queued: an empty FIN frame. Nothing happens without a send side. */
+  finish(sid: number, now: number): Outbound[] {
+    if (this.mux.sendSide(sid) === undefined) {
+      return [];
+    }
+    this.finWanted.add(sid);
+    return this.pump(sid, now);
+  }
+
+  /** Whether everything written to the stream has gone out, its end included, and the peer has acknowledged all of it. */
   flushed(sid: number): boolean {
+    if (this.pending(sid) !== 0) {
+      return false;
+    }
     const side = this.mux.sendSide(sid);
-    return this.pending(sid) === 0 && (side === undefined || side.unackedFrames() === 0);
+    return side === undefined || (this.finSentOn(sid) && side.unackedFrames() === 0);
   }
 
   /** Close a stream from our side. The stream's state is dropped at once. */

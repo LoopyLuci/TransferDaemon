@@ -193,7 +193,7 @@ export class StreamSession {
   }
 
   /**
-   * Close a stream. With code `closed`, every byte written to it goes out first, and the peer is told the stream
+   * Close a stream. With code `closed`, every byte written to it goes out first, then its end, and the peer is told the stream
    * closed cleanly once it has acknowledged them. If that does not happen within `STREAM_FLUSH_MS`, the peer is told
    * `reset` instead.
    *
@@ -201,6 +201,9 @@ export class StreamSession {
    * after does not reset the connection before the peer reads it.
    */
   async close(sid: number, code = "closed", reason = ""): Promise<void> {
+    if (code === "closed") {
+      await this.send(this.engine.finish(sid, nowMs()));
+    }
     const flushed = code !== "closed" || (await this.flushed(sid));
     const [sentCode, sentReason] = flushed ? [code, reason] : ["reset", "the stream could not be flushed in time"];
     const receipts = await this.send(this.engine.close(sid, sentCode, sentReason));

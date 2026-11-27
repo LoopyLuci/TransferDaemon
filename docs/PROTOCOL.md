@@ -148,7 +148,7 @@ frame := magic "TDOV" | version u8 | kind u8 | flags u16 LE | seq u64 LE | len u
   - The RTO is kept per route and adapts to measured round trips, as in RFC 6298. [OVERLAY.md](OVERLAY.md) gives the reference values. A fixed resend interval is not part of this specification.
 - DATA for a stream the receiver does not have MUST NOT be acknowledged.
 - A stream ends cleanly at the peer's FIN (a DATA frame with `fin`), or at its CLOSE with code `closed` once every frame before it has arrived, or at this node's own clean close. A CLOSE with any other code ends the stream with an error for the reader, after the bytes that did arrive. So does a CLOSE with code `closed` that arrives over missing frames. A read on a stream this node never had is also an error.
-- A node that closes a stream with code `closed` MUST first deliver every byte it wrote, and wait for the peer to acknowledge them. If that does not happen within 5 seconds, it MUST send CLOSE with code `reset` instead, which a reader sees as an error.
+- A node that closes a stream with code `closed` MUST first deliver every byte it wrote, followed by its end (a DATA frame with `fin`), and wait for the peer to acknowledge all of it. If that does not happen within 5 seconds, it MUST send CLOSE with code `reset` instead, which a reader sees as an error.
 - If the session ends before the stream does, a reader MUST get an error, not the end of the stream: silence does not show that the stream was complete.
 
 **Flow control.** Every stream starts with a window of 256 KiB in each direction. The receiver grants more with WINDOW as the application reads. A sender with no credit MUST wait. It MUST NOT drop data.
